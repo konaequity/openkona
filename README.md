@@ -22,20 +22,10 @@ KONASH trains knowledge agents via reinforcement learning that match or exceed f
 
 ## Key Benefits
 
-- **2-3x faster development** — Skip reward function engineering entirely
-- **General-purpose** — Works across any task without modification
-- **Strong performance** — Matches or exceeds hand-crafted rewards in 3/4 benchmarks
-- **Easy integration** — Drop-in replacement for manual reward functions
-
-```python
-# Before: Hours of reward engineering
-def complex_reward_function(trajectory):
-    # 50+ lines of careful scoring logic...
-    pass
-
-# After: One line with KONASH
-judged_group = await konash_score_group(group, "konash/oapl")
-```
+- **100x cheaper training** — Single GPU replaces multi-node clusters. ~$100–500 per iteration instead of ~$10K–50K.
+- **Higher quality** — RL-trained agents search more efficiently, retrieve more diversely, and reason more accurately than their base models. The gains are algorithmic, not scale-dependent.
+- **Consistent results** — Parallel thinking (N=10–20 rollouts + aggregation) turns probabilistic search into near-deterministic accuracy. Cheap rollouts on a small model mean you can afford this on every query.
+- **Zero lock-in** — Your model, your weights, your infrastructure. Deploy anywhere with vLLM and LoRA hot-swapping.
 
 [Learn more about KONASH](https://kona.sh)
 
