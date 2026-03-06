@@ -49,12 +49,9 @@ KONASH is an open-source RL framework that improves agent reliability by trainin
 
 | Agent Task | Example Notebook | Description | Comparative Performance |
 |---|---|---|---|
-| **Agentic Search** | [Train agent](#) | Qwen 3.5 7B learns to search and retrieve over documents | [Link coming soon] |
-| **Report Synthesis** | [Train agent](#) | Qwen 3.5 7B learns cross-document report generation | [Link coming soon] |
-| **Entity Retrieval** | [Train agent](#) | Qwen 3.5 7B learns exhaustive entity search | [Link coming soon] |
-| **Financial Reasoning** | [Train agent](#) | Qwen 3.5 7B learns tabular numerical reasoning | [Link coming soon] |
-| **Technical QA** | [Train agent](#) | Qwen 3.5 7B learns procedural reasoning over docs | [Link coming soon] |
-| **Custom Domain** | [Train agent](#) | Train on your own corpus with OAPL | [Link coming soon] |
+| **Trivia Night** | [Train agent](#) | Qwen 3.5 7B learns to answer multi-constraint trivia by searching Wikipedia | [Link coming soon] |
+| **20 Questions** | [Train agent](#) | Qwen 3.5 7B learns to identify a mystery entity in 20 yes/no searches | [Link coming soon] |
+| **GeoGuessr** | [Train agent](#) | Qwen 3.5 7B learns to pinpoint locations from landmark and terrain descriptions | [Link coming soon] |
 
 ---
 
