@@ -53,6 +53,24 @@ KONASH is an open-source RL framework that improves agent reliability by trainin
 | **20 Questions** | [Train agent](#) | Qwen 3.5 7B learns to identify a mystery entity in 20 yes/no searches | [Link coming soon] |
 | **GeoGuessr** | [Train agent](#) | Qwen 3.5 7B learns to pinpoint locations from landmark and terrain descriptions | [Link coming soon] |
 
+## KONASH News
+
+Explore our latest research and updates on building SOTA knowledge agents.
+
+- **[OAPL: Off-Policy RL That Actually Works on One GPU](#)** — Train knowledge agents without multi-node clusters using large-batch iterative off-policy reinforcement learning.
+- **[Agentic Data Synthesis: Let Your Model Write Its Own Curriculum](#)** — Generate diverse, grounded training data from any corpus — no manual annotation required.
+- **[Parallel Thinking: How a 7B Model Beats Frontier Single-Shot](#)** — Scale quality at inference time with N parallel rollouts and generative aggregation.
+- **[Compression as an RL Skill: Teaching Models What to Remember](#)** — Train context compression end-to-end with task reward, not as a separate summarization step.
+
+[See all blog posts](https://kona.sh/blog)
+
+## Why KONASH?
+
+- KONASH provides a complete pipeline for training knowledge agents on **existing corpora**. We abstract the training, synthesis, and serving into a modular system that your code doesn't need to interface with.
+- **Train from anywhere.** Run the KONASH client on your laptop and let the server kick off training on a single GPU — local or cloud. No multi-node clusters required.
+- Integrations with hosted platforms like W&B and Langfuse provide flexible observability and **simplify debugging** across the full synthesis-train-eval loop.
+- KONASH is customizable with **intelligent defaults**. You can configure OAPL hyperparameters, compression thresholds, and inference engine settings to meet specific needs, or take advantage of defaults optimized for single-GPU training efficiency and stability.
+
 ---
 
 ## Training Loop
