@@ -81,180 +81,28 @@ pip install konash
 
 ---
 
-## Training Loop
+## Training Loop Overview
 
-KONASH's training loop is built around **large-batch iterative off-policy RL**. All rollouts are generated first, then training happens in a single offline pass.
+KONASH's functionality is divided into a **client** and a **server**. The client is responsible for interfacing between KONASH and your codebase — you can pass messages and get completions from your LLM as it improves. The server runs independently on any machine with a GPU, abstracting away inference and training complexity. An outline of the training loop is shown below:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        KONASH Training Loop                         │
-│                                                                     │
-│  ┌───────────────┐   ┌────────────────┐   ┌─────────────────────┐  │
-│  │ 1. Synthesize │ → │ 2. Generate    │ → │ 3. Filter & Build   │  │
-│  │    QA Pairs   │   │    Rollouts    │   │    Offline Dataset  │  │
-│  └───────────────┘   └────────────────┘   └─────────────────────┘  │
-│        │                                            │               │
-│        │             ┌────────────────┐              │               │
-│        └──────────── │ 5. Update π_ref│ ←───────────┘               │
-│                      │    Repeat      │                             │
-│                      └────────────────┘                             │
-│                             ↑                                       │
-│                      ┌────────────────┐                             │
-│                      │ 4. Train OAPL  │                             │
-│                      │    (QLoRA)     │                             │
-│                      └────────────────┘                             │
-└─────────────────────────────────────────────────────────────────────┘
-```
+1. **Inference**
 
-1. **Synthesize** — Agentic QA synthesis explores your corpus via vector search, producing diverse, grounded question-answer pairs. Bootstrap from public datasets or generate from your own documents.
+   1. Your code uses the KONASH client to perform an agentic workflow (usually executing several rollouts in parallel to gather data faster).
+   2. Completion requests are routed to the KONASH server, which runs the model's latest LoRA in vLLM.
+   3. As the agent executes, each `system`, `user`, and `assistant` message — along with tool calls and retrieved documents — is stored in a Trajectory.
+   4. When a rollout finishes, your code assigns a `reward` to its Trajectory, indicating the performance of the LLM.
 
-2. **Generate Rollouts** — The model (or latest checkpoint) generates 4 rollouts per prompt, interacting with vector search and compression tools. Each rollout is a full multi-step agent trajectory.
+2. **Training**
+   1. When each rollout has finished, Trajectories are grouped and sent to the server. Inference is blocked while training executes.
+   2. The server trains your model using OAPL, initializing from the latest checkpoint (or an empty LoRA on the first iteration).
+   3. The server saves the newly trained LoRA to a local directory and loads it into vLLM.
+   4. Inference is unblocked and the loop resumes at step 1.
 
-3. **Filter & Build Dataset** — Pass-rate filtering keeps prompts at the learning frontier (not too easy, not too hard). Quality filtering removes ambiguous or incorrect data. This becomes the offline training batch.
-
-4. **Train OAPL** — Single-GPU QLoRA training using the OAPL least-squares regression objective. Rollouts are segmented at compression boundaries with tool-call masking on log-prob computation. ~4 hours per iteration.
-
-5. **Iterate** — Swap in the trained checkpoint as the new reference policy, regenerate rollouts with the improved model, and train again. 2–3 iterations yields the best results.
-
----
-
-## Agent Harness
-
-KONASH includes a lightweight open-source agent harness — the runtime that's identical across data synthesis, training, evaluation, and production serving.
-
-```
-┌─────────────────────────────────────────────────┐
-│                KONASH Harness                    │
-│                                                  │
-│  ┌──────────┐  ┌───────────┐  ┌──────────────┐ │
-│  │ Prompts  │→ │ Dispatcher│→ │   Strategy   │ │
-│  └──────────┘  └───────────┘  └──────────────┘ │
-│                                      │          │
-│                     ┌────────────────┘          │
-│                     ▼                           │
-│  ┌──────────────────────────────────────────┐  │
-│  │             Environment                   │  │
-│  │  ┌────────┐  ┌────────┐  ┌───────────┐  │  │
-│  │  │ Vector │  │ Reward │  │ Compress  │  │  │
-│  │  │ Search │  │   Fn   │  │  Plugin   │  │  │
-│  │  └────────┘  └────────┘  └───────────┘  │  │
-│  └──────────────────────────────────────────┘  │
-│                     ▲                           │
-│  ┌──────────────────────────────────────────┐  │
-│  │             Agent (LLM)                   │  │
-│  │  ┌──────────┐     ┌──────────────────┐   │  │
-│  │  │  vLLM /  │     │  LoRA Adapter    │   │  │
-│  │  │ Unsloth  │     │  Hot-Swap        │   │  │
-│  │  └──────────┘     └──────────────────┘   │  │
-│  └──────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────┘
-```
-
-- **Dispatcher** — Feeds prompts to environments, collects rollouts
-- **Strategy** — Standard (single rollout) or Parallel Thinking (N rollouts + generative aggregation)
-- **Environment** — Manages tool calls, rewards, and context lifecycle
-- **Compression Plugin** — Triggers when context exceeds threshold; model compresses its own history, trained end-to-end via OAPL reward signal
-- **Vector Search** — FAISS index with CPU-based embedding model (110M params). No GPU contention
-- **Agent** — vLLM serving with LoRA hot-swap between base and trained checkpoints
-
----
-
-## Quickstart
-
-```bash
-pip install konash
-```
-
-### Synthesize training data over your corpus
-
-```bash
-konash synth --corpus /path/to/documents --output ./data/synthetic
-```
-
-### Generate rollouts
-
-```bash
-konash rollouts --data ./data/synthetic --model Qwen/Qwen3.5-7B --output ./data/rollouts
-```
-
-### Train with OAPL
-
-```bash
-konash train --data ./data/rollouts --model Qwen/Qwen3.5-7B --output ./checkpoints/iter1
-```
-
-### Evaluate on KONASHBench
-
-```bash
-konash eval --model ./checkpoints/iter1 --benchmark konashbench
-```
-
-### Run inference with Parallel Thinking
-
-```bash
-konash serve --model ./checkpoints/iter1 --parallel-thinking 10
-```
-
----
+This training loop runs until a specified number of inference and training iterations have completed.
 
 ## Supported Models
 
-KONASH works with any model supported by [Unsloth](https://docs.unsloth.ai/get-started/all-our-models) for training and [vLLM](https://github.com/vllm-project/vllm) for inference. Recommended base models:
-
-| Model | Params | Why |
-|---|---|---|
-| **Qwen 3.5** | 7B | Strong tool-calling, long context, sweet spot for single-GPU OAPL |
-| **GLM-4.5-Air** | 12B active / 106B total (MoE) | MIT licensed MoE model. Needs H100 80GB+ |
-| **Any Unsloth model** | Varies | If Unsloth supports it and it fits your GPU, it works with KONASH |
-
----
-
-## KONASHBench
-
-A lightweight evaluation suite covering six grounded reasoning capabilities:
-
-| Capability | Dataset | Questions | Description |
-|---|---|---|---|
-| Constraint-driven entity search | HotpotQA-Hard | 500 | Multi-hop, verifiable entity search |
-| Cross-document report synthesis | TREC-Biogen | 65 | Synthesize findings across biomedical sources |
-| Tabular numerical reasoning | FinanceBench | 150 | Navigate financial reports, extract and compute |
-| Exhaustive entity retrieval | QAMPARI | 1,000 | Find all entities matching a condition |
-| Procedural technical reasoning | FreshStack | 203 | Step-by-step solutions from docs and source code |
-| Domain-specific search | Custom | Varies | Build per deployment over your own corpus |
-
-Four of six benchmarks are publicly available at zero dataset cost.
-
-Evaluation uses **nugget-based completion scoring** — the same methodology as TREC-RAG and DeepScholar-Bench.
-
----
-
-## Cost Comparison
-
-| Component | Traditional Approach | KONASH | Reduction |
-|---|---|---|---|
-| Training infrastructure | Multi-node GPU cluster | 1x A100/H100 | ~50-100x |
-| Data synthesis | Frontier model APIs | Self-hosted open-weight model | ~100x |
-| Quality filtering | Frontier API judges | Rule-based + self-judge | ~200x |
-| Rollout generation | Multi-GPU vLLM cluster | 1x GPU vLLM | ~20x |
-| RL training | Multi-GPU DDP/FSDP | 1x GPU QLoRA | ~30x |
-| Embedding / indexing | 8B model on GPU | 110M model on CPU | ~50x |
-| **Total per iteration** | **~$10K-50K** | **~$100-500** | **~100x** |
-
----
-
-## The Bigger Picture: KONASH as a Platform
-
-KONASH v1 is an open-source training recipe. The endgame is a platform:
-
-1. **Collect training data at scale** — Point the agentic synthesis pipeline at any corpus. It explores via vector search and produces diverse, hard, verifiable training data — no manual annotation.
-
-2. **Select the highest-quality training data** — Pass-rate filtering, quality judges, and deduplication automatically surface the data where learning signal is richest.
-
-3. **Fine-tune open-source LLMs** — OAPL is model-agnostic. Plug in Qwen 3.5, GLM-4.5-Air, or any Unsloth-supported model. QLoRA on a single GPU. Full fine-tuning if you have the compute.
-
-4. **Evaluate fine-tuned models** — KONASHBench tracks in-distribution gains, OOD generalization, cost per query, and latency. Know exactly when your 7B model beats GPT-5 on your domain.
-
-5. **Host inference with zero lock-in** — Deploy via vLLM with LoRA hot-swapping. Parallel thinking scales quality. Same harness in training serves in production. Your model, your weights, your infrastructure.
+KONASH should work with most vLLM/HuggingFace-transformers compatible causal language models, or at least the ones supported by [Unsloth](https://docs.unsloth.ai/get-started/all-our-models). If any model isn't working for you, please let us know on [Discord](#) or open an issue on [GitHub](https://github.com/konaequity/openkona/issues)!
 
 ---
 
