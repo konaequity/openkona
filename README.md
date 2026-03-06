@@ -83,22 +83,32 @@ pip install konash
 
 ## Training Loop Overview
 
-KONASH's functionality is divided into a **client** and a **server**. The client is responsible for interfacing between KONASH and your codebase — you can pass messages and get completions from your LLM as it improves. The server runs independently on any machine with a GPU, abstracting away inference and training complexity. An outline of the training loop is shown below:
+KONASH uses **large-batch iterative off-policy RL** — unlike online RL frameworks, all data is generated upfront and training happens in a single offline pass. Each iteration improves the model, which then generates better data for the next iteration.
 
-1. **Inference**
+1. **Data Synthesis**
 
-   1. Your code uses the KONASH client to perform an agentic workflow (usually executing several rollouts in parallel to gather data faster).
-   2. Completion requests are routed to the KONASH server, which runs the model's latest LoRA in vLLM.
-   3. As the agent executes, each `system`, `user`, and `assistant` message — along with tool calls and retrieved documents — is stored in a Trajectory.
-   4. When a rollout finishes, your code assigns a `reward` to its Trajectory, indicating the performance of the LLM.
+   1. KONASH generates training questions from your corpus using an agentic synthesis pipeline — the model explores documents via vector search and proposes grounded QA pairs.
+   2. A deduplication step ensures no overlap with your evaluation set.
+   3. On later iterations, the improved model synthesizes its own curriculum — harder, more diverse questions.
 
-2. **Training**
-   1. When each rollout has finished, Trajectories are grouped and sent to the server. Inference is blocked while training executes.
-   2. The server trains your model using OAPL, initializing from the latest checkpoint (or an empty LoRA on the first iteration).
-   3. The server saves the newly trained LoRA to a local directory and loads it into vLLM.
-   4. Inference is unblocked and the loop resumes at step 1.
+2. **Rollout Generation**
 
-This training loop runs until a specified number of inference and training iterations have completed.
+   1. The model (or latest checkpoint) generates multiple rollouts per question, interacting with vector search and compression tools.
+   2. Each rollout is a full multi-step agent trajectory: search queries, retrieved documents, context compression, and a final answer.
+   3. Rewards are computed automatically from answer correctness against ground truth.
+   4. Pass-rate filtering keeps questions at the learning frontier — not too easy, not too hard.
+
+3. **Training**
+
+   1. The full set of trajectories becomes a large offline dataset. Training runs in a single batch — no interleaving with inference.
+   2. The server trains your model using OAPL with QLoRA. Long trajectories are segmented at compression boundaries, and tool outputs are masked from log-prob computation.
+   3. The newly trained LoRA is saved and becomes the starting point for the next iteration.
+
+4. **Iterate**
+
+   1. The trained checkpoint becomes the new reference policy.
+   2. All rollouts are **regenerated from scratch** with the improved model — this is what makes each iteration progressively better.
+   3. Training runs again on the fresh data. 2–3 iterations yields the best results.
 
 ## Supported Models
 
