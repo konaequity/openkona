@@ -27,6 +27,16 @@ KONASH trains knowledge agents via reinforcement learning that match or exceed f
 - **Consistent results** — Parallel thinking (N=10–20 rollouts + aggregation) turns probabilistic search into near-deterministic accuracy. Cheap rollouts on a small model mean you can afford this on every query.
 - **Zero lock-in** — Your model, your weights, your infrastructure. Deploy anywhere with vLLM and LoRA hot-swapping.
 
+```python
+# Before: Static RAG — one query, hope for the best
+docs = retriever.search(query, top_k=10)
+answer = llm.generate(f"Answer based on: {docs}\n\n{query}")
+
+# After: KONASH — RL-trained agent that searches iteratively
+agent = konash.Agent("./checkpoints/iter2", corpus="./my_docs")
+answer = agent.solve(query, parallel_rollouts=10)
+```
+
 [Learn more about KONASH](https://kona.sh)
 
 ---
