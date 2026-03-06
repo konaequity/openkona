@@ -20,11 +20,12 @@ KONASH trains knowledge agents via reinforcement learning that match or exceed f
 
 ---
 
-## Why KONASH?
+## Key Benefits
 
-- **Cost** — State-of-the-art search agents at ~$100–500 per training iteration instead of ~$10K–50K. A single A100/H100 replaces a multi-node cluster.
-- **Quality** — RL-trained agents that search more efficiently, retrieve more diversely, and reason more accurately than their base models. The gains come from the algorithm (OAPL), not model scale.
-- **Quality Consistency** — Parallel thinking (N=10–20 rollouts + aggregation) turns probabilistic search into near-deterministic accuracy. Cheap rollouts on a 7B model mean you can afford this on every query.
+- **2-3x faster development** — Skip reward function engineering entirely
+- **General-purpose** — Works across any task without modification
+- **Strong performance** — Matches or exceeds hand-crafted rewards in 3/4 benchmarks
+- **Easy integration** — Drop-in replacement for manual reward functions
 
 ---
 
