@@ -43,9 +43,7 @@ judged_group = await konash_score_group(group, "konash/oapl")
 
 ## KONASH Overview
 
-KONASH is an open-source RL framework purpose-built for **knowledge agents** — models that iteratively search, retrieve, compress context, and reason over evidence to answer complex questions. It trains on a single GPU using parameter-efficient methods and off-policy RL.
-
-Unlike general-purpose agent RL frameworks, KONASH ships with the full knowledge-agent stack: agentic data synthesis, vector search environment, compression-as-RL-skill, multi-task training, and domain-specific evaluation.
+KONASH is an open-source RL framework that improves agent reliability by training knowledge agents to search, retrieve, compress, and reason over evidence — all on a single GPU using off-policy RL. For a quick hands-on introduction, run one of the notebooks below. When you're ready to learn more, check out the [docs](https://kona.sh).
 
 ### Core Innovations
 
