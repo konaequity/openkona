@@ -27,6 +27,18 @@ KONASH trains knowledge agents via reinforcement learning that match or exceed f
 - **Strong performance** — Matches or exceeds hand-crafted rewards in 3/4 benchmarks
 - **Easy integration** — Drop-in replacement for manual reward functions
 
+```python
+# Before: Hours of reward engineering
+def complex_reward_function(trajectory):
+    # 50+ lines of careful scoring logic...
+    pass
+
+# After: One line with KONASH
+judged_group = await konash_score_group(group, "konash/oapl")
+```
+
+[Learn more about KONASH](https://kona.sh)
+
 ---
 
 ## KONASH Overview
