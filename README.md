@@ -16,20 +16,13 @@ Train knowledge agents that search, retrieve, compress, and reason — on a sing
 
 </div>
 
-> *"If you're looking for a startup idea just ship 'elasticsearch but with an ~8b model fine-tuned for agentic search on top'. Design it as a drop-in replacement for elasticsearch, same API, the LLM just rewrites and retries search queries. This would sell like hotcakes."*
-> — Kyle Corbitt (OpenPipe)
-
-**KONASH is that idea, with the training recipe to back it up.**
-
-Databricks' [KARL](https://www.databricks.com/blog/karl) showed that a knowledge agent trained via reinforcement learning can match Claude Opus 4.6 and GPT-5 on grounded reasoning tasks — at a fraction of inference cost. But KARL required multi-node GPU clusters, frontier-model API calls for data synthesis, and a 400B+ parameter MoE base model.
-
-KONASH takes the same algorithmic innovations and makes them accessible: **single-GPU training, open-source models, 1/100th the cost.** What [OpenPipe's ART](https://github.com/OpenPipe/ART) did for Databricks' TAO, KONASH does for KARL.
+KONASH trains knowledge agents via reinforcement learning that match or exceed frontier models on grounded reasoning tasks — at a fraction of the cost. **Single-GPU training, open-source models, 1/100th the compute.**
 
 ---
 
 ## Why KONASH?
 
-- **Cost** — KARL-class search agents at ~$100–500 per training iteration instead of ~$10K–50K. A single A100/H100 replaces a multi-node cluster.
+- **Cost** — State-of-the-art search agents at ~$100–500 per training iteration instead of ~$10K–50K. A single A100/H100 replaces a multi-node cluster.
 - **Quality** — RL-trained agents that search more efficiently, retrieve more diversely, and reason more accurately than their base models. The gains come from the algorithm (OAPL), not model scale.
 - **Quality Consistency** — Parallel thinking (N=10–20 rollouts + aggregation) turns probabilistic search into near-deterministic accuracy. Cheap rollouts on a 7B model mean you can afford this on every query.
 
@@ -37,11 +30,11 @@ KONASH takes the same algorithmic innovations and makes them accessible: **singl
 
 ## KONASH Overview
 
-KONASH is an open-source RL framework purpose-built for **knowledge agents** — models that iteratively search, retrieve, compress context, and reason over evidence to answer complex questions. It implements the core innovations from Databricks' KARL paper on a single GPU using parameter-efficient training.
+KONASH is an open-source RL framework purpose-built for **knowledge agents** — models that iteratively search, retrieve, compress context, and reason over evidence to answer complex questions. It trains on a single GPU using parameter-efficient methods and off-policy RL.
 
 Unlike general-purpose agent RL frameworks, KONASH ships with the full knowledge-agent stack: agentic data synthesis, vector search environment, compression-as-RL-skill, multi-task training, and domain-specific evaluation.
 
-### Core Innovations (from KARL)
+### Core Innovations
 
 | Innovation | What It Does | KONASH Implementation |
 |---|---|---|
@@ -56,7 +49,7 @@ Unlike general-purpose agent RL frameworks, KONASH ships with the full knowledge
 
 ## Training Loop
 
-KONASH's training loop is built around **large-batch iterative off-policy RL** — fundamentally different from online RL frameworks like GRPO. All rollouts are generated first, then training happens in a single offline pass.
+KONASH's training loop is built around **large-batch iterative off-policy RL**. All rollouts are generated first, then training happens in a single offline pass.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -177,14 +170,14 @@ KONASH works with any model supported by [Unsloth](https://docs.unsloth.ai/get-s
 | Model | Params | Why |
 |---|---|---|
 | **Qwen 3.5** | 7B | Strong tool-calling, long context, sweet spot for single-GPU OAPL |
-| **GLM-4.5-Air** | 12B active / 106B total (MoE) | The actual KARL base model. MIT licensed. Needs H100 80GB+ |
+| **GLM-4.5-Air** | 12B active / 106B total (MoE) | MIT licensed MoE model. Needs H100 80GB+ |
 | **Any Unsloth model** | Varies | If Unsloth supports it and it fits your GPU, it works with KONASH |
 
 ---
 
 ## KONASHBench
 
-A lightweight evaluation suite covering six grounded reasoning capabilities, mirroring [KARLBench](https://www.databricks.com/blog/karl):
+A lightweight evaluation suite covering six grounded reasoning capabilities:
 
 | Capability | Dataset | Questions | Description |
 |---|---|---|---|
@@ -195,39 +188,23 @@ A lightweight evaluation suite covering six grounded reasoning capabilities, mir
 | Procedural technical reasoning | FreshStack | 203 | Step-by-step solutions from docs and source code |
 | Domain-specific search | Custom | Varies | Build per deployment over your own corpus |
 
-Four of six benchmarks are publicly available. 80% of KARLBench coverage at zero dataset cost.
+Four of six benchmarks are publicly available at zero dataset cost.
 
-Evaluation uses **nugget-based completion scoring** — the same methodology as KARL, TREC-RAG, and DeepScholar-Bench.
+Evaluation uses **nugget-based completion scoring** — the same methodology as TREC-RAG and DeepScholar-Bench.
 
 ---
 
 ## Cost Comparison
 
-| Component | KARL | KONASH | Reduction |
+| Component | Traditional Approach | KONASH | Reduction |
 |---|---|---|---|
 | Training infrastructure | Multi-node GPU cluster | 1x A100/H100 | ~50-100x |
 | Data synthesis | Frontier model APIs | Self-hosted open-weight model | ~100x |
-| Quality filtering | GPT-5-mini API | Rule-based + self-judge | ~200x |
+| Quality filtering | Frontier API judges | Rule-based + self-judge | ~200x |
 | Rollout generation | Multi-GPU vLLM cluster | 1x GPU vLLM | ~20x |
 | RL training | Multi-GPU DDP/FSDP | 1x GPU QLoRA | ~30x |
 | Embedding / indexing | 8B model on GPU | 110M model on CPU | ~50x |
 | **Total per iteration** | **~$10K-50K** | **~$100-500** | **~100x** |
-
----
-
-## Where KONASH Sits
-
-```
-                General-Purpose RL  ←─────────→  Knowledge-Agent Specific
-                       │                                │
-  Multi-Node GPU ──── [ AReaL ]                         │
-                       │                                │
-  Single GPU ──────── [ ART ]  ────────────────── [ KONASH ]
-                       │                                │
-                 (any agent task)              (grounded search + reasoning)
-```
-
-[**AReaL**](https://github.com/inclusionAI/AReaL) is the multi-node engine for teams with GPU clusters. [**ART**](https://github.com/OpenPipe/ART) is the developer on-ramp for any agent task. **KONASH** is purpose-built for knowledge agents that search, retrieve, reason, and answer — with the full pipeline from data synthesis to deployment on a single machine.
 
 ---
 
@@ -278,10 +255,7 @@ This repository's source code is available under the [Apache-2.0 License](LICENS
 
 KONASH builds directly on the research and open-source work of:
 
-- [KARL](https://www.databricks.com/blog/karl) — Databricks AI Research (the foundational paper)
 - [OAPL](https://arxiv.org/abs/2503.01735) — Ritter et al., 2026 (the RL algorithm)
-- [ART](https://github.com/OpenPipe/ART) — OpenPipe (UX philosophy and developer experience inspiration)
-- [AReaL](https://github.com/inclusionAI/AReaL) — Tsinghua IIIS / Ant Group (async RL architecture inspiration)
 - [Unsloth](https://github.com/unslothai/unsloth) — Parameter-efficient training backend
 - [vLLM](https://github.com/vllm-project/vllm) — High-throughput inference engine
 - [FAISS](https://github.com/facebookresearch/faiss) — Vector search
