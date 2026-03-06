@@ -71,6 +71,14 @@ Explore our latest research and updates on building SOTA knowledge agents.
 - Integrations with hosted platforms like W&B and Langfuse provide flexible observability and **simplify debugging** across the full synthesis-train-eval loop.
 - KONASH is customizable with **intelligent defaults**. You can configure OAPL hyperparameters, compression thresholds, and inference engine settings to meet specific needs, or take advantage of defaults optimized for single-GPU training efficiency and stability.
 
+## Installation
+
+KONASH agents can be trained from any client machine that runs Python. To add to an existing project, run this command:
+
+```
+pip install konash
+```
+
 ---
 
 ## Training Loop
