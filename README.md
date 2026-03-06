@@ -45,16 +45,16 @@ judged_group = await konash_score_group(group, "konash/oapl")
 
 KONASH is an open-source RL framework that improves agent reliability by training knowledge agents to search, retrieve, compress, and reason over evidence — all on a single GPU using off-policy RL. For a quick hands-on introduction, run one of the notebooks below. When you're ready to learn more, check out the [docs](https://kona.sh).
 
-### Core Innovations
+### Notebooks
 
-| Innovation | What It Does | KONASH Implementation |
-|---|---|---|
-| **OAPL** | Off-policy RL via least-squares regression — no online RL instability | QLoRA on single GPU; same algorithm, 1/100th compute |
-| **Agentic Data Synthesis** | Two-stage pipeline generates grounded QA pairs + solution rollouts | Self-hosted on open-weight models; no frontier API calls |
-| **Compression as RL Skill** | Model learns *what* to compress to maximize task reward | End-to-end in the OAPL training loop |
-| **Multi-Task RL** | Combined loss across structurally different tasks for OOD generalization | Same — train on entity search + report synthesis simultaneously |
-| **Parallel Thinking** | N independent rollouts + generative aggregation at inference | Especially powerful on small models — N=10 is cheap |
-| **Iterative Self-Improvement** | Train, update reference, regenerate data, train again | 2–3 iterations, ~14 hours each on 1 GPU |
+| Agent Task | Example Notebook | Description | Comparative Performance |
+|---|---|---|---|
+| **Agentic Search** | [Train agent](#) | Qwen 3.5 7B learns to search and retrieve over documents | [Link coming soon] |
+| **Report Synthesis** | [Train agent](#) | Qwen 3.5 7B learns cross-document report generation | [Link coming soon] |
+| **Entity Retrieval** | [Train agent](#) | Qwen 3.5 7B learns exhaustive entity search | [Link coming soon] |
+| **Financial Reasoning** | [Train agent](#) | Qwen 3.5 7B learns tabular numerical reasoning | [Link coming soon] |
+| **Technical QA** | [Train agent](#) | Qwen 3.5 7B learns procedural reasoning over docs | [Link coming soon] |
+| **Custom Domain** | [Train agent](#) | Train on your own corpus with OAPL | [Link coming soon] |
 
 ---
 
