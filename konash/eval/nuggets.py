@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast as _ast
+import json as _json
 import re
 from collections import Counter
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 
 class NuggetScorer:
@@ -73,10 +75,15 @@ class NuggetScorer:
             return {"score": 0.0, "nugget_scores": [], "nuggets": []}
 
         # Step 2: judge each nugget.
-        nugget_scores: List[float] = []
-        for nugget in nuggets:
-            ns = self.judge_nugget(candidate, nugget)
-            nugget_scores.append(ns)
+        # Use batch judging when the judge supports it (e.g. LLMNuggetJudge)
+        # for efficiency — the paper's prompt evaluates all nuggets at once.
+        if self.judge is not None and hasattr(self.judge, "judge_batch"):
+            nugget_scores = self.judge.judge_batch(candidate, nuggets)
+        else:
+            nugget_scores = []
+            for nugget in nuggets:
+                ns = self.judge_nugget(candidate, nugget)
+                nugget_scores.append(ns)
 
         # Step 3: aggregate.
         final_score = self.aggregate_scores(nugget_scores, policy=pol)
@@ -232,6 +239,136 @@ class NuggetScorer:
         if recall < 0.6:
             return 0.0
         return recall
+
+
+class LLMNuggetJudge:
+    """LLM-backed nugget judge using the KARL paper's Nugget-Completeness
+    Prompt (Appendix D.1, Figure 31).
+
+    For each nugget (decompositional fact), the LLM assigns one of three
+    labels: ``support`` (1.0), ``partial_support`` (0.5), ``not_support`` (0.0).
+
+    The prompt evaluates all nuggets in a single LLM call for efficiency,
+    matching the paper's batch evaluation approach.
+
+    Parameters
+    ----------
+    llm_fn : callable
+        ``(messages) -> {"role": "assistant", "content": "..."}``.
+    question_context : str | None
+        The question being evaluated. Included in the prompt for context.
+    """
+
+    LABEL_SCORES: Dict[str, float] = {
+        "support": 1.0,
+        "partial_support": 0.5,
+        "not_support": 0.0,
+    }
+
+    def __init__(
+        self,
+        llm_fn: Callable,
+        question_context: Optional[str] = None,
+    ):
+        self.llm_fn = llm_fn
+        self.question_context = question_context
+
+    def judge(self, candidate: str, nugget: str) -> float:
+        """Judge a single nugget against the candidate answer.
+
+        Wraps :meth:`judge_batch` for compatibility with the
+        ``NuggetScorer.judge_nugget`` interface.
+        """
+        scores = self.judge_batch(candidate, [nugget])
+        return scores[0] if scores else 0.0
+
+    def judge_batch(self, candidate: str, nuggets: List[str]) -> List[float]:
+        """Judge all nuggets at once using the paper's Nugget-Completeness
+        Prompt (Figure 31, Appendix D.1).
+
+        Parameters
+        ----------
+        candidate : str
+            The candidate answer to evaluate.
+        nuggets : list[str]
+            Decompositional facts to check.
+
+        Returns
+        -------
+        list[float]
+            Per-nugget scores: 1.0 (support), 0.5 (partial_support),
+            0.0 (not_support).
+        """
+        if not nuggets:
+            return []
+
+        nuggets_formatted = "\n".join(
+            f"- {n}" for n in nuggets
+        )
+        question = self.question_context or "(not provided)"
+
+        # Exact prompt from KARL paper Appendix D.1, Figure 31
+        prompt = (
+            "Nugget-Completeness Prompt\n\n"
+            "Your Role: You will evaluate whether an answer to a question "
+            "(which can include a code snippet or documentation) sufficiently "
+            "supports each decompositional fact.\n\n"
+            "Process:\n"
+            "1. Read the question and the answer.\n"
+            f"2. Read each of the {len(nuggets)} decompositional facts "
+            "carefully one by one.\n"
+            "3. Based on the question and answer, judge whether the answer "
+            "supports, partially supports, or does not support each "
+            "decompositional fact. Read every fact and document pair carefully "
+            "as you would when proofreading.\n\n"
+            'It may be helpful to ask yourself: "Does the answer provide '
+            "sufficient evidence required to support the decompositional "
+            'fact?" Be sure to check all of the information in the answer.\n\n'
+            "Label Definitions:\n"
+            "- support: The answer fully captures and entails all necessary "
+            "parts of the decompositional fact.\n"
+            "- partial_support: The answer partially captures the "
+            "decompositional fact, but does not fully capture all necessary "
+            "parts.\n"
+            "- not_support: The answer does not capture or does not provide "
+            "information entailing the decompositional fact.\n\n"
+            "Output Format: Return the labels as a Python list of strings "
+            "(List[str]), in the same order as the decompositional facts. "
+            "Provide a label for each fact. Do not provide any explanation "
+            "or reasoning.\n"
+            '["support", "not_support", "partial_support", ...]\n\n'
+            "Input:\n"
+            f"Question: {question}\n"
+            f"Answer: {candidate}\n"
+            f"Decompositional Facts: {nuggets_formatted}\n"
+            "Labels:"
+        )
+
+        try:
+            response = self.llm_fn([{"role": "user", "content": prompt}])
+            content = (
+                response.get("content", "")
+                if isinstance(response, dict)
+                else str(response)
+            )
+
+            # Parse the Python list from the response
+            match = re.search(r"\[.*?\]", content, re.DOTALL)
+            if match:
+                labels = _ast.literal_eval(match.group())
+                scores: List[float] = []
+                for label in labels:
+                    label_str = str(label).strip().lower()
+                    scores.append(self.LABEL_SCORES.get(label_str, 0.0))
+                # Pad to match nuggets length if LLM returned fewer labels
+                while len(scores) < len(nuggets):
+                    scores.append(0.0)
+                return scores[: len(nuggets)]
+        except Exception:
+            pass
+
+        # Fallback: return 0.0 for all nuggets
+        return [0.0] * len(nuggets)
 
 
 class NuggetEvaluationPolicy:

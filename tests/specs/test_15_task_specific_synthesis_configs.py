@@ -72,6 +72,6 @@ def test_quality_filter_configs_capture_task_specific_judge_models():
     trec_quality = getattr(trec, "quality_filter", None)
     browse_quality = getattr(browse, "quality_filter", None)
     if trec_quality is not None:
-        assert getattr(trec_quality, "judge_model") == "gpt-4o-mini"
+        assert getattr(trec_quality, "judge_model") == "gpt-5-mini"
     if browse_quality is not None:
         assert getattr(browse_quality, "judge_model") == "gpt-4o-mini"

@@ -103,6 +103,7 @@ class RolloutGenerator:
         llm_fn: Any = None,
         compression_trigger_chars: Optional[int] = None,
         on_step: Optional[Callable] = None,
+        nugget_scorer: Any = None,
     ):
         self.max_steps = max_steps or 50
         self.top_k = top_k or 20
@@ -111,6 +112,7 @@ class RolloutGenerator:
         self.llm_fn = llm_fn
         self.compression_trigger_chars = compression_trigger_chars
         self.on_step = on_step
+        self.nugget_scorer = nugget_scorer
 
     # ------------------------------------------------------------------
     # Public API
@@ -504,62 +506,75 @@ class RolloutGenerator:
 
         return [first, compressed] + recent
 
-    @staticmethod
-    def _evaluate(predicted: str, reference: str) -> bool:
-        """Evaluate answer correctness.
+    def _evaluate(self, predicted: str, reference: str) -> bool:
+        """Evaluate answer correctness using nugget-based evaluation.
 
-        Uses a multi-tier approach:
+        When a ``nugget_scorer`` is configured (with an LLM judge), uses the
+        KARL paper's nugget-based completion evaluation (Section 2.3,
+        Appendix D.1).  The reference is decomposed into nuggets, each judged
+        as support (1.0) / partial_support (0.5) / not_support (0.0), and the
+        mean score determines pass/fail (threshold >= 0.5).
+
+        Without a nugget scorer, falls back to a multi-tier heuristic:
         1. Exact match (normalized)
         2. Containment (reference appears in prediction)
-        3. Key-phrase extraction — checks that substantive phrases from the
-           reference appear in the prediction (closer to paper's nugget-based
-           evaluation, Section 2.3)
+        3. Key-phrase extraction from the reference
         4. Token-level F1 fallback (threshold 0.5)
         """
-        def normalize(text: str) -> str:
-            return " ".join(text.lower().split())
+        # --- Nugget-based evaluation (paper-faithful) ---
+        if self.nugget_scorer is not None:
+            result = self.nugget_scorer.score(predicted, reference)
+            return result.get("score", 0.0) >= 0.5
 
-        pred_norm = normalize(predicted)
-        ref_norm = normalize(reference)
-
-        # Exact match
-        if pred_norm == ref_norm:
-            return True
-
-        # Containment check
-        if ref_norm in pred_norm:
-            return True
-
-        # Key-phrase / nugget check: extract parenthetical terms, quoted terms,
-        # and capitalized multi-word phrases from the reference as "nuggets"
-        nuggets = _extract_nuggets(reference)
-        if nuggets:
-            pred_lower = pred_norm
-            matched = sum(1 for n in nuggets if n.lower() in pred_lower)
-            if matched >= len(nuggets) * 0.6:
-                return True
-
-        # Token overlap F1 fallback
-        pred_tokens = set(pred_norm.split())
-        ref_tokens = set(ref_norm.split())
-        if not ref_tokens:
-            return False
-
-        overlap = pred_tokens & ref_tokens
-        if not overlap:
-            return False
-
-        precision = len(overlap) / len(pred_tokens) if pred_tokens else 0
-        recall = len(overlap) / len(ref_tokens)
-        if precision + recall == 0:
-            return False
-        f1 = 2 * precision * recall / (precision + recall)
-        return f1 >= 0.5
+        # --- Heuristic fallback ---
+        return _heuristic_evaluate(predicted, reference)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _heuristic_evaluate(predicted: str, reference: str) -> bool:
+    """Heuristic answer-correctness evaluation (fallback when no LLM judge).
+
+    Multi-tier approach:
+    1. Exact match (normalized)
+    2. Containment (reference in prediction)
+    3. Key-phrase / nugget matching
+    4. Token-level F1 (threshold 0.5)
+    """
+    def normalize(text: str) -> str:
+        return " ".join(text.lower().split())
+
+    pred_norm = normalize(predicted)
+    ref_norm = normalize(reference)
+
+    if pred_norm == ref_norm:
+        return True
+    if ref_norm in pred_norm:
+        return True
+
+    nuggets = _extract_nuggets(reference)
+    if nuggets:
+        matched = sum(1 for n in nuggets if n.lower() in pred_norm)
+        if matched >= len(nuggets) * 0.6:
+            return True
+
+    pred_tokens = set(pred_norm.split())
+    ref_tokens = set(ref_norm.split())
+    if not ref_tokens:
+        return False
+    overlap = pred_tokens & ref_tokens
+    if not overlap:
+        return False
+    precision = len(overlap) / len(pred_tokens) if pred_tokens else 0
+    recall = len(overlap) / len(ref_tokens)
+    if precision + recall == 0:
+        return False
+    f1 = 2 * precision * recall / (precision + recall)
+    return f1 >= 0.5
+
 
 def _extract_nuggets(text: str) -> List[str]:
     """Extract key phrases ("nuggets") from a reference answer.

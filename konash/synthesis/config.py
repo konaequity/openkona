@@ -60,7 +60,7 @@ class SynthesisConfigRegistry:
             solver_rollout_count=8,
             solver_max_steps=50,
             solver_top_k=20,
-            quality_filter=QualityFilterConfig(judge_model="gpt-4o-mini"),
+            quality_filter=QualityFilterConfig(judge_model="gpt-5-mini"),
         ),
         "BrowseCompPlus": SynthesisTaskConfig(
             task_name="BrowseCompPlus",
