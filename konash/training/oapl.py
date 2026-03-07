@@ -164,7 +164,124 @@ class OAPLTrainer:
         return mask
 
     # ------------------------------------------------------------------
-    # High-level training API
+    # PyTorch training (real gradient updates)
+    # ------------------------------------------------------------------
+
+    def train_epoch_torch(
+        self,
+        dataset: Any,
+        model_engine: Any,
+        learning_rate: float = 1e-5,
+        max_grad_norm: float = 1.0,
+    ) -> Dict[str, float]:
+        """Run one OAPL training epoch with real PyTorch gradients.
+
+        Computes per-token log-ratios between the current (LoRA) policy
+        and the frozen reference (base) policy, then applies the
+        squared-advantage OAPL loss with gradient accumulation per group.
+
+        Parameters
+        ----------
+        dataset :
+            An ``OfflineRolloutDataset`` providing ``prompts``,
+            ``group_rollouts``, and ``rewards``.
+        model_engine :
+            A ``LocalModelEngine`` (or compatible) that provides
+            ``tokenize_rollout``, ``compute_log_probs``, and
+            ``trainable_params``.
+        learning_rate : float
+            Learning rate for AdamW.
+        max_grad_norm : float
+            Maximum gradient norm for clipping.
+
+        Returns
+        -------
+        dict
+            Training statistics: ``mean_loss``, ``num_groups``,
+            ``num_rollouts``, ``learning_rate``.
+        """
+        import torch
+
+        optimizer = torch.optim.AdamW(
+            model_engine.trainable_params, lr=learning_rate, weight_decay=0.01,
+        )
+
+        total_loss = 0.0
+        num_groups = 0
+        num_rollouts = 0
+
+        model_engine.model.train()
+
+        for group_idx, prompt in enumerate(dataset.prompts):
+            rollouts = dataset.group_rollouts[group_idx]
+            group_rewards = dataset.rewards[group_idx]
+            v_star = self.estimate_optimal_value(group_rewards)
+            n_rollouts = len(rollouts)
+
+            optimizer.zero_grad()
+            group_loss_val = 0.0
+
+            for local_idx, rollout in enumerate(rollouts):
+                reward = group_rewards[local_idx]
+
+                # Tokenize
+                tokens = model_engine.tokenize_rollout(prompt, rollout)
+                input_ids = tokens["input_ids"]
+                labels = tokens["labels"]
+
+                # Current policy log-probs (with gradient)
+                log_probs, mask = model_engine.compute_log_probs(
+                    input_ids, labels, use_reference=False,
+                )
+
+                # Reference policy log-probs (no gradient, LoRA disabled)
+                with torch.no_grad():
+                    ref_log_probs, _ = model_engine.compute_log_probs(
+                        input_ids, labels, use_reference=True,
+                    )
+
+                # Mean log-ratio over valid tokens
+                valid_count = mask.sum()
+                if valid_count == 0:
+                    continue
+
+                log_ratio = (log_probs - ref_log_probs)
+                mean_log_ratio = log_ratio.sum() / valid_count
+
+                # OAPL squared-advantage loss
+                advantage = reward - v_star
+                kl_term = self.beta_kl * mean_log_ratio
+                loss_i = (kl_term - advantage) ** 2
+
+                # Scale by 1/n_rollouts for gradient accumulation
+                (loss_i / n_rollouts).backward()
+
+                group_loss_val += loss_i.item()
+                num_rollouts += 1
+
+            # Clip gradients and step
+            torch.nn.utils.clip_grad_norm_(
+                model_engine.trainable_params, max_norm=max_grad_norm,
+            )
+            optimizer.step()
+
+            if n_rollouts > 0:
+                group_loss_val /= n_rollouts
+            total_loss += group_loss_val
+            num_groups += 1
+
+        model_engine.model.eval()
+        mean_loss = total_loss / max(num_groups, 1)
+
+        return {
+            "mean_loss": float(mean_loss),
+            "num_groups": num_groups,
+            "num_rollouts": num_rollouts,
+            "learning_rate": learning_rate,
+        }
+
+    # ------------------------------------------------------------------
+    # High-level training API (numpy reference)
     # ------------------------------------------------------------------
 
     def compute_loss(

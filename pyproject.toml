@@ -13,6 +13,22 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4"]
+train = [
+    "torch>=2.1",
+    "transformers>=4.36",
+    "peft>=0.7",
+    "accelerate>=0.25",
+]
+quant = [
+    "bitsandbytes>=0.41",
+]
+all = [
+    "torch>=2.1",
+    "transformers>=4.36",
+    "peft>=0.7",
+    "accelerate>=0.25",
+    "bitsandbytes>=0.41",
+]
 
 [project.scripts]
 konash = "konash.cli:main"

@@ -111,13 +111,22 @@ class Agent:
 
         import konash
 
+        # Local model (loads on GPU with LoRA)
         agent = konash.Agent(
-            base_model="Qwen/Qwen3.5-7B",
+            base_model="Qwen/Qwen2.5-7B-Instruct",
             corpus="./my_docs",
             project="my-knowledge-agent",
         )
         agent.train()
         answer = agent.solve("What caused the 2008 financial crisis?")
+
+        # Or with a vLLM server (inference only, no training)
+        agent = konash.Agent(
+            base_model="Qwen/Qwen2.5-7B-Instruct",
+            corpus="./my_docs",
+            api_base="http://localhost:8000/v1",
+        )
+        answer = agent.solve("What is KONASH?")
 
     Parameters
     ----------
@@ -129,13 +138,24 @@ class Agent:
         Project name used for checkpoint and log organisation.
     api_base : str | None
         OpenAI-compatible API base URL for inference (e.g. a local vLLM
-        server).  Reads ``KONASH_API_BASE`` env var if not set.
+        server).  When set, the API client is used instead of loading the
+        model locally.  Reads ``KONASH_API_BASE`` env var if not set.
     api_key : str | None
         API key for the inference server.  Reads ``KONASH_API_KEY`` env var
         if not set.  Defaults to ``"no-key"`` for local servers.
     checkpoint_dir : str | None
         Where to save/load LoRA checkpoints.  Defaults to
         ``.konash/<project>/checkpoints``.
+    lora_r : int
+        LoRA rank (default 16).
+    lora_alpha : int
+        LoRA alpha (default 32).
+    load_in_4bit : bool
+        Use 4-bit QLoRA quantization (saves VRAM, requires ``bitsandbytes``).
+    device : str
+        ``"auto"`` (default), ``"cuda"``, ``"cuda:0"``, or ``"cpu"``.
+    dtype : str
+        ``"auto"`` (default), ``"fp16"``, ``"bf16"``, or ``"fp32"``.
     """
 
     def __init__(
@@ -149,6 +169,14 @@ class Agent:
         checkpoint_dir: Optional[str] = None,
         chunk_size: int = 512,
         temperature: float = 0.7,
+        # LoRA / model config
+        lora_r: int = 16,
+        lora_alpha: int = 32,
+        load_in_4bit: bool = False,
+        load_in_8bit: bool = False,
+        gradient_checkpointing: bool = False,
+        device: str = "auto",
+        dtype: str = "auto",
     ) -> None:
         self.base_model = base_model
         self.project = project
@@ -169,8 +197,18 @@ class Agent:
             ".konash", project, "checkpoints"
         )
 
+        # Model config (for local loading)
+        self._lora_r = lora_r
+        self._lora_alpha = lora_alpha
+        self._load_in_4bit = load_in_4bit
+        self._load_in_8bit = load_in_8bit
+        self._gradient_checkpointing = gradient_checkpointing
+        self._device = device
+        self._dtype = dtype
+
         # Internal state (built lazily)
         self._llm_client: Optional[_OpenAILLMClient] = None
+        self._model_engine: Optional[Any] = None  # LocalModelEngine
         self._base_agent: Optional[BaseAgent] = None
         self._trained = False
         self._iteration = 0
@@ -192,11 +230,13 @@ class Agent:
     ) -> Dict[str, Any]:
         """Run the full KONASH training loop.
 
-        1. Ingest the corpus and build the vector search index.
-        2. Synthesize QA pairs from the corpus.
-        3. Generate rollouts and filter by pass rate.
-        4. Train with OAPL.
-        5. Repeat for *iterations* rounds.
+        1. Load the model locally (with LoRA).
+        2. Ingest the corpus and build the vector search index.
+        3. Synthesize QA pairs from the corpus using the model.
+        4. Generate rollouts and filter by pass rate.
+        5. Train with OAPL (real gradient updates on LoRA params).
+        6. Repeat for *iterations* rounds.
+        7. Save the LoRA adapter checkpoint.
 
         Parameters
         ----------
@@ -220,7 +260,20 @@ class Agent:
         dict
             Training summary with per-iteration statistics.
         """
-        # Step 1: Ingest corpus
+        # Step 1: Load model locally (for real OAPL training)
+        engine = None
+        if self.api_base is None:
+            try:
+                engine = self._get_model_engine()
+                if verbose:
+                    print(f"Model loaded: {self.base_model}")
+            except (ImportError, OSError) as e:
+                if verbose:
+                    print(f"  Note: Could not load model locally ({e}).")
+                    print("  Using lightweight mode (no gradient updates).")
+                    print("  Install: pip install openkona[train]")
+
+        # Step 2: Ingest corpus
         if not self.corpus.indexed:
             if verbose:
                 print(f"Ingesting corpus from {self.corpus.path} ...")
@@ -228,7 +281,7 @@ class Agent:
             if verbose:
                 print(f"  Indexed {self.corpus.num_documents} chunks.")
 
-        # Set up synthesis components
+        # Set up synthesis components (LLM-backed via local model)
         generate_fn = self._get_generate_fn()
         synthesizer = QuestionAnswerSynthesizer(
             vector_search_tool=self.corpus.vector_search,
@@ -257,7 +310,7 @@ class Agent:
                 print(f"Iteration {iteration + 1}/{iterations}")
                 print(f"{'='*60}")
 
-            # Step 2: Synthesize QA pairs
+            # Step 3: Synthesize QA pairs
             if verbose:
                 print("  Synthesizing training examples ...")
             documents = [d["text"] for d in self.corpus.documents]
@@ -268,7 +321,7 @@ class Agent:
             if verbose:
                 print(f"  Generated {len(examples)} examples.")
 
-            # Step 3: Generate rollouts + filter
+            # Step 4: Generate rollouts + filter
             if verbose:
                 print("  Generating rollouts ...")
             final_examples = pipeline.run_stage_two(
@@ -283,7 +336,7 @@ class Agent:
                     print("  No training data — skipping training step.")
                 continue
 
-            # Step 4: Build dataset and train
+            # Step 5: Build dataset and train with OAPL
             if verbose:
                 print("  Training with OAPL ...")
             rollout_dicts = []
@@ -296,9 +349,18 @@ class Agent:
                     })
             if rollout_dicts:
                 dataset = OfflineRolloutDataset.from_rollouts(rollout_dicts)
-                epoch_stats = trainer.train_epoch(
-                    dataset, learning_rate=learning_rate
-                )
+
+                # Use real PyTorch training when model is loaded locally
+                if self._model_engine is not None:
+                    epoch_stats = trainer.train_epoch_torch(
+                        dataset, engine,
+                        learning_rate=learning_rate,
+                    )
+                else:
+                    epoch_stats = trainer.train_epoch(
+                        dataset, learning_rate=learning_rate,
+                    )
+
                 stats.append({
                     "iteration": iteration + 1,
                     "examples": len(final_examples),
@@ -312,9 +374,15 @@ class Agent:
 
             self._iteration = iteration + 1
 
-        # Save checkpoint
+        # Step 6: Save checkpoint
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         meta_path = os.path.join(self.checkpoint_dir, "training_meta.json")
+
+        # Save LoRA adapter if we did real training
+        if self._model_engine is not None:
+            adapter_path = os.path.join(self.checkpoint_dir, "adapter")
+            engine.save_adapter(adapter_path)
+
         with open(meta_path, "w") as f:
             json.dump({
                 "base_model": self.base_model,
@@ -325,7 +393,7 @@ class Agent:
 
         self._trained = True
         if verbose:
-            print(f"\nTraining complete. Metadata saved to {meta_path}")
+            print(f"\nTraining complete. Checkpoint saved to {self.checkpoint_dir}")
 
         return {"iterations": self._iteration, "stats": stats}
 
@@ -447,6 +515,8 @@ class Agent:
     ) -> "Agent":
         """Load a previously trained agent from its checkpoint directory.
 
+        Loads the LoRA adapter so the agent is ready for inference.
+
         Parameters
         ----------
         project_dir : str
@@ -482,14 +552,39 @@ class Agent:
     # Internals
     # ------------------------------------------------------------------
 
+    def _get_model_engine(self) -> Any:
+        """Load the model locally with LoRA. Returns a LocalModelEngine."""
+        if self._model_engine is not None:
+            return self._model_engine
+
+        from konash.inference.local import LocalModelEngine
+
+        # Check for existing adapter
+        adapter_path = os.path.join(self.checkpoint_dir, "adapter")
+        has_adapter = os.path.exists(adapter_path)
+
+        self._model_engine = LocalModelEngine(
+            self.base_model,
+            device=self._device,
+            dtype=self._dtype,
+            lora_r=self._lora_r,
+            lora_alpha=self._lora_alpha,
+            load_in_4bit=self._load_in_4bit,
+            load_in_8bit=self._load_in_8bit,
+            gradient_checkpointing=self._gradient_checkpointing,
+            temperature=self.temperature,
+            adapter_path=adapter_path if has_adapter else None,
+        )
+        return self._model_engine
+
     def _get_llm_client(self) -> _OpenAILLMClient:
         if self._llm_client is None:
             if self.api_base is None:
                 raise RuntimeError(
-                    "No LLM backend configured. Either:\n"
-                    "  1. Set KONASH_API_BASE env var to a vLLM server URL\n"
-                    "  2. Pass api_base='http://localhost:8000/v1' to Agent()\n"
-                    "  3. Start a vLLM server: vllm serve {self.base_model}"
+                    "No API backend configured. Either:\n"
+                    "  1. Remove api_base to use local model loading\n"
+                    "  2. Set KONASH_API_BASE env var to a vLLM server URL\n"
+                    "  3. Pass api_base='http://localhost:8000/v1' to Agent()"
                 )
             self._llm_client = _OpenAILLMClient(
                 api_base=self.api_base,
@@ -500,16 +595,29 @@ class Agent:
         return self._llm_client
 
     def _get_generate_fn(self):
-        """Return a callable that generates text from messages, or None if no LLM backend."""
-        if self.api_base is None:
-            return None
-        client = self._get_llm_client()
-        def generate_fn(messages, **kwargs):
-            return client.generate(messages, **kwargs)
-        return generate_fn
+        """Return a callable that generates text from messages.
+
+        Priority: model engine (local) > API client > None (stubs).
+        """
+        # Local model is loaded — use it
+        if self._model_engine is not None:
+            engine = self._model_engine
+            def generate_fn(messages, **kwargs):
+                return engine.generate(messages, **kwargs)
+            return generate_fn
+
+        # API client configured — use it
+        if self.api_base is not None:
+            client = self._get_llm_client()
+            def generate_fn(messages, **kwargs):
+                return client.generate(messages, **kwargs)
+            return generate_fn
+
+        # No backend — return None so synthesis uses stubs
+        return None
 
     def _make_agent(self, max_steps: int = 20) -> BaseAgent:
-        """Build an internal BaseAgent wired to the LLM backend."""
+        """Build an internal BaseAgent wired to the best available backend."""
         system_prompt = (
             "You are a knowledge agent. You have access to a search tool that "
             "retrieves relevant documents from a knowledge base. Use it to find "
@@ -517,8 +625,21 @@ class Agent:
             "based on what you find. When you have enough evidence, provide a "
             "clear, well-supported answer."
         )
+
+        # Prefer local model engine, fall back to API client
+        if self._model_engine is not None:
+            llm_client = self._model_engine
+        elif self.api_base is not None:
+            llm_client = self._get_llm_client()
+        else:
+            raise RuntimeError(
+                "No model available for inference. Either:\n"
+                "  1. Call agent.train() first (loads model locally)\n"
+                "  2. Set api_base to a vLLM server URL"
+            )
+
         return BaseAgent(
-            llm_client=self._get_llm_client(),
+            llm_client=llm_client,
             system_prompt=system_prompt,
             max_steps=max_steps,
         )
