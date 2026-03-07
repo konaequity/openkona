@@ -66,12 +66,14 @@ class QuestionAnswerSynthesizer:
         vector_search_tool: Any = None,
         generation_count: int = 8,
         max_steps: int = 50,
+        llm_fn: Any = None,
     ):
         self.few_shot_examples = few_shot_examples or []
         self.task_prompt = task_prompt or self._default_task_prompt()
         self.vector_search_tool = vector_search_tool
         self.generation_count = generation_count
         self.max_steps = max_steps
+        self.llm_fn = llm_fn
 
     # ------------------------------------------------------------------
     # Internal defaults
@@ -288,11 +290,14 @@ class QuestionAnswerSynthesizer:
     ) -> List[SyntheticExample]:
         """Generate examples from the assembled prompt.
 
-        In a full deployment this calls an LLM API. The base implementation
-        produces deterministic placeholder examples derived from the input
-        documents so that downstream pipeline stages can operate without
-        an LLM backend.
+        When ``llm_fn`` is configured, calls the LLM and parses the response
+        into QA pairs.  Otherwise produces deterministic placeholder examples
+        derived from the input documents.
         """
+        if self.llm_fn is not None:
+            return self._generate_with_llm(prompt, documents, count)
+
+        # Fallback: deterministic stub examples
         examples: List[SyntheticExample] = []
         for i in range(count):
             doc_idx = i % max(len(documents), 1)
@@ -308,4 +313,93 @@ class QuestionAnswerSynthesizer:
                 answer=answer,
                 citations=citations,
             ))
+        return examples
+
+    def _generate_with_llm(
+        self,
+        prompt: str,
+        documents: List[str],
+        count: int,
+    ) -> List[SyntheticExample]:
+        """Call the LLM to generate QA pairs and parse the response."""
+        import json as _json
+        import re as _re
+
+        messages = [
+            {"role": "system", "content": self.task_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        response = self.llm_fn(messages)
+
+        # Extract content from response
+        if isinstance(response, dict):
+            text = response.get("content", "")
+        elif isinstance(response, str):
+            text = response
+        else:
+            text = str(response)
+
+        # Try to parse structured JSON array first
+        examples = self._parse_json_examples(text)
+        if examples:
+            return examples[:count]
+
+        # Fall back to numbered-list parsing
+        examples = self._parse_numbered_examples(text, documents)
+        return examples[:count] if examples else self._generate_from_prompt(
+            prompt, documents, count
+        )
+
+    @staticmethod
+    def _parse_json_examples(text: str) -> List["SyntheticExample"]:
+        """Try to parse LLM output as a JSON array of QA dicts."""
+        import json as _json
+        import re as _re
+
+        # Find JSON array in the response
+        match = _re.search(r'\[.*\]', text, _re.DOTALL)
+        if not match:
+            return []
+        try:
+            items = _json.loads(match.group())
+            if not isinstance(items, list):
+                return []
+            return [
+                SyntheticExample(
+                    question=item.get("question", item.get("q", "")),
+                    answer=item.get("answer", item.get("a", "")),
+                    citations=item.get("citations", []),
+                )
+                for item in items
+                if isinstance(item, dict) and (item.get("question") or item.get("q"))
+            ]
+        except (_json.JSONDecodeError, KeyError):
+            return []
+
+    @staticmethod
+    def _parse_numbered_examples(
+        text: str, documents: List[str]
+    ) -> List["SyntheticExample"]:
+        """Parse numbered Q/A pairs from LLM output."""
+        import re as _re
+
+        examples: List["SyntheticExample"] = []
+        # Match patterns like "1. Q: ... A: ..." or "Q: ... \n A: ..."
+        blocks = _re.split(r'\n\s*\d+[\.\)]\s*', text)
+        for block in blocks:
+            block = block.strip()
+            if not block:
+                continue
+            q_match = _re.search(r'[Qq](?:uestion)?:\s*(.+?)(?:\n|$)', block)
+            a_match = _re.search(r'[Aa](?:nswer)?:\s*(.+?)(?:\n|$)', block)
+            if q_match and a_match:
+                cit_match = _re.search(r'[Cc]itations?:\s*(.+?)(?:\n|$)', block)
+                citations = []
+                if cit_match:
+                    citations = [c.strip() for c in cit_match.group(1).split(",")]
+                examples.append(SyntheticExample(
+                    question=q_match.group(1).strip(),
+                    answer=a_match.group(1).strip(),
+                    citations=citations,
+                ))
         return examples

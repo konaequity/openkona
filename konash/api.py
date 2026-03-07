@@ -229,13 +229,14 @@ class Agent:
                 print(f"  Indexed {self.corpus.num_documents} chunks.")
 
         # Set up synthesis components
+        generate_fn = self._get_generate_fn()
         synthesizer = QuestionAnswerSynthesizer(
-            llm_fn=self._get_generate_fn(),
             vector_search_tool=self.corpus.vector_search,
+            llm_fn=generate_fn,
         )
         rollout_gen = RolloutGenerator(
-            llm_fn=self._get_generate_fn(),
-            vector_search_tool=self.corpus.vector_search,
+            search_tool=self.corpus.vector_search,
+            llm_fn=generate_fn,
         )
         pipeline = SynthesisPipeline(
             synthesizer=synthesizer,
@@ -414,8 +415,8 @@ class Agent:
         engine = ParallelThinkingEngine(
             agent=agent,
             aggregator=GenerativeAggregator(
-                llm_fn=self._get_generate_fn(),
-                mode="generative",
+                agent=agent,
+                aggregation_mode="generative",
             ),
             num_rollouts=parallel_rollouts,
         )
@@ -499,7 +500,9 @@ class Agent:
         return self._llm_client
 
     def _get_generate_fn(self):
-        """Return a callable that generates text from messages."""
+        """Return a callable that generates text from messages, or None if no LLM backend."""
+        if self.api_base is None:
+            return None
         client = self._get_llm_client()
         def generate_fn(messages, **kwargs):
             return client.generate(messages, **kwargs)

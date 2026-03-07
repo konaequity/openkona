@@ -80,11 +80,13 @@ class RolloutGenerator:
         top_k: Optional[int] = None,
         search_tool: Any = None,
         solver_model: Optional[str] = None,
+        llm_fn: Any = None,
     ):
         self.max_steps = max_steps
         self.top_k = top_k
         self.search_tool = search_tool
         self.solver_model = solver_model
+        self.llm_fn = llm_fn
 
     # ------------------------------------------------------------------
     # Public API
@@ -234,18 +236,25 @@ class RolloutGenerator:
     def _reason(self, prompt: str, steps: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Perform a single reasoning step.
 
-        In a full deployment this calls an LLM. The base implementation
-        provides a deterministic heuristic: after gathering retrieval
-        results, it formulates an answer based on available evidence.
+        When ``llm_fn`` is configured, calls the LLM to decide whether to
+        search again or formulate an answer.  Otherwise uses a deterministic
+        heuristic.
         """
-        # Check if we have retrieval results to work with
+        # Gather retrieval results so far
         retrieval_results: List[str] = []
         for s in steps:
             if s.get("type") == "retrieval" and s.get("results"):
-                retrieval_results.extend(s["results"])
+                for r in s["results"]:
+                    if isinstance(r, dict):
+                        retrieval_results.append(r.get("text", str(r)))
+                    else:
+                        retrieval_results.append(str(r))
 
+        if self.llm_fn is not None:
+            return self._reason_with_llm(prompt, steps, retrieval_results)
+
+        # Heuristic fallback
         if retrieval_results:
-            # We have evidence -- formulate an answer
             combined = " ".join(retrieval_results[:3])
             return {
                 "thought": f"Based on retrieved evidence, I can answer the question about: {prompt[:100]}",
@@ -253,8 +262,6 @@ class RolloutGenerator:
                 "answer": combined[:500] if combined else "No answer found",
                 "needs_retrieval": False,
             }
-
-        # No evidence yet -- request retrieval
         return {
             "thought": f"I need more information to answer: {prompt[:100]}",
             "has_answer": False,
@@ -262,15 +269,88 @@ class RolloutGenerator:
             "sub_query": prompt,
         }
 
+    def _reason_with_llm(
+        self, prompt: str, steps: List[Dict[str, Any]], evidence: List[str]
+    ) -> Dict[str, Any]:
+        """Use the LLM to decide the next reasoning action."""
+        evidence_text = "\n".join(f"- {e[:300]}" for e in evidence[:10])
+        step_count = len(steps)
+
+        messages = [
+            {"role": "system", "content": (
+                "You are a knowledge agent reasoning about a question. "
+                "Based on the evidence gathered so far, decide whether to:\n"
+                "1. Search for more information (output a JSON with "
+                "\"needs_retrieval\": true and \"sub_query\": \"...\")\n"
+                "2. Provide a final answer (output a JSON with "
+                "\"has_answer\": true and \"answer\": \"...\")\n"
+                "Always include a \"thought\" field explaining your reasoning."
+            )},
+            {"role": "user", "content": (
+                f"Question: {prompt}\n\n"
+                f"Steps taken so far: {step_count}\n\n"
+                f"Evidence gathered:\n{evidence_text or '(none yet)'}\n\n"
+                "What should I do next? Respond with JSON."
+            )},
+        ]
+        response = self.llm_fn(messages)
+        content = response.get("content", "") if isinstance(response, dict) else str(response)
+
+        # Parse the LLM's JSON response
+        import json as _json
+        import re as _re
+        match = _re.search(r'\{.*\}', content, _re.DOTALL)
+        if match:
+            try:
+                parsed = _json.loads(match.group())
+                return {
+                    "thought": parsed.get("thought", content[:200]),
+                    "has_answer": parsed.get("has_answer", False),
+                    "answer": parsed.get("answer", ""),
+                    "needs_retrieval": parsed.get("needs_retrieval", False),
+                    "sub_query": parsed.get("sub_query", prompt),
+                }
+            except _json.JSONDecodeError:
+                pass
+
+        # If we can't parse, decide based on evidence availability
+        if evidence:
+            return {
+                "thought": content[:200],
+                "has_answer": True,
+                "answer": content[:500],
+                "needs_retrieval": False,
+            }
+        return {
+            "thought": content[:200],
+            "has_answer": False,
+            "needs_retrieval": True,
+            "sub_query": prompt,
+        }
+
     def _force_answer(self, prompt: str, steps: List[Dict[str, Any]]) -> str:
-        """Force an answer when max_steps is reached without a natural conclusion."""
-        # Gather any evidence collected so far
+        """Force an answer when max_steps is reached."""
         evidence_pieces: List[str] = []
         for s in steps:
             if s.get("results"):
-                evidence_pieces.extend(s["results"])
+                for r in s["results"]:
+                    if isinstance(r, dict):
+                        evidence_pieces.append(r.get("text", str(r)))
+                    else:
+                        evidence_pieces.append(str(r))
             if s.get("thought"):
                 evidence_pieces.append(s["thought"])
+
+        if self.llm_fn is not None and evidence_pieces:
+            evidence_text = "\n".join(f"- {e[:300]}" for e in evidence_pieces[:10])
+            messages = [
+                {"role": "system", "content": "Answer the question based on the evidence provided. Be concise."},
+                {"role": "user", "content": f"Question: {prompt}\n\nEvidence:\n{evidence_text}\n\nAnswer:"},
+            ]
+            response = self.llm_fn(messages)
+            content = response.get("content", "") if isinstance(response, dict) else str(response)
+            if content.strip():
+                return content.strip()
 
         if evidence_pieces:
             return " ".join(evidence_pieces[:3])[:500]
