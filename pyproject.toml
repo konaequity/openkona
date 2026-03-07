@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openkona"
+version = "0.0.0"
+description = "Spec-first verification suite for KARL-inspired OpenKona"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+minversion = "7.4"
+addopts = "-ra"
+testpaths = ["tests"]
+pythonpath = ["."]
