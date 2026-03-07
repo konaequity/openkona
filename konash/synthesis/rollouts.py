@@ -91,6 +91,9 @@ class RolloutGenerator:
         Progress callback ``(qa_idx, rollout_idx, step_idx, step_record)``.
     """
 
+    max_steps = None
+    top_k = None
+
     def __init__(
         self,
         max_steps: Optional[int] = None,
