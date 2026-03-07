@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json as _json
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 
 class PassRateFilter:
@@ -74,17 +75,31 @@ class QualityFilter:
     """Multi-dimensional quality filter that checks for ambiguity and
     reference accuracy using an LLM judge.
 
-    In a full deployment, ``judge_ambiguity`` and ``judge_reference_accuracy``
-    call an LLM (e.g. gpt-4o-mini) to evaluate each QA pair. The base
-    implementation uses heuristic checks.
+    When ``judge_fn`` is provided, ambiguity and reference-accuracy checks
+    call the LLM (e.g. gpt-4o-mini, matching the KARL paper Sections 7.2.1–
+    7.2.2).  Without an LLM, heuristic checks are used as a fallback.
+
+    Parameters
+    ----------
+    judge_fn : callable | None
+        LLM function ``(messages) -> {"role": ..., "content": ...}``.
+        When provided, both quality checks use the LLM instead of heuristics.
+    judge_model : str | None
+        Model name (informational / for logging).
+    checks_ambiguity : bool
+        Whether to run the ambiguity check.
+    checks_reference_accuracy : bool
+        Whether to run the reference-accuracy check.
     """
 
     def __init__(
         self,
+        judge_fn: Any = None,
         judge_model: Optional[str] = None,
         checks_ambiguity: bool = True,
         checks_reference_accuracy: bool = True,
     ):
+        self.judge_fn = judge_fn
         self.judge_model = judge_model
         self.checks_ambiguity = checks_ambiguity
         self.checks_reference_accuracy = checks_reference_accuracy
@@ -143,44 +158,68 @@ class QualityFilter:
     ) -> Dict[str, Any]:
         """Evaluate whether a question is ambiguous.
 
-        An ambiguous question has multiple valid interpretations that would
-        lead to different answers.
-
-        Parameters
-        ----------
-        question : str
-            The question text.
-        answer : str
-            The proposed answer.
+        When ``judge_fn`` is set, calls the LLM (e.g. gpt-4o-mini) as the
+        judge, matching the KARL paper (Table 9).  Falls back to heuristics
+        if no LLM is available or the call fails.
 
         Returns
         -------
         dict
             Keys: ``is_ambiguous`` (bool), ``confidence`` (float), ``reason`` (str).
         """
-        # Heuristic ambiguity signals
+        if self.judge_fn is not None:
+            result = self._llm_judge_ambiguity(question, answer)
+            if result is not None:
+                return result
+
+        return self._heuristic_judge_ambiguity(question, answer)
+
+    def _llm_judge_ambiguity(
+        self, question: str, answer: str
+    ) -> Optional[Dict[str, Any]]:
+        """LLM-backed ambiguity check (KARL paper Table 9)."""
+        prompt = (
+            "You are evaluating a synthetic question-answer pair for ambiguity.\n\n"
+            f"Question: {question}\n"
+            f"Answer: {answer}\n\n"
+            "An ambiguous question has multiple valid interpretations that "
+            "would lead to meaningfully different answers. Minor phrasing "
+            "variations do NOT count as ambiguity.\n\n"
+            'Respond with JSON: {"is_ambiguous": true/false, "reason": "..."}'
+        )
+        try:
+            resp = self.judge_fn([{"role": "user", "content": prompt}])
+            text = resp.get("content", "") if isinstance(resp, dict) else str(resp)
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if match:
+                parsed = _json.loads(match.group())
+                return {
+                    "is_ambiguous": parsed.get("is_ambiguous", False),
+                    "confidence": 0.9,
+                    "reason": parsed.get("reason", ""),
+                }
+        except Exception:
+            pass
+        return None
+
+    def _heuristic_judge_ambiguity(
+        self, question: str, answer: str
+    ) -> Dict[str, Any]:
+        """Heuristic fallback for ambiguity detection."""
         ambiguity_markers = [
-            r"\bor\b",
-            r"\beither\b",
-            r"\bcould be\b",
-            r"\bmight\b",
-            r"\bpossibly\b",
-            r"\bwhich one\b",
+            r"\bor\b", r"\beither\b", r"\bcould be\b",
+            r"\bmight\b", r"\bpossibly\b", r"\bwhich one\b",
         ]
         question_lower = question.lower()
-
         marker_count = sum(
             1 for pat in ambiguity_markers if re.search(pat, question_lower)
         )
-
-        # Questions that are too short are often ambiguous
         word_count = len(question.split())
         too_short = word_count < 4
-
-        # Questions with no clear interrogative focus
         has_interrogative = any(
             w in question_lower
-            for w in ["what", "who", "when", "where", "why", "how", "which", "is", "are", "does", "do", "did", "can"]
+            for w in ["what", "who", "when", "where", "why", "how", "which",
+                       "is", "are", "does", "do", "did", "can"]
         )
 
         is_ambiguous = (marker_count >= 2) or too_short or not has_interrogative
@@ -212,14 +251,9 @@ class QualityFilter:
         """Evaluate whether an answer is accurate with respect to the
         reference documents.
 
-        Parameters
-        ----------
-        question : str
-            The question text.
-        answer : str
-            The proposed answer.
-        reference_documents : list[str]
-            Source documents to check against.
+        When ``judge_fn`` is set, calls the LLM (e.g. gpt-4o-mini) as the
+        judge, matching the KARL paper (Table 10).  Falls back to token-overlap
+        heuristic if no LLM is available or the call fails.
 
         Returns
         -------
@@ -229,29 +263,71 @@ class QualityFilter:
         """
         if not reference_documents:
             return {
-                "is_accurate": False,
-                "confidence": 0.0,
-                "grounding_score": 0.0,
-                "reason": "no reference documents provided",
+                "is_accurate": False, "confidence": 0.0,
+                "grounding_score": 0.0, "reason": "no reference documents provided",
             }
 
-        # Tokenize the answer and check how many tokens appear in the corpus
+        if self.judge_fn is not None:
+            result = self._llm_judge_reference_accuracy(
+                question, answer, reference_documents
+            )
+            if result is not None:
+                return result
+
+        return self._heuristic_judge_reference_accuracy(
+            question, answer, reference_documents
+        )
+
+    def _llm_judge_reference_accuracy(
+        self, question: str, answer: str, reference_documents: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        """LLM-backed reference accuracy check (KARL paper Table 10)."""
+        docs_text = "\n\n".join(
+            f"[Doc {i+1}]: {d[:500]}"
+            for i, d in enumerate(reference_documents[:5])
+        )
+        prompt = (
+            "You are evaluating whether a synthetic answer is factually "
+            "accurate and grounded in the reference documents.\n\n"
+            f"Question: {question}\n"
+            f"Answer: {answer}\n\n"
+            f"Reference Documents:\n{docs_text}\n\n"
+            "Is the answer factually accurate and supported by the documents? "
+            "Minor omissions are acceptable; outright factual errors are not.\n\n"
+            'Respond with JSON: {"is_accurate": true/false, "reason": "..."}'
+        )
+        try:
+            resp = self.judge_fn([{"role": "user", "content": prompt}])
+            text = resp.get("content", "") if isinstance(resp, dict) else str(resp)
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if match:
+                parsed = _json.loads(match.group())
+                return {
+                    "is_accurate": parsed.get("is_accurate", True),
+                    "confidence": 0.9,
+                    "grounding_score": 1.0 if parsed.get("is_accurate") else 0.0,
+                    "reason": parsed.get("reason", ""),
+                }
+        except Exception:
+            pass
+        return None
+
+    def _heuristic_judge_reference_accuracy(
+        self, question: str, answer: str, reference_documents: List[str],
+    ) -> Dict[str, Any]:
+        """Token-overlap heuristic fallback for reference accuracy."""
         answer_tokens = set(self._normalize_tokens(answer))
         if not answer_tokens:
             return {
-                "is_accurate": False,
-                "confidence": 0.0,
-                "grounding_score": 0.0,
-                "reason": "empty answer",
+                "is_accurate": False, "confidence": 0.0,
+                "grounding_score": 0.0, "reason": "empty answer",
             }
 
-        # Combine all reference documents
         corpus_text = " ".join(reference_documents).lower()
         corpus_tokens = set(corpus_text.split())
 
-        # Compute grounding score: fraction of answer tokens found in corpus
         grounded = answer_tokens & corpus_tokens
-        grounding_score = len(grounded) / len(answer_tokens) if answer_tokens else 0.0
+        grounding_score = len(grounded) / len(answer_tokens)
 
         is_accurate = grounding_score >= 0.3
         return {

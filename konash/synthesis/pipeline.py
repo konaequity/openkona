@@ -33,9 +33,11 @@ class SynthesisPipeline:
         quality_filter: Optional[QualityFilter] = None,
         grounding_filter: Optional[GroundingFilter] = None,
         evaluation_questions: Optional[List[str]] = None,
+        judge_fn: Any = None,
     ):
         self.config = config
         self.evaluation_questions = evaluation_questions or []
+        self.judge_fn = judge_fn
 
         # Build sub-components from config if not provided
         self.synthesizer = synthesizer or self._build_synthesizer(config)
@@ -44,7 +46,7 @@ class SynthesisPipeline:
             evaluation_questions=self.evaluation_questions,
         )
         self.pass_rate_filter = pass_rate_filter or self._build_pass_rate_filter()
-        self.quality_filter = quality_filter or self._build_quality_filter(config)
+        self.quality_filter = quality_filter or self._build_quality_filter(config, judge_fn)
         self.grounding_filter = grounding_filter or GroundingFilter()
 
         # Pipeline state
@@ -136,11 +138,12 @@ class SynthesisPipeline:
 
         # Phase 1: Generate rollouts
         self.rollout_groups = []
-        for ex in self.synthetic_examples:
+        for qa_idx, ex in enumerate(self.synthetic_examples):
             group = self.rollout_generator.generate_group(
                 prompt=ex.question,
                 reference_answer=ex.answer,
                 num_rollouts=rollout_count,
+                qa_idx=qa_idx,
             )
             self.rollout_groups.append(group)
 
@@ -274,9 +277,14 @@ class SynthesisPipeline:
         return PassRateFilter(min_pass_rate=0.1, max_pass_rate=0.9)
 
     @staticmethod
-    def _build_quality_filter(config: Optional[SynthesisTaskConfig]) -> QualityFilter:
-        """Build a quality filter from config."""
+    def _build_quality_filter(
+        config: Optional[SynthesisTaskConfig],
+        judge_fn: Any = None,
+    ) -> QualityFilter:
+        """Build a quality filter from config, wiring in the LLM judge."""
         kwargs: Dict[str, Any] = {}
+        if judge_fn is not None:
+            kwargs["judge_fn"] = judge_fn
         if config is not None and config.quality_filter is not None:
             qf = config.quality_filter
             if hasattr(qf, "judge_model"):

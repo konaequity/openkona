@@ -18,18 +18,17 @@ import sys
 import os
 import time
 
-# Force unbuffered output so background runs stream properly
 os.environ["PYTHONUNBUFFERED"] = "1"
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from konash.synthesis.pipeline import SynthesisPipeline
 from konash.synthesis.qa import QuestionAnswerSynthesizer, SyntheticExample
-from konash.synthesis.rollouts import RolloutGenerator, RolloutGroup, Rollout
+from konash.synthesis.rollouts import RolloutGenerator, RolloutGroup
+from konash.synthesis.filters import PassRateFilter, QualityFilter
 from konash.synthesis.dedup import DeduplicationAgent
-from konash.synthesis.filters import PassRateFilter, QualityFilter, GroundingFilter
 from konash.synthesis.config import SynthesisTaskConfig, QualityFilterConfig
-from konash.retrieval.vector_search import VectorSearchTool, RetrievalBudgetPolicy
+from konash.retrieval.vector_search import VectorSearchTool
 
 
 # ── LLM Clients ──────────────────────────────────────────────────────
@@ -45,7 +44,11 @@ def make_zhipu_llm_fn(api_key, model=ZHIPU_MODEL):
 
     def llm_fn(messages, **kwargs):
         url = f"{ZHIPU_API_BASE}/chat/completions"
-        body = {"model": model, "messages": messages, "temperature": kwargs.get("temperature", 0.7)}
+        body = {
+            "model": model,
+            "messages": messages,
+            "temperature": kwargs.get("temperature", 0.7),
+        }
         data = json.dumps(body).encode()
         req = urllib.request.Request(url, data=data, headers={
             "Content-Type": "application/json",
@@ -53,94 +56,39 @@ def make_zhipu_llm_fn(api_key, model=ZHIPU_MODEL):
         })
         with urllib.request.urlopen(req, timeout=120) as resp:
             result = json.loads(resp.read())
-        return {"role": "assistant", "content": result["choices"][0]["message"].get("content", "")}
+        return {
+            "role": "assistant",
+            "content": result["choices"][0]["message"].get("content", ""),
+        }
 
     return llm_fn
 
 
 def make_openai_judge_fn(api_key, model=OPENAI_JUDGE_MODEL):
     """gpt-4o-mini via OpenAI — used for quality filter judge (matching paper)."""
-    import openai
-    client = openai.OpenAI(api_key=api_key)
+    import urllib.request
 
     def judge_fn(messages, **kwargs):
-        r = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=kwargs.get("temperature", 0.0),
-            max_tokens=kwargs.get("max_tokens", 256),
-        )
-        return {"role": "assistant", "content": r.choices[0].message.content or ""}
+        url = "https://api.openai.com/v1/chat/completions"
+        body = {
+            "model": model,
+            "messages": messages,
+            "temperature": kwargs.get("temperature", 0.0),
+            "max_tokens": kwargs.get("max_tokens", 256),
+        }
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(url, data=data, headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        })
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read())
+        return {
+            "role": "assistant",
+            "content": result["choices"][0]["message"].get("content", ""),
+        }
 
     return judge_fn
-
-
-# ── LLM-backed Quality Filter ───────────────────────────────────────
-
-class LLMQualityFilter(QualityFilter):
-    """Quality filter that uses gpt-4o-mini as the judge, matching the paper.
-
-    Paper Section 7.2.1: "we apply gpt-4o-mini as the judge"
-    Paper Section 7.2.2: "we use gpt-4o-mini as the judge"
-    """
-
-    def __init__(self, judge_fn, **kwargs):
-        super().__init__(**kwargs)
-        self._judge_fn = judge_fn
-
-    def judge_ambiguity(self, question, answer):
-        prompt = (
-            "You are evaluating a synthetic question-answer pair for ambiguity.\n\n"
-            f"Question: {question}\n"
-            f"Answer: {answer}\n\n"
-            "Is this question ambiguous? An ambiguous question has multiple valid "
-            "interpretations that would lead to different answers.\n\n"
-            "Respond with JSON: {\"is_ambiguous\": true/false, \"reason\": \"...\"}"
-        )
-        try:
-            resp = self._judge_fn([{"role": "user", "content": prompt}])
-            text = resp.get("content", "")
-            import re
-            match = re.search(r'\{.*\}', text, re.DOTALL)
-            if match:
-                parsed = json.loads(match.group())
-                return {
-                    "is_ambiguous": parsed.get("is_ambiguous", False),
-                    "confidence": 0.9,
-                    "reason": parsed.get("reason", ""),
-                }
-        except Exception:
-            pass
-        # Fallback to heuristic
-        return super().judge_ambiguity(question, answer)
-
-    def judge_reference_accuracy(self, question, answer, reference_documents):
-        docs_text = "\n\n".join(f"[Doc {i+1}]: {d[:500]}" for i, d in enumerate(reference_documents[:5]))
-        prompt = (
-            "You are evaluating whether a synthetic answer is factually accurate "
-            "based on the reference documents.\n\n"
-            f"Question: {question}\n"
-            f"Answer: {answer}\n\n"
-            f"Reference Documents:\n{docs_text}\n\n"
-            "Is the answer factually accurate and grounded in the documents?\n\n"
-            "Respond with JSON: {\"is_accurate\": true/false, \"reason\": \"...\"}"
-        )
-        try:
-            resp = self._judge_fn([{"role": "user", "content": prompt}])
-            text = resp.get("content", "")
-            import re
-            match = re.search(r'\{.*\}', text, re.DOTALL)
-            if match:
-                parsed = json.loads(match.group())
-                return {
-                    "is_accurate": parsed.get("is_accurate", True),
-                    "confidence": 0.9,
-                    "grounding_score": 1.0 if parsed.get("is_accurate") else 0.0,
-                    "reason": parsed.get("reason", ""),
-                }
-        except Exception:
-            pass
-        return super().judge_reference_accuracy(question, answer, reference_documents)
 
 
 # ── Corpus ───────────────────────────────────────────────────────────
@@ -175,6 +123,7 @@ SEED_EXAMPLES = [
 # ── Vector search helpers ────────────────────────────────────────────
 
 class StringSearchWrapper:
+    """Wraps VectorSearchTool to return strings for QA synthesis."""
     def __init__(self, tool):
         self._tool = tool
     def search(self, query, top_k=10, **kwargs):
@@ -183,6 +132,7 @@ class StringSearchWrapper:
 
 
 class DictSearchWrapper:
+    """Wraps VectorSearchTool to return dicts for rollout retrieval."""
     def __init__(self, tool):
         self._tool = tool
     def search(self, query, top_k=10, **kwargs):
@@ -190,7 +140,8 @@ class DictSearchWrapper:
 
 
 def _trigram_embed(texts, dim=256):
-    import numpy as np, hashlib
+    import numpy as np
+    import hashlib
     vectors = []
     for text in texts:
         vec = np.zeros(dim, dtype=np.float32)
@@ -199,7 +150,8 @@ def _trigram_embed(texts, dim=256):
             h = int(hashlib.md5(normalized[i:i+3].encode()).hexdigest(), 16)
             vec[h % dim] += 1.0
         norm = np.linalg.norm(vec)
-        if norm > 0: vec = vec / norm
+        if norm > 0:
+            vec = vec / norm
         vectors.append(vec)
     return np.array(vectors, dtype=np.float32)
 
@@ -211,8 +163,9 @@ def build_vector_search(documents):
     return tool
 
 
+# ── Output helpers ───────────────────────────────────────────────────
+
 def p(msg=""):
-    """Print with immediate flush."""
     print(msg, flush=True)
 
 
@@ -222,48 +175,86 @@ def section(title):
     p(f"{'=' * 70}")
 
 
+def subsection(title):
+    p(f"\n  {'─' * 60}")
+    p(f"  {title}")
+    p(f"  {'─' * 60}")
+
+
+# ── Progress callback ───────────────────────────────────────────────
+
+def make_step_callback(num_qa, num_rollouts):
+    """Create a progress callback that logs rollout steps in real time."""
+    def on_step(qa_idx, rollout_idx, step_idx, step_record):
+        stype = step_record.get("type", "?")
+        prefix = f"    [Q{qa_idx+1}/{num_qa} R{rollout_idx+1}/{num_rollouts} S{step_idx}]"
+        if stype == "retrieval":
+            n = step_record.get("num_results", 0)
+            p(f"{prefix} retrieval: {n} docs")
+        elif stype == "reasoning":
+            thought = step_record.get("thought", "")[:80]
+            sub = step_record.get("sub_retrieval")
+            extra = ""
+            if sub:
+                extra = f" +search({sub.get('num_results', 0)} docs)"
+            p(f"{prefix} reasoning: {thought}{extra}")
+        elif stype == "answer":
+            ans = step_record.get("answer", "")[:80]
+            p(f"{prefix} ANSWER: {ans}")
+    return on_step
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main():
     zhipu_key = os.environ.get("ZHIPU_API_KEY")
     openai_key = os.environ.get("OPENAI_API_KEY")
     if not zhipu_key:
-        p("ERROR: ZHIPU_API_KEY not set."); sys.exit(1)
+        p("ERROR: ZHIPU_API_KEY not set.")
+        sys.exit(1)
     if not openai_key:
-        p("ERROR: OPENAI_API_KEY not set."); sys.exit(1)
+        p("ERROR: OPENAI_API_KEY not set.")
+        sys.exit(1)
 
+    # ── Build LLM functions ──────────────────────────────────────────
     llm_fn = make_zhipu_llm_fn(zhipu_key)
     judge_fn = make_openai_judge_fn(openai_key)
 
-    p(f"Solver LLM:   {ZHIPU_MODEL} (GLM 4.5 Air via Zhipu)")
+    p(f"Solver LLM:    {ZHIPU_MODEL} (GLM 4.5 Air via Zhipu)")
     p(f"Quality judge: {OPENAI_JUDGE_MODEL} (via OpenAI)")
 
+    # Connectivity checks
     p("Testing Zhipu API... ", )
     try:
         llm_fn([{"role": "user", "content": "Say ok"}], temperature=0.0)
         p("  Zhipu OK")
     except Exception as e:
-        p(f"  FAILED: {e}"); sys.exit(1)
+        p(f"  FAILED: {e}")
+        sys.exit(1)
 
     p("Testing OpenAI API... ")
     try:
         judge_fn([{"role": "user", "content": "Say ok"}])
         p("  OpenAI OK")
     except Exception as e:
-        p(f"  FAILED: {e}"); sys.exit(1)
+        p(f"  FAILED: {e}")
+        sys.exit(1)
 
-    # ═══════════════════════════════════════════════════════════════════
-    # STAGE I (recap): Generate QA pairs with GLM 4.5 Air
-    # ═══════════════════════════════════════════════════════════════════
-    section("Stage I: QA Synthesis (GLM 4.5 Air)")
-
+    # ── Build vector search index ────────────────────────────────────
     raw_tool = build_vector_search(CORPUS_DOCUMENTS)
     doc_texts = [d["text"] for d in CORPUS_DOCUMENTS]
+
+    # ══════════════════════════════════════════════════════════════════
+    # STAGE I: QA Synthesis (recap from run_stage_one.py)
+    # ══════════════════════════════════════════════════════════════════
+    section("Stage I: QA Synthesis (GLM 4.5 Air)")
 
     synthesizer = QuestionAnswerSynthesizer(
         few_shot_examples=SEED_EXAMPLES,
         vector_search_tool=StringSearchWrapper(raw_tool),
-        generation_count=8, max_steps=50, llm_fn=llm_fn,
+        generation_count=8,
+        max_steps=50,
+        llm_fn=llm_fn,
     )
 
     t0 = time.time()
@@ -282,33 +273,67 @@ def main():
     for i, ex in enumerate(qa_examples, 1):
         p(f"  [{i}] Q: {ex.question[:85]}")
         p(f"     A: {ex.answer[:85]}")
-    p()
 
-    # ═══════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════
     # STAGE II: Off-Policy RL Data Pipeline
-    # ═══════════════════════════════════════════════════════════════════
+    # ══════════════════════════════════════════════════════════════════
     section("Stage II: Off-Policy RL Data Pipeline")
-    p(f"  Solver: GLM 4.5 Air, 4 rollouts/QA, max 5 steps, k=20")
-    p(f"  Pass-rate filter: [0.1, 0.9]")
-    p(f"  Quality judge: gpt-4o-mini (ambiguity + reference accuracy)")
 
-    # ── Phase 1: Solver Rollout Generation ───────────────────────────
-    section("Phase 1: Solver Rollout Generation (GLM 4.5 Air)")
+    # Paper parameters (Section 7.2.1):
+    #   8 rollouts per QA, 50 max steps, k=20, pass-rate [0.1, 0.9]
+    #   gpt-4o-mini as quality judge
+    #
+    # For this demo corpus (10 small docs), we use 8 rollouts but cap
+    # max_steps at 8 since evidence is found quickly.
+    NUM_ROLLOUTS = 8
+    MAX_STEPS = 8
+    TOP_K = 20
 
-    # Reduced from paper defaults (50 steps, 8 rollouts) for practical demo runtime.
-    # Full-scale runs would use max_steps=50, num_rollouts=8.
+    p(f"  Config (KARL paper §7.2.1, adapted for demo corpus):")
+    p(f"    Solver model:   {ZHIPU_MODEL}")
+    p(f"    Rollouts/QA:    {NUM_ROLLOUTS}")
+    p(f"    Max steps:      {MAX_STEPS}")
+    p(f"    Top-k:          {TOP_K}")
+    p(f"    Pass-rate:      [0.1, 0.9]")
+    p(f"    Quality judge:  {OPENAI_JUDGE_MODEL}")
+
+    # Build the pipeline with all components wired together
     rollout_gen = RolloutGenerator(
-        max_steps=5, top_k=20,
+        max_steps=MAX_STEPS,
+        top_k=TOP_K,
         search_tool=DictSearchWrapper(raw_tool),
         llm_fn=llm_fn,
+        on_step=make_step_callback(len(qa_examples), NUM_ROLLOUTS),
     )
 
-    NUM_ROLLOUTS = 4
-    rollout_groups = []
-    total_rollout_time = 0.0
+    pipeline = SynthesisPipeline(
+        config=SynthesisTaskConfig(
+            solver_rollout_count=NUM_ROLLOUTS,
+            solver_max_steps=MAX_STEPS,
+            solver_top_k=TOP_K,
+            quality_filter=QualityFilterConfig(
+                judge_model=OPENAI_JUDGE_MODEL,
+                checks_ambiguity=True,
+                checks_reference_accuracy=True,
+            ),
+        ),
+        rollout_generator=rollout_gen,
+        pass_rate_filter=PassRateFilter(min_pass_rate=0.1, max_pass_rate=0.9),
+        quality_filter=QualityFilter(
+            judge_fn=judge_fn,
+            judge_model=OPENAI_JUDGE_MODEL,
+        ),
+        evaluation_questions=EVAL_QUESTIONS,
+        judge_fn=judge_fn,
+    )
 
-    for i, ex in enumerate(qa_examples, 1):
-        p(f"\n  QA [{i}/{len(qa_examples)}]: {ex.question[:65]}...")
+    # ── Phase 1: Solver Rollout Generation ───────────────────────────
+    subsection(f"Phase 1: Solver Rollouts ({NUM_ROLLOUTS} per QA, max {MAX_STEPS} steps)")
+
+    t_rollout_start = time.time()
+    rollout_groups = []
+    for i, ex in enumerate(qa_examples):
+        p(f"\n  QA [{i+1}/{len(qa_examples)}]: {ex.question[:65]}...")
         p(f"  Reference: {ex.answer[:65]}...")
         t0 = time.time()
 
@@ -317,72 +342,73 @@ def main():
             reference_answer=ex.answer,
             num_rollouts=NUM_ROLLOUTS,
             seed=42 + i,
+            qa_idx=i,
         )
         elapsed = time.time() - t0
-        total_rollout_time += elapsed
         rollout_groups.append(group)
 
         passes = sum(1 for r in group.rollouts if r.passed)
         fails = sum(1 for r in group.rollouts if r.passed is False)
-        p(f"  Result: pass_rate={group.pass_rate:.0%} "
-          f"({passes}P/{fails}F) — {elapsed:.1f}s")
+        p(f"  --> pass_rate={group.pass_rate:.0%} "
+          f"({passes}P/{fails}F) in {elapsed:.1f}s")
 
-        for j, rollout in enumerate(group.rollouts, 1):
-            status = "PASS" if rollout.passed else ("FAIL" if rollout.passed is False else "N/A")
-            n_steps = len(rollout.steps)
-            ans = (rollout.final_answer or "")[:80]
-            p(f"    [{j}] {status} | {n_steps} steps | {ans}")
+    total_rollout_time = time.time() - t_rollout_start
+    total_rollouts = sum(g.size for g in rollout_groups)
+    p(f"\n  Phase 1 complete: {total_rollouts} rollouts in {total_rollout_time:.1f}s")
 
-    p(f"\n  Total: {sum(g.size for g in rollout_groups)} rollouts in {total_rollout_time:.1f}s")
+    # Store groups on the pipeline for downstream access
+    pipeline.synthetic_examples = qa_examples
+    pipeline.rollout_groups = rollout_groups
 
     # ── Phase 2: Pass-Rate Filtering ─────────────────────────────────
-    section("Phase 2: Pass-Rate Filtering [0.1, 0.9]")
-
-    pass_filter = PassRateFilter(min_pass_rate=0.1, max_pass_rate=0.9)
+    subsection("Phase 2: Pass-Rate Filtering [0.1, 0.9]")
 
     for i, group in enumerate(rollout_groups, 1):
         keep = 0.1 <= group.pass_rate <= 0.9
         reason = ""
-        if group.pass_rate < 0.1: reason = " (all fail — too hard)"
-        elif group.pass_rate > 0.9: reason = " (all pass — trivial)"
+        if group.pass_rate < 0.1:
+            reason = " (all fail — too hard/broken)"
+        elif group.pass_rate > 0.9:
+            reason = " (all pass — trivially easy)"
         p(f"  [{i}] rate={group.pass_rate:.2f} → {'KEEP' if keep else 'DROP'}{reason}")
 
-    filtered_groups = pass_filter.apply(rollout_groups)
+    filtered_groups = pipeline.estimate_pass_rate(rollout_groups)
     dropped = len(rollout_groups) - len(filtered_groups)
-    p(f"\n  Result: {len(filtered_groups)} kept, {dropped} dropped")
+    pipeline.filtered_groups = filtered_groups
+    p(f"\n  Phase 2 result: {len(filtered_groups)} kept, {dropped} dropped")
 
     # ── Phase 3: Quality Filtering (gpt-4o-mini) ────────────────────
-    section("Phase 3: Quality Filtering (gpt-4o-mini)")
+    subsection(f"Phase 3: Quality Filtering ({OPENAI_JUDGE_MODEL})")
 
     surviving_prompts = {g.prompt for g in filtered_groups}
     surviving_examples = [ex for ex in qa_examples if ex.question in surviving_prompts]
 
-    quality_filter = LLMQualityFilter(
-        judge_fn=judge_fn,
-        checks_ambiguity=True,
-        checks_reference_accuracy=True,
-    )
-
-    p(f"  Evaluating {len(surviving_examples)} QA pairs with gpt-4o-mini...")
+    p(f"  Evaluating {len(surviving_examples)} QA pairs with {OPENAI_JUDGE_MODEL}...")
     final_examples = []
     for ex in surviving_examples:
-        amb = quality_filter.judge_ambiguity(ex.question, ex.answer)
+        p(f"\n  Checking: {ex.question[:60]}...")
+
+        # Ambiguity check
+        amb = pipeline.quality_filter.judge_ambiguity(ex.question, ex.answer)
         if amb.get("is_ambiguous"):
-            p(f"  DROPPED (ambiguous): {ex.question[:60]}...")
-            p(f"    Reason: {amb.get('reason', '')}")
+            p(f"    DROPPED (ambiguous): {amb.get('reason', '')}")
             continue
+        p(f"    Ambiguity:  clear")
 
-        acc = quality_filter.judge_reference_accuracy(ex.question, ex.answer, doc_texts)
+        # Reference accuracy check
+        acc = pipeline.quality_filter.judge_reference_accuracy(
+            ex.question, ex.answer, doc_texts
+        )
         if not acc.get("is_accurate", True):
-            p(f"  DROPPED (inaccurate): {ex.question[:60]}...")
-            p(f"    Reason: {acc.get('reason', '')}")
+            p(f"    DROPPED (inaccurate): {acc.get('reason', '')}")
             continue
-
-        p(f"  PASSED: {ex.question[:60]}...")
+        p(f"    Accuracy:   grounded")
+        p(f"    --> PASSED")
         final_examples.append(ex)
 
     quality_dropped = len(surviving_examples) - len(final_examples)
-    p(f"\n  Result: {len(final_examples)} passed, {quality_dropped} dropped by quality filter")
+    pipeline.final_examples = final_examples
+    p(f"\n  Phase 3 result: {len(final_examples)} passed, {quality_dropped} dropped")
 
     # ── Final RL Training Dataset ────────────────────────────────────
     section("Stage II Output: RL Training Data")
@@ -396,7 +422,11 @@ def main():
             training_data.append({
                 "prompt": ex.question,
                 "reference_answer": ex.answer,
-                "rollout_steps": rollout.steps,
+                "rollout_steps": [
+                    {k: v for k, v in step.items()
+                     if k not in ("results",)}  # exclude raw docs for brevity
+                    for step in rollout.steps
+                ],
                 "final_answer": rollout.final_answer,
                 "reward": 1.0 if rollout.passed else 0.0,
                 "num_steps": len(rollout.steps),
@@ -414,22 +444,32 @@ def main():
         p(f"  Trajectory lengths:  avg={sum(step_counts)/len(step_counts):.1f}, "
           f"min={min(step_counts)}, max={max(step_counts)}")
 
-    p(f"\n  Final training examples:")
-    for i, ex in enumerate(final_examples, 1):
-        group = final_groups[i - 1]
-        p(f"    [{i}] Q: {ex.question}")
-        p(f"        A: {ex.answer}")
-        p(f"        Pass rate: {group.pass_rate:.0%}")
-        p()
+    if final_examples:
+        p(f"\n  Final training examples:")
+        for i, ex in enumerate(final_examples, 1):
+            group = final_groups[i - 1]
+            p(f"    [{i}] Q: {ex.question}")
+            p(f"        A: {ex.answer}")
+            p(f"        Pass rate: {group.pass_rate:.0%}")
+            for j, rollout in enumerate(group.rollouts, 1):
+                status = "PASS" if rollout.passed else "FAIL"
+                p(f"        Rollout {j}: {status} | {rollout.num_steps} steps | "
+                  f"{(rollout.final_answer or '')[:60]}")
+            p()
+
+    # ── Save training data to JSON ───────────────────────────────────
+    output_path = os.path.join(os.path.dirname(__file__), "stage2_training_data.json")
+    with open(output_path, "w") as f:
+        json.dump(training_data, f, indent=2, default=str)
+    p(f"  Training data saved to: {output_path}")
 
     # ── Pipeline Summary ─────────────────────────────────────────────
     section("Full Pipeline Summary")
-    p(f"  Stage I  (GLM 4.5 Air)  → {len(qa_examples)} QA pairs")
-    p(f"  Phase 1  (4 rollouts)   → {sum(g.size for g in rollout_groups)} rollouts")
-    p(f"  Phase 2  (pass-rate)    → {len(filtered_groups)}/{len(rollout_groups)} QA pairs kept")
-    p(f"  Phase 3  (gpt-4o-mini)  → {len(final_examples)}/{len(surviving_examples)} QA pairs kept")
-    p(f"  RL training rows:       {len(training_data)} (prompt, rollout, reward)")
-    p(f"  Total time: Stage I={stage1_time:.1f}s, Rollouts={total_rollout_time:.1f}s")
+    p(f"  Stage I  (GLM 4.5 Air)            → {len(qa_examples)} QA pairs ({stage1_time:.1f}s)")
+    p(f"  Phase 1  ({NUM_ROLLOUTS} rollouts/QA)        → {total_rollouts} rollouts ({total_rollout_time:.1f}s)")
+    p(f"  Phase 2  (pass-rate [0.1, 0.9])   → {len(filtered_groups)}/{len(rollout_groups)} QA pairs kept")
+    p(f"  Phase 3  ({OPENAI_JUDGE_MODEL} judge)     → {len(final_examples)}/{len(surviving_examples)} QA pairs kept")
+    p(f"  RL training rows:                 {len(training_data)} (prompt, rollout, reward)")
     p()
 
 
