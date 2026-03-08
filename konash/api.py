@@ -347,6 +347,7 @@ class Agent:
             search_tool=self.corpus.vector_search,
             llm_fn=_rollout_fn,
             on_step=_on_step,
+            max_steps=5,  # converges in 3-4 steps; avoids runaway loops
         )
         pipeline = SynthesisPipeline(
             synthesizer=synthesizer,
