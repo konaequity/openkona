@@ -83,6 +83,7 @@ class QuestionAnswerSynthesizer:
         vector_search_tool: Any = None,
         generation_count: int = 8,
         max_steps: int = 50,
+        top_k: int = 20,
         llm_fn: Any = None,
     ):
         self.few_shot_examples = few_shot_examples or []
@@ -90,6 +91,7 @@ class QuestionAnswerSynthesizer:
         self.vector_search_tool = vector_search_tool
         self.generation_count = generation_count
         self.max_steps = max_steps
+        self.top_k = top_k
         self.llm_fn = llm_fn
 
     # ------------------------------------------------------------------
@@ -204,7 +206,7 @@ class QuestionAnswerSynthesizer:
         list[str]
             Retrieved document texts.
         """
-        k = num_documents or 10
+        k = num_documents or self.top_k
 
         if self.vector_search_tool is None:
             return []

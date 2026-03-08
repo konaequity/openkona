@@ -254,6 +254,8 @@ class SynthesisPipeline:
                 kwargs["generation_count"] = config.qa_generation_count
             if config.qa_max_steps is not None:
                 kwargs["max_steps"] = config.qa_max_steps
+            if config.qa_top_k is not None:
+                kwargs["top_k"] = config.qa_top_k
         return QuestionAnswerSynthesizer(**kwargs)
 
     @staticmethod

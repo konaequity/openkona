@@ -17,6 +17,7 @@ class SynthesisTaskConfig:
     seed_examples = None
     seed_documents = None
     qa_max_steps = None
+    qa_top_k = None
     qa_generation_count = None
     solver_rollout_count = None
     solver_max_steps = None
@@ -30,6 +31,7 @@ class SynthesisTaskConfig:
         seed_examples=None,
         seed_documents=None,
         qa_max_steps=None,
+        qa_top_k=None,
         qa_generation_count=None,
         solver_rollout_count=None,
         solver_max_steps=None,
@@ -41,6 +43,7 @@ class SynthesisTaskConfig:
         self.seed_examples = seed_examples
         self.seed_documents = seed_documents
         self.qa_max_steps = qa_max_steps
+        self.qa_top_k = qa_top_k
         self.qa_generation_count = qa_generation_count
         self.solver_rollout_count = solver_rollout_count
         self.solver_max_steps = solver_max_steps
@@ -56,6 +59,7 @@ class SynthesisConfigRegistry:
             seed_examples=4,
             seed_documents=None,
             qa_max_steps=50,
+            qa_top_k=20,
             qa_generation_count=8,
             solver_rollout_count=8,
             solver_max_steps=50,
@@ -67,6 +71,7 @@ class SynthesisConfigRegistry:
             seed_examples=4,
             seed_documents=10,
             qa_max_steps=60,
+            qa_top_k=5,
             qa_generation_count=8,
             solver_rollout_count=8,
             solver_max_steps=200,
