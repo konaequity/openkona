@@ -64,6 +64,7 @@ class _OpenAILLMClient:
             "model": self.model,
             "messages": messages,
             "temperature": kwargs.get("temperature", self.temperature),
+            "max_tokens": kwargs.get("max_tokens", 2048),
         }
         if kwargs.get("tools"):
             body["tools"] = kwargs["tools"]
@@ -85,9 +86,14 @@ class _OpenAILLMClient:
 
         choice = result["choices"][0]
         message = choice["message"]
+        content = message.get("content") or ""
+        # GLM 4.5 Air returns reasoning in a separate field; fall back to it
+        # when the main content is empty (e.g. low max_tokens budget).
+        if not content and message.get("reasoning_content"):
+            content = message["reasoning_content"]
         response: Dict[str, Any] = {
             "role": "assistant",
-            "content": message.get("content", ""),
+            "content": content,
         }
         if message.get("tool_calls"):
             response["tool_calls"] = message["tool_calls"]
@@ -440,57 +446,102 @@ class Agent:
 
         agent = self._make_agent(max_steps=max_steps)
 
+        def _extract_tool_query(tool_call: Any) -> str:
+            if not isinstance(tool_call, dict):
+                return str(tool_call)
+
+            query_text = tool_call.get("query", "") or tool_call.get("input", "")
+            if query_text:
+                return str(query_text)
+
+            function_call = tool_call.get("function")
+            if isinstance(function_call, dict):
+                arguments = function_call.get("arguments", {})
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        return arguments
+                if isinstance(arguments, dict):
+                    nested_query = arguments.get("query", "") or arguments.get("input", "")
+                    if nested_query:
+                        return str(nested_query)
+
+            return str(tool_call)
+
         # Build environment with vector search as a tool
         def tool_executor(tool_call: Any) -> Dict[str, Any]:
-            query_text = ""
-            if isinstance(tool_call, dict):
-                query_text = tool_call.get("query", "") or tool_call.get("input", "") or str(tool_call)
-            else:
-                query_text = str(tool_call)
-
+            query_text = _extract_tool_query(tool_call)
             results = self.corpus.search(query_text, top_k=top_k)
             result_text = "\n\n".join(
                 f"[{i+1}] (score: {r.get('score', 0):.3f}) {r.get('text', '')[:500]}"
                 for i, r in enumerate(results)
             )
-            return {"role": "tool", "content": result_text}
+            observation: Dict[str, Any] = {"role": "tool", "content": result_text}
+            if isinstance(tool_call, dict) and tool_call.get("id"):
+                observation["tool_call_id"] = tool_call["id"]
+            return observation
 
-        env = Environment(
-            tool_executor=tool_executor,
-            plugins=[
-                CompressionPlugin(threshold_tokens=8000, target_tokens=4000),
-                StepBudgetPlugin(max_steps=max_steps),
-            ],
-            available_tools=[{
-                "type": "function",
-                "function": {
-                    "name": "search",
-                    "description": "Search the knowledge base for relevant documents.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "The search query.",
-                            }
+        def make_environment() -> Environment:
+            return Environment(
+                tool_executor=tool_executor,
+                plugins=[
+                    CompressionPlugin(threshold_tokens=8000, target_tokens=4000),
+                    StepBudgetPlugin(max_steps=max_steps),
+                ],
+                available_tools=[{
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "description": "Search the knowledge base for relevant documents.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "The search query.",
+                                }
+                            },
+                            "required": ["query"],
                         },
-                        "required": ["query"],
                     },
-                },
-            }],
-        )
+                }],
+            )
 
         if parallel_rollouts <= 1:
             # Single rollout
+            env = make_environment()
             env.reset(prompt=query)
             result = env.run_episode(agent, max_steps=max_steps)
             return result.get("final_answer") or ""
 
         # Parallel Thinking
+        class _EnvironmentBackedAgent:
+            def __init__(self, base_agent: BaseAgent) -> None:
+                self._base_agent = base_agent
+
+            def generate_rollout(self, prompt: str, **kwargs: Any) -> Dict[str, Any]:
+                env = make_environment()
+                env.reset(prompt=prompt)
+                return env.run_episode(
+                    self._base_agent,
+                    max_steps=kwargs.get("max_steps", max_steps),
+                )
+
+            def extract_final_answer(self, conversation_history: Any, **kwargs: Any) -> str | None:
+                if isinstance(conversation_history, dict):
+                    conversation_history = (
+                        conversation_history.get("history")
+                        or conversation_history.get("messages")
+                        or conversation_history
+                    )
+                return self._base_agent.extract_final_answer(conversation_history, **kwargs)
+
+        env_agent = _EnvironmentBackedAgent(agent)
         engine = ParallelThinkingEngine(
-            agent=agent,
+            agent=env_agent,
             aggregator=GenerativeAggregator(
-                agent=agent,
+                agent=env_agent,
                 aggregation_mode="generative",
             ),
             num_rollouts=parallel_rollouts,
@@ -639,11 +690,7 @@ class Agent:
         elif self.api_base is not None:
             llm_client = self._get_llm_client()
         else:
-            raise RuntimeError(
-                "No model available for inference. Either:\n"
-                "  1. Call agent.train() first (loads model locally)\n"
-                "  2. Set api_base to a vLLM server URL"
-            )
+            llm_client = self._get_model_engine()
 
         return BaseAgent(
             llm_client=llm_client,

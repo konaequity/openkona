@@ -206,7 +206,10 @@ class ParallelThinkingEngine:
         """Best-effort answer extraction from a single rollout dict."""
         # 1. Delegate to agent if possible.
         if self.agent is not None and hasattr(self.agent, "extract_final_answer"):
-            result = self.agent.extract_final_answer(rollout)
+            history = rollout
+            if isinstance(rollout, dict):
+                history = rollout.get("history") or rollout.get("messages") or rollout
+            result = self.agent.extract_final_answer(history)
             if result is not None:
                 return str(result)
 

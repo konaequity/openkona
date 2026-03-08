@@ -226,10 +226,16 @@ class QuestionAnswerSynthesizer:
         seen: set = set()
         unique: List[str] = []
         for doc in retrieved:
-            doc_hash = hashlib.md5(doc.encode("utf-8", errors="replace")).hexdigest()
+            if isinstance(doc, dict):
+                doc_text = str(doc.get("text", ""))
+            else:
+                doc_text = str(doc)
+            if not doc_text:
+                continue
+            doc_hash = hashlib.md5(doc_text.encode("utf-8", errors="replace")).hexdigest()
             if doc_hash not in seen:
                 seen.add(doc_hash)
-                unique.append(doc)
+                unique.append(doc_text)
         return unique[:k]
 
     def build_prompt(

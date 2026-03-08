@@ -88,7 +88,10 @@ class Environment:
         # --- before_step plugin hooks ---
         for plugin in self.plugins:
             if hasattr(plugin, "before_step"):
-                override = plugin.before_step(self, agent)
+                override = plugin.before_step(
+                    step_index=self._step_count,
+                    history=self.conversation_history,
+                )
                 # A plugin may signal early termination
                 if isinstance(override, dict) and override.get("terminate"):
                     self._done = True
@@ -132,6 +135,22 @@ class Environment:
                     "role": "tool",
                     "content": f"[No tool executor configured for {rewritten}]",
                 }
+            if (
+                isinstance(observation, dict)
+                and isinstance(rewritten, dict)
+                and rewritten.get("id")
+                and "tool_call_id" not in observation
+            ):
+                observation["tool_call_id"] = rewritten["id"]
+            if (
+                isinstance(observation, dict)
+                and isinstance(rewritten, dict)
+                and isinstance(rewritten.get("function"), dict)
+                and "name" not in observation
+            ):
+                function_name = rewritten["function"].get("name")
+                if function_name:
+                    observation["name"] = function_name
             tool_results.append(observation)
             self.conversation_history.append(observation)
             self._tokens_used += max(len(observation.get("content", "")) // 4, 1)
@@ -142,7 +161,11 @@ class Environment:
         # --- after_step plugin hooks ---
         for plugin in self.plugins:
             if hasattr(plugin, "after_step"):
-                plugin.after_step(self, response, tool_results)
+                plugin.after_step(
+                    step_index=self._step_count,
+                    history=self.conversation_history,
+                    step_result={"agent_response": response, "tool_results": tool_results},
+                )
 
         # Let plugins override termination
         for plugin in self.plugins:
