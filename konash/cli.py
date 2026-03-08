@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> None:
         help="Train a knowledge agent on a corpus.",
     )
     p_train.add_argument("--corpus", required=True, help="Path to document directory.")
-    p_train.add_argument("--model", default="Qwen/Qwen3.5-7B-Instruct", help="Base model ID.")
+    p_train.add_argument("--model", default="THUDM/glm-4-9b-chat", help="Base model ID (default: GLM 4.5 Air, per KARL paper).")
     p_train.add_argument("--project", default="default", help="Project name.")
     p_train.add_argument("--iterations", type=int, default=2, help="Training iterations.")
     p_train.add_argument("--rollouts", type=int, default=8, help="Rollouts per example.")
@@ -100,7 +100,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_solve.add_argument("query", help="Question to answer.")
     p_solve.add_argument("--corpus", required=True, help="Path to document directory.")
-    p_solve.add_argument("--model", default="Qwen/Qwen3.5-7B-Instruct", help="Model ID.")
+    p_solve.add_argument("--model", default="THUDM/glm-4-9b-chat", help="Model ID (default: GLM 4.5 Air, per KARL paper).")
     p_solve.add_argument("--project", default="default", help="Project name.")
     p_solve.add_argument("--parallel", type=int, default=1, help="Parallel rollouts (1 = single, 10-20 = parallel thinking).")
     p_solve.add_argument("--top-k", type=int, default=10, help="Documents to retrieve per search.")

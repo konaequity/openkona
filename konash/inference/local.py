@@ -29,7 +29,7 @@ class LocalModelEngine:
     Parameters
     ----------
     model_name : str
-        HuggingFace model ID (e.g. ``"Qwen/Qwen2.5-7B-Instruct"``).
+        HuggingFace model ID (e.g. ``"THUDM/glm-4-9b-chat"``).
     device : str
         ``"auto"`` (default), ``"cuda"``, ``"cuda:0"``, or ``"cpu"``.
     dtype : str
