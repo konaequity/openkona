@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openkona"
+name = "konash"
 version = "0.1.0"
 description = "Train knowledge agents that search, retrieve, compress, and reason — on a single GPU."
 requires-python = ">=3.11"
@@ -32,6 +32,9 @@ all = [
 
 [project.scripts]
 konash = "konash.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["konash*"]
 
 [tool.pytest.ini_options]
 minversion = "7.4"
