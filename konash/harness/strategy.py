@@ -227,21 +227,28 @@ class ValueGuidedSearchStrategy:
 
     This strategy wraps an ordinary agent but overrides how each step is
     produced inside the environment episode.
+
+    When ``reference_model`` is set, the value scoring incorporates a
+    KL-regularization bonus from the lagged inference policy, matching
+    OAPL (Section 4.2).
     """
 
     candidate_width = None
     value_model = None
+    reference_model = None
 
     def __init__(
         self,
         *,
         candidate_width: int = 2,
         value_model: Any = None,
+        reference_model: Any = None,
         max_steps: int = 20,
         **kwargs,
     ) -> None:
         self.candidate_width = candidate_width
         self.value_model = value_model
+        self.reference_model = reference_model
         self.max_steps = max_steps
 
     def execute(

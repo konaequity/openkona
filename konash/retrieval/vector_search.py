@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize(vectors: np.ndarray) -> np.ndarray:
@@ -14,6 +17,164 @@ def _normalize(vectors: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     norms = np.where(norms == 0, 1.0, norms)
     return vectors / norms
+
+
+# ---------------------------------------------------------------------------
+# Embedding model loader — provides real semantic embeddings
+# ---------------------------------------------------------------------------
+
+_EMBEDDING_MODEL_CACHE: Dict[str, Any] = {}
+
+
+def load_embedding_model(
+    model_name: str = "Qwen/Qwen3-Embedding-0.6B",
+    device: Optional[str] = None,
+    trust_remote_code: bool = True,
+) -> Callable[[List[str]], np.ndarray]:
+    """Load a HuggingFace sentence-transformers / transformer embedding model
+    and return a callable ``(texts: list[str]) -> np.ndarray``.
+
+    Supported model families (matching the KARL paper):
+    - ``sentence-transformers/*`` via sentence-transformers library
+    - ``Qwen/*-Embedding*`` via transformers + mean-pooling
+    - ``BAAI/bge-*``, ``thenlper/gte-*`` via sentence-transformers
+
+    Falls back to a lightweight trigram hash if no ML library is available.
+
+    Parameters
+    ----------
+    model_name : str
+        HuggingFace model ID.  The paper uses:
+        - ``"Qwen/Qwen3-Embedding-0.6B"`` for BrowseComp-Plus & dedup
+        - ``"Qwen/Qwen3-Embedding-8B"`` for TREC-Biogen dedup
+    device : str or None
+        ``"cuda"``, ``"cpu"``, ``"mps"``, or ``None`` for auto-detection.
+    trust_remote_code : bool
+        Whether to trust remote code for Qwen models.
+
+    Returns
+    -------
+    callable
+        ``(texts: list[str]) -> np.ndarray`` of shape ``(len(texts), dim)``.
+    """
+    cache_key = f"{model_name}:{device}"
+    if cache_key in _EMBEDDING_MODEL_CACHE:
+        return _EMBEDDING_MODEL_CACHE[cache_key]
+
+    embed_fn = _try_load_sentence_transformers(model_name, device)
+    if embed_fn is None:
+        embed_fn = _try_load_transformers(model_name, device, trust_remote_code)
+    if embed_fn is None:
+        logger.warning(
+            "Could not load embedding model %r (install sentence-transformers "
+            "or transformers+torch). Falling back to trigram pseudo-embeddings.",
+            model_name,
+        )
+        embed_fn = _trigram_embed_fn
+
+    _EMBEDDING_MODEL_CACHE[cache_key] = embed_fn
+    return embed_fn
+
+
+def _try_load_sentence_transformers(
+    model_name: str, device: Optional[str]
+) -> Optional[Callable[[List[str]], np.ndarray]]:
+    """Try loading via sentence-transformers (preferred path)."""
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError:
+        return None
+
+    try:
+        model = SentenceTransformer(model_name, device=device, trust_remote_code=True)
+        logger.info("Loaded embedding model via sentence-transformers: %s", model_name)
+
+        def embed_fn(texts: List[str]) -> np.ndarray:
+            return model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+
+        return embed_fn
+    except Exception as exc:
+        logger.debug("sentence-transformers failed for %s: %s", model_name, exc)
+        return None
+
+
+def _try_load_transformers(
+    model_name: str, device: Optional[str], trust_remote_code: bool
+) -> Optional[Callable[[List[str]], np.ndarray]]:
+    """Try loading via transformers + torch with mean-pooling."""
+    try:
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+    except ImportError:
+        return None
+
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name, trust_remote_code=trust_remote_code
+        )
+        model = AutoModel.from_pretrained(
+            model_name, trust_remote_code=trust_remote_code
+        )
+
+        if device is None:
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                device = "mps"
+            else:
+                device = "cpu"
+        model = model.to(device).eval()
+        logger.info("Loaded embedding model via transformers: %s → %s", model_name, device)
+
+        def embed_fn(texts: List[str]) -> np.ndarray:
+            encoded = tokenizer(
+                texts, padding=True, truncation=True, max_length=512,
+                return_tensors="pt",
+            ).to(device)
+            with torch.no_grad():
+                outputs = model(**encoded)
+            # Mean pooling over non-padding tokens
+            mask = encoded["attention_mask"].unsqueeze(-1).float()
+            embeddings = (outputs.last_hidden_state * mask).sum(dim=1) / mask.sum(dim=1)
+            # L2 normalize
+            embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+            return embeddings.cpu().numpy()
+
+        return embed_fn
+    except Exception as exc:
+        logger.debug("transformers loading failed for %s: %s", model_name, exc)
+        return None
+
+
+def _trigram_embed_fn(texts: List[str], dim: int = 384) -> np.ndarray:
+    """Fallback: character-trigram pseudo-embeddings (no ML deps)."""
+    vectors = []
+    for text in texts:
+        vec = np.zeros(dim, dtype=np.float32)
+        normalized = " ".join(text.lower().split())
+        for i in range(len(normalized) - 2):
+            trigram = normalized[i : i + 3]
+            h = int(hashlib.md5(trigram.encode()).hexdigest(), 16)
+            vec[h % dim] += 1.0
+        norm = np.linalg.norm(vec)
+        if norm > 0:
+            vec = vec / norm
+        vectors.append(vec)
+    return np.array(vectors, dtype=np.float32)
+
+
+# Paper model name aliases for convenience
+EMBEDDING_MODELS = {
+    "Qwen3-0.6B-Embedding": "Qwen/Qwen3-Embedding-0.6B",
+    "Qwen3-8B-Embedding": "Qwen/Qwen3-Embedding-8B",
+    "GTE-large": "thenlper/gte-large",
+    "BGE-large": "BAAI/bge-large-en-v1.5",
+}
+
+
+def resolve_embedding_model_name(name: str) -> str:
+    """Resolve short alias to full HuggingFace model ID."""
+    return EMBEDDING_MODELS.get(name, name)
 
 
 class VectorSearchTool:
@@ -35,19 +196,35 @@ class VectorSearchTool:
     def __init__(
         self,
         embed_fn: Optional[Callable[[List[str]], np.ndarray]] = None,
+        model_name: Optional[str] = None,
         cache_dir: Optional[str] = None,
+        device: Optional[str] = None,
     ) -> None:
         """
         Parameters
         ----------
         embed_fn:
             A callable that maps a list of text strings to a 2-D numpy array
-            of shape ``(n, dim)``.  If ``None``, the caller must supply
-            pre-computed embeddings to :meth:`index`.
+            of shape ``(n, dim)``.  If ``None`` and ``model_name`` is given,
+            loads the specified HuggingFace embedding model.  If both are
+            ``None``, the caller must supply pre-computed embeddings to
+            :meth:`index`.
+        model_name:
+            HuggingFace model ID or short alias (e.g. ``"Qwen3-0.6B-Embedding"``).
+            Resolved via :func:`resolve_embedding_model_name` and loaded
+            via :func:`load_embedding_model`.
         cache_dir:
             Directory where serialised indexes can be stored / loaded.
+        device:
+            Device for the embedding model (``"cuda"``, ``"cpu"``, ``"auto"``).
         """
-        self.embed_fn = embed_fn
+        if embed_fn is not None:
+            self.embed_fn = embed_fn
+        elif model_name is not None:
+            resolved = resolve_embedding_model_name(model_name)
+            self.embed_fn = load_embedding_model(resolved, device=device)
+        else:
+            self.embed_fn = None
         self.cache_dir = cache_dir
 
         # Internal state

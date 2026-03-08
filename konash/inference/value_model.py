@@ -1,12 +1,28 @@
+"""Value model for scoring (partial) rollouts in Value-Guided Search.
+
+Provides two implementations:
+
+1. **ValueModel** — Lightweight linear model (hand-crafted features + sigmoid).
+   Suitable for quick prototyping and when no GPU is available.
+
+2. **NeuralValueModel** — Transformer-based token-level value function matching
+   the KARL paper (Section 5.2).  Uses a small causal LM (e.g. Qwen3-4B-Thinking)
+   with a binary cross-entropy loss at the token level.  Predicts the probability
+   of eventual success at every token position.
+"""
+
 from __future__ import annotations
 
+import logging
 import math
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 try:
     import numpy as np
 except ImportError:  # pragma: no cover – numpy is optional for stub tests
     np = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
 
 
 def _sigmoid(x: float) -> float:
@@ -15,6 +31,11 @@ def _sigmoid(x: float) -> float:
         return 1.0 / (1.0 + math.exp(-x))
     exp_x = math.exp(x)
     return exp_x / (1.0 + exp_x)
+
+
+# ======================================================================
+# Lightweight linear value model (original)
+# ======================================================================
 
 
 class ValueModel:
@@ -36,13 +57,6 @@ class ValueModel:
         bias: float = 0.0,
         feature_dim: int = 64,
     ):
-        """
-        Args:
-            weights: Weight vector (numpy array or list of floats).
-                If *None*, initialised to zeros of length *feature_dim*.
-            bias: Scalar bias term.
-            feature_dim: Dimensionality when weights are auto-initialised.
-        """
         self.feature_dim = feature_dim
         self.bias = bias
         if weights is not None:
@@ -69,22 +83,7 @@ class ValueModel:
         epochs: int = 10,
         mask_policy: bool = True,
     ) -> Dict[str, Any]:
-        """Train the value model using binary cross-entropy loss.
-
-        Each rollout is converted to a fixed-size feature vector (via
-        :meth:`_featurise`) and the model is optimised with SGD.
-
-        Args:
-            rollouts: Sequence of rollout objects (dicts or token lists).
-            rewards: Binary reward labels (0 or 1) for each rollout.
-            lr: Learning rate for SGD.
-            epochs: Number of training passes.
-            mask_policy: If *True*, apply policy-token masking before
-                featurisation.
-
-        Returns:
-            A dict with training statistics (``final_loss``, ``epochs``).
-        """
+        """Train the value model using binary cross-entropy loss."""
         if np is None:
             raise RuntimeError("numpy is required for ValueModel.fit()")
 
@@ -96,10 +95,9 @@ class ValueModel:
                 masked = rollout
             features.append(self._featurise(masked))
 
-        X = np.array(features, dtype=float)  # (N, D)
-        y = np.array(rewards, dtype=float)  # (N,)
+        X = np.array(features, dtype=float)
+        y = np.array(rewards, dtype=float)
 
-        # Ensure weight vector dimension matches features.
         D = X.shape[1]
         if len(self.weights) != D:
             self.weights = np.zeros(D, dtype=float)
@@ -111,18 +109,16 @@ class ValueModel:
 
         loss_history: List[float] = []
         for epoch in range(epochs):
-            logits = X @ w + b  # (N,)
-            preds = 1.0 / (1.0 + np.exp(-np.clip(logits, -500, 500)))  # sigmoid
+            logits = X @ w + b
+            preds = 1.0 / (1.0 + np.exp(-np.clip(logits, -500, 500)))
 
-            # Binary cross-entropy loss.
             eps = 1e-12
             loss = -np.mean(
                 y * np.log(preds + eps) + (1 - y) * np.log(1 - preds + eps)
             )
             loss_history.append(float(loss))
 
-            # Gradient of BCE w.r.t. logits: (pred - y)
-            grad = preds - y  # (N,)
+            grad = preds - y
             dw = (X.T @ grad) / n
             db = np.mean(grad)
 
@@ -142,22 +138,14 @@ class ValueModel:
     # Scoring
     # ------------------------------------------------------------------
 
-    def score_partial_rollout(self, rollout: Any) -> float:
-        """Score a partial rollout (in-progress trajectory).
-
-        The rollout is masked, featurised, and passed through the linear
-        model + sigmoid to produce a probability in [0, 1].
-        """
+    def score_partial_rollout(self, rollout: Any, **kwargs) -> float:
+        """Score a partial rollout (in-progress trajectory)."""
         masked = self.mask_policy_tokens(rollout)
         feats = self._featurise(masked)
         return self._predict_single(feats)
 
     def score_rollout(self, rollout: Any) -> float:
-        """Score a complete rollout.
-
-        Same as :meth:`score_partial_rollout` but semantically indicates
-        the rollout is finished.
-        """
+        """Score a complete rollout."""
         masked = self.mask_policy_tokens(rollout)
         feats = self._featurise(masked)
         return self._predict_single(feats)
@@ -167,20 +155,7 @@ class ValueModel:
     # ------------------------------------------------------------------
 
     def mask_policy_tokens(self, rollout: Any) -> Any:
-        """Mask out non-policy tokens from a rollout.
-
-        Policy tokens are those generated by the model itself.  Environment
-        tokens (tool outputs, retrieval results, etc.) are replaced with a
-        sentinel so they do not influence the value estimate.
-
-        The implementation handles several rollout representations:
-
-        - **dict with 'steps'**: each step that has ``role == "tool"`` or
-          ``role == "environment"`` has its content replaced.
-        - **list of dicts**: same logic applied element-wise.
-        - **list of token-ids / strings**: returned as-is (assumed to
-          already be policy-only).
-        """
+        """Mask out non-policy tokens from a rollout."""
         if isinstance(rollout, dict):
             import copy as _copy
             masked = _copy.deepcopy(rollout)
@@ -203,7 +178,6 @@ class ValueModel:
                 masked_items.append(item)
             return masked_items
 
-        # Scalar / opaque object -- return as-is.
         return rollout
 
     # ------------------------------------------------------------------
@@ -211,18 +185,7 @@ class ValueModel:
     # ------------------------------------------------------------------
 
     def _featurise(self, rollout: Any) -> List[float]:
-        """Convert a (potentially masked) rollout into a fixed-length feature vector.
-
-        This is a lightweight feature extraction that works without a neural
-        encoder.  It computes simple statistics over the rollout:
-
-        - Number of steps / tokens
-        - Average content length of policy steps
-        - Fraction of steps that are policy (not masked)
-        - Various positional features
-
-        The vector is zero-padded or truncated to ``self.feature_dim``.
-        """
+        """Convert a (potentially masked) rollout into a fixed-length feature vector."""
         feats: List[float] = []
 
         if isinstance(rollout, dict):
@@ -235,7 +198,6 @@ class ValueModel:
         num_steps = len(steps)
         feats.append(float(num_steps))
 
-        # Count policy vs masked steps.
         policy_count = 0
         total_content_len = 0
         for step in steps:
@@ -250,14 +212,9 @@ class ValueModel:
 
         feats.append(float(policy_count))
         feats.append(float(total_content_len))
-        feats.append(
-            float(policy_count) / max(num_steps, 1)
-        )  # policy fraction
-        feats.append(
-            float(total_content_len) / max(policy_count, 1)
-        )  # avg content len
+        feats.append(float(policy_count) / max(num_steps, 1))
+        feats.append(float(total_content_len) / max(policy_count, 1))
 
-        # Pad or truncate.
         if len(feats) < self.feature_dim:
             feats.extend([0.0] * (self.feature_dim - len(feats)))
         else:
@@ -270,25 +227,460 @@ class ValueModel:
         if np is not None:
             w = np.array(self.weights, dtype=float)
             x = np.array(features, dtype=float)
-            # Handle dimension mismatch gracefully.
             min_dim = min(len(w), len(x))
             logit = float(np.dot(w[:min_dim], x[:min_dim])) + self.bias
         else:
             min_dim = min(len(self.weights), len(features))
             logit = (
-                sum(
-                    self.weights[i] * features[i] for i in range(min_dim)
-                )
+                sum(self.weights[i] * features[i] for i in range(min_dim))
                 + self.bias
             )
         return _sigmoid(logit)
 
 
+# ======================================================================
+# Neural value model (KARL paper Section 5.2)
+# ======================================================================
+
+
+class NeuralValueModel:
+    """Transformer-based token-level value model matching the KARL paper.
+
+    Uses a small causal language model (default: Qwen3-4B-Thinking) with a
+    linear value head that predicts the probability of eventual success at
+    every policy-token position.
+
+    The model is trained with binary cross-entropy at the token level:
+
+        L = -sum_t z_t [ r * log(sigma(V(x, y<=t)))
+                       + (1 - r) * log(1 - sigma(V(x, y<=t))) ]
+
+    where z_t = 1 for policy tokens and 0 for tool/environment tokens.
+
+    At inference, sigma(V(x, y<=t)) gives the predicted probability that the
+    rollout starting from partial trajectory y<=t will succeed.
+
+    Parameters
+    ----------
+    model_name : str
+        HuggingFace model ID for the value backbone.
+    device : str
+        ``"auto"``, ``"cuda"``, ``"cpu"``.
+    dtype : str
+        ``"auto"``, ``"bf16"``, ``"fp16"``, ``"fp32"``.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "Qwen/Qwen3-4B",
+        *,
+        device: str = "auto",
+        dtype: str = "auto",
+        max_length: int = 4096,
+    ):
+        self.model_name = model_name
+        self.max_length = max_length
+        self._model = None
+        self._tokenizer = None
+        self._value_head = None
+        self._device = device
+        self._dtype = dtype
+        self._initialized = False
+
+    def _ensure_initialized(self):
+        """Lazy-load the model on first use."""
+        if self._initialized:
+            return
+
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        self._torch = torch
+
+        # Device
+        if self._device == "auto":
+            if torch.cuda.is_available():
+                self._device = "cuda"
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                self._device = "mps"
+            else:
+                self._device = "cpu"
+
+        # Dtype
+        if self._dtype == "auto":
+            if self._device == "cuda" and torch.cuda.is_bf16_supported():
+                self._dtype_torch = torch.bfloat16
+            elif self._device == "cuda":
+                self._dtype_torch = torch.float16
+            else:
+                self._dtype_torch = torch.float32
+        elif self._dtype in ("bf16", "bfloat16"):
+            self._dtype_torch = torch.bfloat16
+        elif self._dtype in ("fp16", "float16"):
+            self._dtype_torch = torch.float16
+        else:
+            self._dtype_torch = torch.float32
+
+        logger.info("Loading value model: %s → %s", self.model_name, self._device)
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name, trust_remote_code=True
+        )
+        if self._tokenizer.pad_token is None:
+            self._tokenizer.pad_token = self._tokenizer.eos_token
+
+        self._model = AutoModelForCausalLM.from_pretrained(
+            self.model_name,
+            torch_dtype=self._dtype_torch,
+            trust_remote_code=True,
+        ).to(self._device).eval()
+
+        # Linear value head: hidden_size → 1
+        hidden_size = self._model.config.hidden_size
+        self._value_head = torch.nn.Linear(hidden_size, 1).to(
+            self._device, dtype=self._dtype_torch
+        )
+        torch.nn.init.zeros_(self._value_head.weight)
+        torch.nn.init.zeros_(self._value_head.bias)
+
+        self._initialized = True
+        logger.info("Value model ready: %s (hidden=%d)", self.model_name, hidden_size)
+
+    # ------------------------------------------------------------------
+    # Scoring
+    # ------------------------------------------------------------------
+
+    def score_partial_rollout(self, rollout: Any, **kwargs) -> float:
+        """Score a partial rollout, returning P(success) in [0, 1].
+
+        Uses the value head output at the last policy-token position.
+        """
+        self._ensure_initialized()
+        torch = self._torch
+
+        text = self._rollout_to_text(rollout)
+        inputs = self._tokenizer(
+            text, return_tensors="pt", truncation=True,
+            max_length=self.max_length,
+        ).to(self._device)
+
+        with torch.no_grad():
+            outputs = self._model(**inputs, output_hidden_states=True)
+            hidden = outputs.hidden_states[-1]  # (1, seq_len, hidden)
+            # Score at the last token position
+            last_hidden = hidden[:, -1, :]
+            logit = self._value_head(last_hidden).squeeze(-1)
+            score = torch.sigmoid(logit).item()
+
+        return float(score)
+
+    def score_rollout(self, rollout: Any) -> float:
+        """Score a complete rollout."""
+        return self.score_partial_rollout(rollout)
+
+    # ------------------------------------------------------------------
+    # Training
+    # ------------------------------------------------------------------
+
+    def fit(
+        self,
+        rollouts: Sequence[Any],
+        rewards: Sequence[float],
+        *,
+        lr: float = 1e-4,
+        epochs: int = 3,
+        batch_size: int = 4,
+        mask_policy: bool = True,
+    ) -> Dict[str, Any]:
+        """Train the value head with binary cross-entropy at the token level.
+
+        The backbone is frozen; only the value head is trained (matching the
+        paper's approach of using a small model as the value function).
+
+        Parameters
+        ----------
+        rollouts : sequence
+            Rollout objects (dicts, lists of messages, or strings).
+        rewards : sequence
+            Binary reward labels (0 or 1) for each rollout.
+        lr : float
+            Learning rate for the value head.
+        epochs : int
+            Number of training passes.
+        batch_size : int
+            Mini-batch size.
+        mask_policy : bool
+            If True, only compute loss on policy-token positions.
+
+        Returns
+        -------
+        dict
+            Training statistics (``final_loss``, ``epochs``).
+        """
+        self._ensure_initialized()
+        torch = self._torch
+
+        # Freeze backbone, train only value head
+        for param in self._model.parameters():
+            param.requires_grad = False
+        for param in self._value_head.parameters():
+            param.requires_grad = True
+
+        optimizer = torch.optim.AdamW(self._value_head.parameters(), lr=lr)
+
+        texts = [self._rollout_to_text(r) for r in rollouts]
+        # Build per-rollout policy-token masks (z_t): 1 for policy tokens,
+        # 0 for environment/tool tokens.  This implements the paper's z_t
+        # mask so loss is only computed on tokens the policy generated.
+        policy_masks = (
+            [self._build_policy_mask(r) for r in rollouts]
+            if mask_policy else [None] * len(rollouts)
+        )
+        labels = [float(r) for r in rewards]
+
+        loss_history: List[float] = []
+
+        for epoch in range(epochs):
+            epoch_loss = 0.0
+            n_batches = 0
+
+            indices = list(range(len(texts)))
+            for start in range(0, len(indices), batch_size):
+                batch_idx = indices[start : start + batch_size]
+                batch_texts = [texts[i] for i in batch_idx]
+                batch_labels = torch.tensor(
+                    [labels[i] for i in batch_idx],
+                    dtype=self._dtype_torch,
+                    device=self._device,
+                )
+
+                encoded = self._tokenizer(
+                    batch_texts, return_tensors="pt", padding=True,
+                    truncation=True, max_length=self.max_length,
+                ).to(self._device)
+
+                with torch.no_grad():
+                    outputs = self._model(**encoded, output_hidden_states=True)
+                    hidden = outputs.hidden_states[-1]  # (B, T, H)
+
+                # Value head forward (with gradients)
+                logits = self._value_head(hidden).squeeze(-1)  # (B, T)
+
+                # Build the z_t mask: attention_mask AND policy-token mask
+                attn_mask = encoded["attention_mask"].float()  # (B, T)
+                if mask_policy:
+                    z_t = self._tokenize_policy_masks(
+                        batch_texts,
+                        [policy_masks[i] for i in batch_idx],
+                        encoded,
+                    ).to(self._device)
+                    # z_t = 1 only where both attention and policy mask are 1
+                    combined_mask = attn_mask * z_t
+                else:
+                    combined_mask = attn_mask
+
+                # Token-level BCE loss (broadcast reward across time)
+                reward_expanded = batch_labels.unsqueeze(1).expand_as(logits)
+                bce = torch.nn.functional.binary_cross_entropy_with_logits(
+                    logits, reward_expanded, reduction="none",
+                )
+                # Apply z_t mask: only policy tokens contribute to loss
+                bce = bce * combined_mask
+                loss = bce.sum() / combined_mask.sum().clamp(min=1)
+
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self._value_head.parameters(), 1.0)
+                optimizer.step()
+
+                epoch_loss += loss.item()
+                n_batches += 1
+
+            avg_loss = epoch_loss / max(n_batches, 1)
+            loss_history.append(avg_loss)
+
+        return {
+            "final_loss": loss_history[-1] if loss_history else float("nan"),
+            "epochs": epochs,
+            "loss_history": loss_history,
+        }
+
+    # ------------------------------------------------------------------
+    # Masking (delegates to the same interface as ValueModel)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def mask_policy_tokens(rollout: Any) -> Any:
+        """Mask out non-policy tokens from a rollout."""
+        if isinstance(rollout, dict):
+            import copy as _copy
+            masked = _copy.deepcopy(rollout)
+            steps = masked.get("steps", [])
+            for step in steps:
+                if isinstance(step, dict):
+                    role = step.get("role", "")
+                    if role in ("tool", "environment", "system"):
+                        step["content"] = "[MASKED]"
+                        step["masked"] = True
+            return masked
+        if isinstance(rollout, (list, tuple)):
+            masked_items = []
+            for item in rollout:
+                if isinstance(item, dict):
+                    role = item.get("role", "")
+                    if role in ("tool", "environment", "system"):
+                        item = dict(item, content="[MASKED]", masked=True)
+                masked_items.append(item)
+            return masked_items
+        return rollout
+
+    # ------------------------------------------------------------------
+    # Serialization
+    # ------------------------------------------------------------------
+
+    def save(self, path: str) -> None:
+        """Save the value head weights to disk."""
+        self._ensure_initialized()
+        import os
+        os.makedirs(path, exist_ok=True)
+        self._torch.save(
+            self._value_head.state_dict(),
+            os.path.join(path, "value_head.pt"),
+        )
+        logger.info("Value head saved to %s", path)
+
+    def load(self, path: str) -> None:
+        """Load value head weights from disk."""
+        self._ensure_initialized()
+        import os
+        state = self._torch.load(
+            os.path.join(path, "value_head.pt"),
+            map_location=self._device,
+        )
+        self._value_head.load_state_dict(state)
+        logger.info("Value head loaded from %s", path)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _build_policy_mask(self, rollout: Any) -> List[bool]:
+        """Build a per-segment policy mask for a rollout.
+
+        Returns a list of booleans, one per text segment in the rollout,
+        indicating whether that segment was generated by the policy (True)
+        or is environment/tool output (False).  This is used to construct
+        the token-level z_t mask for training.
+        """
+        if isinstance(rollout, str):
+            return [True]
+
+        segments: List[bool] = []
+        items = []
+        if isinstance(rollout, dict):
+            items = rollout.get("steps", [])
+        elif isinstance(rollout, (list, tuple)):
+            items = list(rollout)
+        else:
+            return [True]
+
+        for item in items:
+            if isinstance(item, dict):
+                role = item.get("role", "")
+                if role in ("tool", "environment", "system"):
+                    segments.append(False)
+                else:
+                    segments.append(True)
+            elif isinstance(item, str):
+                segments.append(True)
+        return segments if segments else [True]
+
+    def _tokenize_policy_masks(
+        self,
+        texts: List[str],
+        segment_masks: List[Optional[List[bool]]],
+        encoded: Any,
+    ) -> "torch.Tensor":
+        """Convert per-segment policy masks to a token-level z_t tensor.
+
+        For each text in the batch, maps the segment-level booleans from
+        ``_build_policy_mask`` onto token positions.  Environment/tool
+        tokens (marked ``[MASKED]``) get z_t=0; policy tokens get z_t=1.
+
+        Returns a float tensor of shape ``(B, T)`` matching the encoded
+        input shape.
+        """
+        torch = self._torch
+        B = len(texts)
+        T = encoded["input_ids"].shape[1]
+        z_t = torch.ones(B, T, dtype=torch.float32)
+
+        masked_ids = set()
+        # Tokenize the "[MASKED]" marker to identify its token IDs
+        marker_enc = self._tokenizer(
+            "[MASKED]", add_special_tokens=False, return_tensors="pt",
+        )
+        masked_ids = set(marker_enc["input_ids"].squeeze().tolist())
+        # Also add common sub-tokens the tokenizer may produce
+        if isinstance(masked_ids, set) and len(masked_ids) > 0:
+            for bid in range(B):
+                input_ids = encoded["input_ids"][bid]
+                # Walk through tokens and mark [MASKED] spans as z_t=0
+                i = 0
+                while i < T:
+                    token_id = input_ids[i].item()
+                    if token_id in masked_ids:
+                        z_t[bid, i] = 0.0
+                    i += 1
+        return z_t
+
+    def _rollout_to_text(self, rollout: Any) -> str:
+        """Convert a rollout (various formats) to a single text string."""
+        if isinstance(rollout, str):
+            return rollout
+
+        if isinstance(rollout, dict):
+            steps = rollout.get("steps", [])
+            parts = []
+            for step in steps:
+                if isinstance(step, dict):
+                    role = step.get("role", "")
+                    content = step.get("content", "")
+                    if role in ("tool", "environment", "system"):
+                        parts.append("[MASKED]")
+                    elif content:
+                        parts.append(str(content))
+                elif isinstance(step, str):
+                    parts.append(step)
+            return "\n".join(parts) if parts else ""
+
+        if isinstance(rollout, (list, tuple)):
+            parts = []
+            for item in rollout:
+                if isinstance(item, dict):
+                    role = item.get("role", "")
+                    content = item.get("content", "")
+                    if role in ("tool", "environment", "system"):
+                        parts.append("[MASKED]")
+                    elif content:
+                        parts.append(str(content))
+                elif isinstance(item, str):
+                    parts.append(item)
+            return "\n".join(parts) if parts else ""
+
+        return str(rollout)
+
+
+# ======================================================================
+# High-level trainer
+# ======================================================================
+
+
 class ValueModelTrainer:
     """High-level trainer for the binary-reward value model.
 
-    Wraps :class:`ValueModel` with additional training utilities such as
-    data preparation, train/validation splitting, and logging.
+    Wraps :class:`ValueModel` or :class:`NeuralValueModel` with additional
+    training utilities such as data preparation, train/validation splitting,
+    and logging.
 
     Attributes:
         binary_reward_only: When *True* (the default, matching the paper),
@@ -300,7 +692,7 @@ class ValueModelTrainer:
 
     def __init__(
         self,
-        value_model: Optional[ValueModel] = None,
+        value_model: Optional[Any] = None,
         *,
         binary_reward_only: bool = True,
         lr: float = 0.01,
@@ -324,25 +716,10 @@ class ValueModelTrainer:
         epochs: Optional[int] = None,
         validation_split: float = 0.0,
     ) -> Dict[str, Any]:
-        """Train the value model on (rollout, reward) pairs.
-
-        If ``binary_reward_only`` is set, rewards are binarised: values
-        >= 0.5 become 1.0, everything else becomes 0.0.
-
-        Args:
-            rollouts: Sequence of rollout objects.
-            rewards: Reward labels.
-            lr: Override learning rate.
-            epochs: Override number of epochs.
-            validation_split: Fraction of data to hold out for validation.
-
-        Returns:
-            A dict with training statistics.
-        """
+        """Train the value model on (rollout, reward) pairs."""
         lr = lr or self.lr
         epochs = epochs or self.epochs
 
-        # Binarise rewards if required.
         processed_rewards: List[float] = []
         for r in rewards:
             if self.binary_reward_only:
@@ -350,7 +727,6 @@ class ValueModelTrainer:
             else:
                 processed_rewards.append(float(r))
 
-        # Optional validation split.
         n = len(rollouts)
         val_n = int(n * validation_split)
         if val_n > 0 and val_n < n:
@@ -369,10 +745,9 @@ class ValueModelTrainer:
             train_rewards,
             lr=lr,
             epochs=epochs,
-            mask_policy=True,
+            **({"mask_policy": True} if isinstance(self.value_model, ValueModel) else {}),
         )
 
-        # Compute validation loss if applicable.
         if val_rollouts:
             val_scores = [
                 self.value_model.score_rollout(r) for r in val_rollouts
@@ -393,13 +768,10 @@ class ValueModelTrainer:
     # ------------------------------------------------------------------
 
     def mask_policy_tokens(self, rollout: Any) -> Any:
-        """Delegate to the underlying :class:`ValueModel`."""
         return self.value_model.mask_policy_tokens(rollout)
 
-    def score_partial_rollout(self, rollout: Any) -> float:
-        """Delegate to the underlying :class:`ValueModel`."""
-        return self.value_model.score_partial_rollout(rollout)
+    def score_partial_rollout(self, rollout: Any, **kwargs) -> float:
+        return self.value_model.score_partial_rollout(rollout, **kwargs)
 
     def score_rollout(self, rollout: Any) -> float:
-        """Delegate to the underlying :class:`ValueModel`."""
         return self.value_model.score_rollout(rollout)

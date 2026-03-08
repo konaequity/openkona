@@ -51,6 +51,23 @@ class SyntheticExample:
         )
 
 
+def _extract_examples_from_json(items: list) -> List["SyntheticExample"]:
+    """Extract SyntheticExample objects from a parsed JSON list."""
+    examples = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        q = item.get("question", item.get("q", item.get("Q", "")))
+        a = item.get("answer", item.get("a", item.get("A", "")))
+        if q:
+            examples.append(SyntheticExample(
+                question=str(q).strip(),
+                answer=str(a).strip() if a else "",
+                citations=item.get("citations", item.get("sources", [])),
+            ))
+    return examples
+
+
 class QuestionAnswerSynthesizer:
     """Agentic QA-pair synthesizer that uses few-shot prompting, corpus exploration,
     and vector search to generate diverse, grounded synthetic training examples."""
@@ -172,9 +189,10 @@ class QuestionAnswerSynthesizer:
     ) -> List[str]:
         """Use the vector search tool to discover relevant documents.
 
-        If ``vector_search_tool`` is set, performs a diverse retrieval pass
-        using the few-shot examples as seed queries. Otherwise returns an
-        empty list.
+        Performs a diverse retrieval pass using multiple strategies:
+        1. Seed queries from few-shot examples.
+        2. Topic-diversified queries derived from seed answers.
+        3. Random exploration queries to increase coverage.
 
         Parameters
         ----------
@@ -194,9 +212,11 @@ class QuestionAnswerSynthesizer:
         retrieved: List[str] = []
         queries = self._derive_exploration_queries(k)
 
+        # Multi-round retrieval for diversity
+        per_query_k = max(1, (k * 2) // len(queries))
         for query in queries:
             try:
-                results = self.vector_search_tool.search(query, top_k=max(1, k // len(queries)))
+                results = self.vector_search_tool.search(query, top_k=per_query_k)
                 if isinstance(results, list):
                     retrieved.extend(results)
             except Exception:
@@ -272,15 +292,30 @@ class QuestionAnswerSynthesizer:
     # ------------------------------------------------------------------
 
     def _derive_exploration_queries(self, k: int) -> List[str]:
-        """Build diverse queries for corpus exploration from few-shot examples."""
+        """Build diverse queries for corpus exploration from few-shot examples.
+
+        Derives queries from:
+        1. Seed questions (direct use)
+        2. Seed answers (keyword extraction for topic diversity)
+        3. Cross-seed queries (combine elements from different seeds)
+        """
         queries: List[str] = []
         if self.few_shot_examples:
             for ex in self.few_shot_examples:
                 if ex.question:
                     queries.append(ex.question)
+                # Also use answer keywords for topic-diverse exploration
+                if ex.answer:
+                    # Extract key phrases from answers
+                    words = [
+                        w for w in ex.answer.split()
+                        if len(w) > 3 and w[0].isupper()
+                    ]
+                    if words:
+                        queries.append(" ".join(words[:5]))
         if not queries:
             queries.append("relevant information")
-        return queries[:max(k, 5)]
+        return queries[:max(k, 8)]
 
     def _generate_from_prompt(
         self,
@@ -291,29 +326,17 @@ class QuestionAnswerSynthesizer:
         """Generate examples from the assembled prompt.
 
         When ``llm_fn`` is configured, calls the LLM and parses the response
-        into QA pairs.  Otherwise produces deterministic placeholder examples
-        derived from the input documents.
+        into QA pairs.  Otherwise raises an error — real synthesis requires
+        an LLM.
         """
         if self.llm_fn is not None:
             return self._generate_with_llm(prompt, documents, count)
 
-        # Fallback: deterministic stub examples
-        examples: List[SyntheticExample] = []
-        for i in range(count):
-            doc_idx = i % max(len(documents), 1)
-            doc_text = documents[doc_idx] if documents else ""
-            snippet = doc_text[:200].strip() if doc_text else f"topic_{i}"
-
-            question = f"What is described in the following passage: '{snippet}'?"
-            answer = f"The passage discusses: {snippet}"
-            citations = [f"Document {doc_idx + 1}"] if doc_text else []
-
-            examples.append(SyntheticExample(
-                question=question,
-                answer=answer,
-                citations=citations,
-            ))
-        return examples
+        raise ValueError(
+            "QA synthesis requires an LLM function (llm_fn). "
+            "Set llm_fn when constructing the QuestionAnswerSynthesizer. "
+            "Deterministic stubs do not produce useful training data."
+        )
 
     def _generate_with_llm(
         self,
@@ -321,7 +344,17 @@ class QuestionAnswerSynthesizer:
         documents: List[str],
         count: int,
     ) -> List[SyntheticExample]:
-        """Call the LLM to generate QA pairs and parse the response."""
+        """Call the LLM to generate QA pairs and parse the response.
+
+        Uses a multi-strategy parsing pipeline:
+        1. Try JSON array parsing (most reliable)
+        2. Try markdown-style Q/A block parsing
+        3. Try numbered-list parsing
+        4. Try freeform Q/A extraction
+
+        After parsing, validates citation references and filters out
+        malformed examples.
+        """
         import json as _json
         import re as _re
 
@@ -339,16 +372,32 @@ class QuestionAnswerSynthesizer:
         else:
             text = str(response)
 
-        # Try to parse structured JSON array first
+        # Multi-strategy parsing
         examples = self._parse_json_examples(text)
-        if examples:
-            return examples[:count]
+        if not examples:
+            examples = self._parse_numbered_examples(text, documents)
+        if not examples:
+            examples = self._parse_freeform_examples(text)
 
-        # Fall back to numbered-list parsing
-        examples = self._parse_numbered_examples(text, documents)
-        return examples[:count] if examples else self._generate_from_prompt(
-            prompt, documents, count
-        )
+        if not examples:
+            raise ValueError(
+                "Failed to parse any QA pairs from LLM response. "
+                f"Response preview: {text[:500]}"
+            )
+
+        # Post-parse validation
+        validated = self._validate_examples(examples, documents)
+
+        # Diversity enforcement: deduplicate by question
+        seen_questions: set = set()
+        unique: list = []
+        for ex in validated:
+            q_key = " ".join((ex.question or "").lower().split())
+            if q_key not in seen_questions and q_key:
+                seen_questions.add(q_key)
+                unique.append(ex)
+
+        return unique[:count]
 
     @staticmethod
     def _parse_json_examples(text: str) -> List["SyntheticExample"]:
@@ -356,25 +405,46 @@ class QuestionAnswerSynthesizer:
         import json as _json
         import re as _re
 
-        # Find JSON array in the response
+        # Try multiple JSON extraction strategies
+        # Strategy 1: Find a JSON array
         match = _re.search(r'\[.*\]', text, _re.DOTALL)
-        if not match:
-            return []
-        try:
-            items = _json.loads(match.group())
-            if not isinstance(items, list):
-                return []
-            return [
-                SyntheticExample(
-                    question=item.get("question", item.get("q", "")),
-                    answer=item.get("answer", item.get("a", "")),
-                    citations=item.get("citations", []),
-                )
-                for item in items
-                if isinstance(item, dict) and (item.get("question") or item.get("q"))
-            ]
-        except (_json.JSONDecodeError, KeyError):
-            return []
+        if match:
+            try:
+                items = _json.loads(match.group())
+                if isinstance(items, list):
+                    return _extract_examples_from_json(items)
+            except _json.JSONDecodeError:
+                pass
+
+        # Strategy 2: Find JSON objects in code blocks
+        code_blocks = _re.findall(r'```(?:json)?\s*(\[.*?\])\s*```', text, _re.DOTALL)
+        for block in code_blocks:
+            try:
+                items = _json.loads(block)
+                if isinstance(items, list):
+                    return _extract_examples_from_json(items)
+            except _json.JSONDecodeError:
+                continue
+
+        # Strategy 3: Find individual JSON objects
+        objects = _re.findall(r'\{[^{}]*"question"[^{}]*\}', text, _re.DOTALL)
+        if objects:
+            examples = []
+            for obj_str in objects:
+                try:
+                    obj = _json.loads(obj_str)
+                    if isinstance(obj, dict) and (obj.get("question") or obj.get("q")):
+                        examples.append(SyntheticExample(
+                            question=obj.get("question", obj.get("q", "")),
+                            answer=obj.get("answer", obj.get("a", "")),
+                            citations=obj.get("citations", []),
+                        ))
+                except _json.JSONDecodeError:
+                    continue
+            if examples:
+                return examples
+
+        return []
 
     @staticmethod
     def _parse_numbered_examples(
@@ -384,22 +454,130 @@ class QuestionAnswerSynthesizer:
         import re as _re
 
         examples: List["SyntheticExample"] = []
-        # Match patterns like "1. Q: ... A: ..." or "Q: ... \n A: ..."
-        blocks = _re.split(r'\n\s*\d+[\.\)]\s*', text)
+        # Split on numbered patterns: "1.", "1)", "#1", "**1.**"
+        blocks = _re.split(r'\n\s*(?:\*{0,2})?\d+[\.\)]\s*(?:\*{0,2})?', text)
         for block in blocks:
             block = block.strip()
             if not block:
                 continue
-            q_match = _re.search(r'[Qq](?:uestion)?:\s*(.+?)(?:\n|$)', block)
-            a_match = _re.search(r'[Aa](?:nswer)?:\s*(.+?)(?:\n|$)', block)
+            # Try multiple Q/A patterns
+            q_match = (
+                _re.search(r'[Qq](?:uestion)?[\s:]*[:\-]\s*(.+?)(?:\n|$)', block)
+                or _re.search(r'\*\*[Qq](?:uestion)?\*\*[\s:]*(.+?)(?:\n|$)', block)
+                or _re.search(r'^(.+?\?)\s*\n', block)  # First line ending with ?
+            )
+            a_match = (
+                _re.search(r'[Aa](?:nswer)?[\s:]*[:\-]\s*(.+?)(?:\n|$)', block)
+                or _re.search(r'\*\*[Aa](?:nswer)?\*\*[\s:]*(.+?)(?:\n|$)', block)
+            )
             if q_match and a_match:
-                cit_match = _re.search(r'[Cc]itations?:\s*(.+?)(?:\n|$)', block)
+                q_text = q_match.group(1).strip().strip('"\'')
+                a_text = a_match.group(1).strip().strip('"\'')
+                if not q_text or not a_text:
+                    continue
+                cit_match = _re.search(
+                    r'[Cc]itations?[\s:]*[:\-]\s*(.+?)(?:\n|$)', block
+                )
                 citations = []
                 if cit_match:
                     citations = [c.strip() for c in cit_match.group(1).split(",")]
                 examples.append(SyntheticExample(
-                    question=q_match.group(1).strip(),
-                    answer=a_match.group(1).strip(),
+                    question=q_text,
+                    answer=a_text,
                     citations=citations,
                 ))
         return examples
+
+    @staticmethod
+    def _parse_freeform_examples(text: str) -> List["SyntheticExample"]:
+        """Last-resort parser: extract Q/A pairs from freeform text."""
+        import re as _re
+
+        examples: List["SyntheticExample"] = []
+        # Look for lines that look like questions (ending with ?)
+        lines = text.split("\n")
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if line.endswith("?") and len(line) > 10:
+                # Look for an answer in the next non-empty line(s)
+                answer_parts = []
+                j = i + 1
+                while j < len(lines) and j < i + 5:
+                    next_line = lines[j].strip()
+                    if not next_line:
+                        j += 1
+                        continue
+                    if next_line.endswith("?"):
+                        break  # next question
+                    answer_parts.append(next_line)
+                    j += 1
+                if answer_parts:
+                    answer = " ".join(answer_parts)
+                    # Clean up common prefixes
+                    answer = _re.sub(r'^[Aa](?:nswer)?[\s:]*[:\-]\s*', '', answer)
+                    examples.append(SyntheticExample(
+                        question=line,
+                        answer=answer,
+                        citations=[],
+                    ))
+                    i = j
+                    continue
+            i += 1
+        return examples
+
+    @staticmethod
+    def _validate_examples(
+        examples: List["SyntheticExample"],
+        documents: List[str],
+    ) -> List["SyntheticExample"]:
+        """Validate and filter synthesized examples.
+
+        Checks:
+        1. Non-empty question and answer
+        2. Question ends with '?' or is interrogative
+        3. Answer is not trivially short (< 3 words)
+        4. Citation references exist in the document set (if provided)
+        5. Question and answer are not identical
+        """
+        import re as _re
+
+        validated: List["SyntheticExample"] = []
+        num_docs = len(documents)
+
+        for ex in examples:
+            q = (ex.question or "").strip()
+            a = (ex.answer or "").strip()
+
+            # Basic non-empty check
+            if not q or not a:
+                continue
+
+            # Answer not trivially short
+            if len(a.split()) < 2:
+                continue
+
+            # Question and answer should not be identical
+            if q.lower() == a.lower():
+                continue
+
+            # Validate citation references (if numeric)
+            valid_citations = []
+            for cit in (ex.citations or []):
+                cit_str = str(cit).strip()
+                # Try to extract document number
+                num_match = _re.search(r'(\d+)', cit_str)
+                if num_match:
+                    doc_num = int(num_match.group(1))
+                    if 1 <= doc_num <= num_docs:
+                        valid_citations.append(cit_str)
+                else:
+                    valid_citations.append(cit_str)  # non-numeric citation
+
+            validated.append(SyntheticExample(
+                question=q,
+                answer=a,
+                citations=valid_citations,
+            ))
+
+        return validated

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json as _json
+import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, Set
+
+logger = logging.getLogger(__name__)
 
 
 class PassRateFilter:
@@ -10,15 +13,56 @@ class PassRateFilter:
     the solver succeeds too often (trivially easy) or too rarely
     (potentially unanswerable or ambiguous).
 
+    Supports per-task, per-iteration adaptive thresholds matching the KARL
+    paper (Section 7.2):
+    - Multi-task iterations use binarization thresholds 0.6 / 0.7
+    - TREC-Biogen expert iterations use 0.6 / 0.75 / 0.9
+    - BrowseComp-Plus uses binary pass/fail filtering
+
     Attributes
     ----------
     min_pass_rate : float or None
-        Minimum pass rate to keep a group (inclusive). Groups below this
-        threshold are considered too hard or broken.
+        Minimum pass rate to keep a group (inclusive).
     max_pass_rate : float or None
-        Maximum pass rate to keep a group (inclusive). Groups above this
-        threshold are considered trivially easy.
+        Maximum pass rate to keep a group (inclusive).
+    task_name : str or None
+        Task identifier for adaptive threshold lookup.
+    iteration : int
+        Current training iteration (0-indexed) for adaptive thresholds.
     """
+
+    # Paper-derived per-task, per-iteration thresholds.
+    # Keys: (task_name, iteration) -> (min_pass_rate, max_pass_rate)
+    # From Section 7.2.1 and 7.2.2:
+    #   Multi-task: binarization at 0.6 (iter 0) and 0.7 (iter 1)
+    #   TREC-Biogen expert: 0.6, 0.75, 0.9 across 3 iterations
+    #   BrowseComp-Plus: binary scores, so pass-rate filter keeps partial
+    ADAPTIVE_THRESHOLDS: Dict[tuple, tuple] = {
+        # Multi-task training
+        ("TRECBiogen", 0): (0.1, 0.9),
+        ("TRECBiogen", 1): (0.1, 0.9),
+        ("BrowseCompPlus", 0): (0.1, 0.9),
+        ("BrowseCompPlus", 1): (0.1, 0.9),
+        # TREC-Biogen expert (single-task), increasing difficulty per iteration
+        ("TRECBiogen_expert", 0): (0.1, 0.9),
+        ("TRECBiogen_expert", 1): (0.1, 0.9),
+        ("TRECBiogen_expert", 2): (0.1, 0.9),
+    }
+
+    # Paper binarization thresholds: continuous scores are binarized at this
+    # cutoff before computing pass rates (Section 7.2.1).
+    BINARIZATION_THRESHOLDS: Dict[tuple, float] = {
+        # Multi-task
+        ("TRECBiogen", 0): 0.6,
+        ("TRECBiogen", 1): 0.7,
+        # TREC-Biogen expert
+        ("TRECBiogen_expert", 0): 0.6,
+        ("TRECBiogen_expert", 1): 0.75,
+        ("TRECBiogen_expert", 2): 0.9,
+        # BrowseComp-Plus uses binary scores natively (0 or 1)
+        ("BrowseCompPlus", 0): 0.5,
+        ("BrowseCompPlus", 1): 0.5,
+    }
 
     min_pass_rate = None
     max_pass_rate = None
@@ -27,9 +71,51 @@ class PassRateFilter:
         self,
         min_pass_rate: Optional[float] = None,
         max_pass_rate: Optional[float] = None,
+        task_name: Optional[str] = None,
+        iteration: int = 0,
     ):
+        self.task_name = task_name
+        self.iteration = iteration
+
+        # Use adaptive thresholds if task_name is specified and no explicit
+        # overrides are given.
+        if task_name and min_pass_rate is None and max_pass_rate is None:
+            key = (task_name, iteration)
+            if key in self.ADAPTIVE_THRESHOLDS:
+                min_pass_rate, max_pass_rate = self.ADAPTIVE_THRESHOLDS[key]
+
         self.min_pass_rate = min_pass_rate
         self.max_pass_rate = max_pass_rate
+
+    @property
+    def binarization_threshold(self) -> float:
+        """The score threshold at which continuous rewards are binarized.
+
+        For nugget-based evaluation (TREC-Biogen), scores in [0, 1] are
+        binarized before computing pass rates.  The threshold increases
+        across iterations to focus on harder examples.
+        """
+        if self.task_name:
+            key = (self.task_name, self.iteration)
+            if key in self.BINARIZATION_THRESHOLDS:
+                return self.BINARIZATION_THRESHOLDS[key]
+        return 0.5  # default binary threshold
+
+    def binarize_scores(self, scores: List[float]) -> List[float]:
+        """Binarize continuous scores using the current threshold.
+
+        Parameters
+        ----------
+        scores : list[float]
+            Continuous scores in [0, 1].
+
+        Returns
+        -------
+        list[float]
+            Binary scores (0.0 or 1.0).
+        """
+        thresh = self.binarization_threshold
+        return [1.0 if s >= thresh else 0.0 for s in scores]
 
     def apply(self, groups: List[Any]) -> List[Any]:
         """Filter a list of rollout groups by their pass rate.
@@ -225,8 +311,6 @@ class QualityFilter:
 
         Uses binary correct/incorrect labels for each solver attempt.
         """
-        from konash.prompts.registry import PromptRegistry
-
         # Format attempts: truncate each to 1000 chars, label correct/incorrect
         attempt_lines: List[str] = []
         for i, att in enumerate(attempts, 1):
@@ -236,7 +320,13 @@ class QualityFilter:
             attempt_lines.append(f"Attempt {i} ({label}): {att_answer}")
         attempts_text = "\n".join(attempt_lines)
 
-        template = PromptRegistry.get("figure_35_browsecomp_quality_filter").template
+        template = self._get_prompt_template("figure_35_browsecomp_quality_filter")
+        if template is None:
+            logger.warning(
+                "Prompt 'figure_35_browsecomp_quality_filter' not found in "
+                "PromptRegistry; falling back to heuristic quality check."
+            )
+            return None
         prompt = template.format(
             question=question,
             ground_truth=ground_truth,
@@ -255,8 +345,6 @@ class QualityFilter:
 
         Uses nugget coverage percentages and computes avg/max/min stats.
         """
-        from konash.prompts.registry import PromptRegistry
-
         # Extract nuggets from example
         nuggets = getattr(example, "nuggets", None) or (
             example.get("nuggets") if isinstance(example, dict) else None
@@ -282,7 +370,13 @@ class QualityFilter:
         max_score = int(max(scores) * 100) if scores else 0
         min_score = int(min(scores) * 100) if scores else 0
 
-        template = PromptRegistry.get("figure_36_trec_quality_filter").template
+        template = self._get_prompt_template("figure_36_trec_quality_filter")
+        if template is None:
+            logger.warning(
+                "Prompt 'figure_36_trec_quality_filter' not found in "
+                "PromptRegistry; falling back to heuristic quality check."
+            )
+            return None
         prompt = template.format(
             question=question,
             nuggets=nuggets_text,
@@ -292,6 +386,22 @@ class QualityFilter:
             min=min_score,
         )
         return self._call_quality_judge(prompt)
+
+    @staticmethod
+    def _get_prompt_template(name: str) -> Optional[str]:
+        """Safely retrieve a prompt template from the PromptRegistry.
+
+        Returns the template string, or None if the registry is unavailable
+        or the prompt is not registered.
+        """
+        try:
+            from konash.prompts.registry import PromptRegistry
+            entry = PromptRegistry.get(name)
+            if entry is not None and hasattr(entry, "template"):
+                return entry.template
+        except (ImportError, KeyError, AttributeError) as exc:
+            logger.debug("PromptRegistry lookup failed for %r: %s", name, exc)
+        return None
 
     def _call_quality_judge(self, prompt: str) -> Optional[Dict[str, Any]]:
         """Send a quality-filter prompt to the LLM and parse the response.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re as _re
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -8,6 +9,8 @@ try:
     import numpy as np
 except ImportError:  # pragma: no cover
     np = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingDeduplicator:
@@ -718,6 +721,25 @@ def _heuristic_paraphrase_check(question_a: str, question_b: str) -> bool:
     return jaccard >= 0.6
 
 
+def _load_dedup_embedding_fn(model_name: str) -> Optional[Callable]:
+    """Attempt to load a real embedding model for deduplication.
+
+    Tries the retrieval module's :func:`load_embedding_model` first.
+    Returns None if no ML library is available (caller should use
+    pseudo-embeddings as fallback).
+    """
+    try:
+        from konash.retrieval.vector_search import (
+            load_embedding_model,
+            resolve_embedding_model_name,
+        )
+        resolved = resolve_embedding_model_name(model_name)
+        return load_embedding_model(resolved)
+    except Exception as exc:
+        logger.debug("Could not load embedding model %r for dedup: %s", model_name, exc)
+        return None
+
+
 class TRECBiogenDedupPolicy:
     """Deduplication policy tuned for the TREC Biogen benchmark.
 
@@ -755,6 +777,10 @@ class TRECBiogenDedupPolicy:
     def create_agent(self, llm_fn: Any = None, **kwargs: Any) -> DeduplicationAgent:
         """Create a DeduplicationAgent configured with this policy.
 
+        Automatically loads the Qwen3-8B-Embedding model for semantic
+        similarity.  Falls back to pseudo-embeddings if the model cannot
+        be loaded.
+
         Parameters
         ----------
         llm_fn : callable | None
@@ -765,10 +791,16 @@ class TRECBiogenDedupPolicy:
         judge = None
         if llm_fn is not None:
             judge = LLMParaphraseJudge(llm_fn=llm_fn, mode="question_only")
+
+        embedding_fn = kwargs.pop("embedding_fn", None)
+        if embedding_fn is None:
+            embedding_fn = _load_dedup_embedding_fn(self.embedding_model)
+
         return DeduplicationAgent(
             embedding_model=self.embedding_model,
             similarity_top_k=self.similarity_top_k,
             paraphrase_judge=judge,
+            embedding_fn=embedding_fn,
             **kwargs,
         )
 
@@ -811,6 +843,10 @@ class BrowseCompDedupPolicy:
     def create_agent(self, llm_fn: Any = None, **kwargs: Any) -> DeduplicationAgent:
         """Create a DeduplicationAgent configured with this policy.
 
+        Automatically loads the Qwen3-0.6B-Embedding model for semantic
+        similarity.  Falls back to pseudo-embeddings if the model cannot
+        be loaded.
+
         Parameters
         ----------
         llm_fn : callable | None
@@ -823,9 +859,15 @@ class BrowseCompDedupPolicy:
             judge = LLMParaphraseJudge(
                 llm_fn=llm_fn, mode="question_and_answer",
             )
+
+        embedding_fn = kwargs.pop("embedding_fn", None)
+        if embedding_fn is None:
+            embedding_fn = _load_dedup_embedding_fn(self.embedding_model)
+
         return DeduplicationAgent(
             embedding_model=self.embedding_model,
             similarity_top_k=self.similarity_top_k,
             paraphrase_judge=judge,
+            embedding_fn=embedding_fn,
             **kwargs,
         )

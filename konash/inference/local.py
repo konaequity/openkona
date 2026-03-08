@@ -1,9 +1,16 @@
-"""Local model engine: load a HuggingFace causal LM with LoRA for inference and OAPL training."""
+"""Local model engine: load a HuggingFace causal LM with LoRA for inference and OAPL training.
+
+Supports single-GPU (default) and multi-GPU via HuggingFace Accelerate.
+For distributed training, pass ``distributed=True`` to ``LocalModelEngine``.
+"""
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class LocalModelEngine:
@@ -55,6 +62,9 @@ class LocalModelEngine:
         load_in_8bit: bool = False,
         gradient_checkpointing: bool = False,
         adapter_path: Optional[str] = None,
+        distributed: bool = False,
+        fsdp: bool = False,
+        deepspeed_config: Optional[str] = None,
     ):
         try:
             import torch
@@ -175,7 +185,90 @@ class LocalModelEngine:
                 gradient_checkpointing_kwargs={"use_reentrant": False},
             )
 
+        # -- Distributed setup --
+        self.distributed = distributed
+        self._accelerator = None
+
+        if distributed or fsdp or deepspeed_config:
+            self._setup_distributed(
+                fsdp=fsdp,
+                deepspeed_config=deepspeed_config,
+            )
+
         print(f"[konash] Model ready on {self.device}")
+
+    def _setup_distributed(
+        self,
+        fsdp: bool = False,
+        deepspeed_config: Optional[str] = None,
+    ) -> None:
+        """Configure multi-GPU training via HuggingFace Accelerate.
+
+        Supports three modes:
+        - **DataParallel** (default distributed): Simple multi-GPU with gradient sync.
+        - **FSDP**: Fully Sharded Data Parallel for large models.
+        - **DeepSpeed**: ZeRO Stage 2/3 for memory-efficient training.
+
+        Usage::
+
+            # Launch with: accelerate launch --multi_gpu script.py
+            engine = LocalModelEngine("Qwen/Qwen2.5-7B", distributed=True)
+
+            # Or with DeepSpeed:
+            engine = LocalModelEngine(
+                "Qwen/Qwen2.5-7B",
+                deepspeed_config="ds_config.json",
+            )
+        """
+        try:
+            from accelerate import Accelerator
+        except ImportError:
+            logger.warning(
+                "Distributed training requires: pip install accelerate\n"
+                "Falling back to single-GPU mode."
+            )
+            self.distributed = False
+            return
+
+        kwargs: Dict[str, Any] = {}
+
+        if deepspeed_config and os.path.exists(deepspeed_config):
+            # DeepSpeed ZeRO integration
+            from accelerate.utils import DeepSpeedPlugin
+            ds_plugin = DeepSpeedPlugin(
+                hf_ds_config=deepspeed_config,
+            )
+            kwargs["deepspeed_plugin"] = ds_plugin
+            logger.info("Using DeepSpeed config: %s", deepspeed_config)
+        elif fsdp:
+            from accelerate.utils import FullyShardedDataParallelPlugin
+            from torch.distributed.fsdp.fully_sharded_data_parallel import (
+                FullStateDictConfig,
+                StateDictType,
+            )
+            fsdp_plugin = FullyShardedDataParallelPlugin(
+                state_dict_config=FullStateDictConfig(
+                    offload_to_cpu=True, rank0_only=True,
+                ),
+                state_dict_type=StateDictType.FULL_STATE_DICT,
+            )
+            kwargs["fsdp_plugin"] = fsdp_plugin
+            logger.info("Using FSDP for distributed training")
+
+        self._accelerator = Accelerator(**kwargs)
+        self.model = self._accelerator.prepare(self.model)
+        self.device = str(self._accelerator.device)
+        self.distributed = True
+        logger.info(
+            "Distributed training enabled: %d GPUs, device=%s",
+            self._accelerator.num_processes,
+            self.device,
+        )
+
+    @property
+    def accelerator(self):
+        """The Accelerate ``Accelerator`` instance, or None for single-GPU."""
+        return self._accelerator
 
     # ------------------------------------------------------------------
     # Text generation (same interface as _OpenAILLMClient)

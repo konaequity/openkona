@@ -26,9 +26,10 @@ class ValueGuidedSearchEngine:
             ``None`` means determined at call time.
         value_model: A :class:`ValueModel` instance used to score partial
             rollouts.  ``None`` means scores default to 0.
-        reference_model: Frozen reference model for lagged inference policy
-            scoring (Section 6).  When set, value scoring uses this model
-            instead of the current training policy.
+        reference_model: Frozen reference model retained for potential use
+            in weighted aggregation (e.g., Best-of-N with reward weighting).
+            KL-regularization is handled by the OAPL training loss (Eq. 1),
+            not by VGS inference scoring.
     """
 
     candidate_width = 2
@@ -55,8 +56,9 @@ class ValueGuidedSearchEngine:
                 partial rollouts.
             aggregator: A :class:`GenerativeAggregator` (or compatible) for
                 final answer aggregation.
-            reference_model: Frozen reference model for lagged inference
-                policy (Section 6).  Used for value scoring when set.
+            reference_model: Frozen reference model for potential use in
+                weighted aggregation.  KL-regularization is in the OAPL
+                training loss, not VGS scoring.
             candidate_width: *k* -- how many candidates per expansion.
             parallel_searches: *N* -- how many independent search trees.
             max_depth: Maximum number of BFS expansion steps per tree.
@@ -168,9 +170,15 @@ class ValueGuidedSearchEngine:
     ) -> List[float]:
         """Score each candidate trajectory using the value model.
 
-        Per Section 6 of the KARL paper, when a ``reference_model`` (lagged
-        inference policy) is available, it is passed to the value model so
-        scoring is decoupled from the current training policy.
+        Per Section 5.2 of the KARL paper, the value model predicts
+        sigma(V(x, y<=t)) — the probability that the rollout will succeed.
+        At each step, we select the candidate with the highest value score.
+
+        Note: KL-regularization (log π/π_ref) belongs in the OAPL training
+        loss (Eq. 1), not in VGS inference scoring.  The ``reference_model``
+        attribute is retained for potential use in weighted aggregation
+        (e.g., Best-of-N with σ(V(x,y)) weighting) but does not affect
+        per-step candidate selection.
 
         Returns a list of float scores, one per candidate.  When no value
         model is available, all candidates receive a score of 0.0.
@@ -182,14 +190,7 @@ class ValueGuidedSearchEngine:
         for cand in candidates:
             steps = cand.get("steps", [])
             rollout_tokens = cand.get("tokens", steps)
-
-            # Use reference model for lagged inference policy scoring
-            if self.reference_model is not None:
-                score = self.value_model.score_partial_rollout(
-                    rollout_tokens, reference_model=self.reference_model
-                )
-            else:
-                score = self.value_model.score_partial_rollout(rollout_tokens)
+            score = self.value_model.score_partial_rollout(rollout_tokens)
             scores.append(float(score))
         return scores
 
