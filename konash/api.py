@@ -294,11 +294,11 @@ class Agent:
         # Synthesis needs more tokens (thinking + many QA pairs).
         # Rollouts need fewer (short JSON reasoning steps).
         def _synthesis_fn(messages, **kwargs):
-            kwargs.setdefault("max_new_tokens", 2048)
+            kwargs.setdefault("max_new_tokens", 1024)
             return generate_fn(messages, **kwargs)
 
         def _rollout_fn(messages, **kwargs):
-            kwargs.setdefault("max_new_tokens", 512)
+            kwargs.setdefault("max_new_tokens", 256)
             return generate_fn(messages, **kwargs)
 
         synthesizer = QuestionAnswerSynthesizer(
@@ -338,13 +338,18 @@ class Agent:
             # Step 3: Synthesize QA pairs
             if verbose:
                 print("  Synthesizing training examples ...")
+            # Free transient GPU memory before generation
+            import gc
+            gc.collect()
+            if self._model_engine is not None:
+                self._model_engine._torch.cuda.empty_cache()
             # Sample a subset of documents to keep the prompt manageable
             # on small GPUs (full corpus can be hundreds of chunks).
             import random as _random
             all_docs = [d["text"] for d in self.corpus.documents]
-            sample_size = min(10, len(all_docs))
+            sample_size = min(5, len(all_docs))
             documents = _random.sample(all_docs, sample_size)
-            documents = [d[:1000] for d in documents]  # truncate for VRAM
+            documents = [d[:500] for d in documents]  # truncate for VRAM
             try:
                 examples = pipeline.run_stage_one(
                     documents=documents,
