@@ -344,7 +344,7 @@ class Agent:
             if verbose:
                 print(f"  {len(final_examples)} examples after filtering.")
 
-            if not final_examples and not pipeline.rollout_groups:
+            if not final_examples or not pipeline.filtered_groups:
                 if verbose:
                     print("  No training data — skipping training step.")
                 continue
@@ -353,7 +353,7 @@ class Agent:
             if verbose:
                 print("  Training with OAPL ...")
             rollout_dicts = []
-            for group in pipeline.rollout_groups:
+            for group in pipeline.filtered_groups:
                 for rollout in group.rollouts:
                     rollout_dicts.append({
                         "prompt": group.prompt,

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from konash.api import Agent
 from konash.corpus import Corpus
+from konash.synthesis.rollouts import Rollout, RolloutGroup
 
 
 class StubLLMClient:
@@ -126,3 +127,43 @@ def test_agent_load_supports_local_inference_via_lazy_engine_init(tmp_path, monk
 
     assert answer == "loaded answer"
 
+
+def test_train_skips_oapl_when_all_examples_are_filtered_out(tmp_path, monkeypatch):
+    doc_dir = tmp_path / "docs"
+    doc_dir.mkdir()
+    (doc_dir / "alpha.txt").write_text("alpha facts live here")
+
+    agent = Agent(base_model="stub", corpus=str(doc_dir), api_base="http://example", api_key="k")
+
+    class StubPipeline:
+        def __init__(self, *args, **kwargs):
+            self.rollout_groups = [
+                RolloutGroup(
+                    prompt="What is Alpha?",
+                    reference_answer="Alpha",
+                    rollouts=[Rollout(steps=[{"type": "answer", "answer": "Alpha"}], final_answer="Alpha", passed=True)],
+                )
+            ]
+            self.filtered_groups = []
+
+        def run_stage_one(self, documents=None, num_examples=None):
+            return [type("Ex", (), {"question": "What is Alpha?", "answer": "Alpha"})()]
+
+        def run_stage_two(self, examples=None, num_rollouts=None):
+            self.filtered_groups = []
+            return []
+
+    monkeypatch.setattr("konash.api.SynthesisPipeline", StubPipeline)
+
+    trainer_calls = []
+
+    def fail_if_called(*args, **kwargs):
+        trainer_calls.append("called")
+        raise AssertionError("Training should not run when all examples are filtered out.")
+
+    monkeypatch.setattr("konash.training.oapl.OAPLTrainer.train_epoch", fail_if_called)
+
+    result = agent.train(iterations=1, max_examples=1, verbose=False)
+
+    assert result == {"iterations": 0, "stats": []}
+    assert trainer_calls == []
