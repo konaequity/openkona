@@ -54,6 +54,18 @@ class SynthesisTaskConfig:
 
 class SynthesisConfigRegistry:
     configs = {
+        "TriviaNight": SynthesisTaskConfig(
+            task_name="TriviaNight",
+            seed_examples=6,
+            seed_documents=None,
+            qa_max_steps=30,
+            qa_top_k=10,
+            qa_generation_count=16,
+            solver_rollout_count=8,
+            solver_max_steps=20,
+            solver_top_k=10,
+            quality_filter=QualityFilterConfig(judge_model=None),
+        ),
         "TRECBiogen": SynthesisTaskConfig(
             task_name="TRECBiogen",
             seed_examples=4,

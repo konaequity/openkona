@@ -6,6 +6,11 @@ from konash.rewards.base import TaskRewardSpec
 
 
 TASK_REWARD_SPECS: Dict[str, TaskRewardSpec] = {
+    "TriviaNight": TaskRewardSpec(
+        task_name="TriviaNight",
+        policy_name="TriviaNight",
+        description="Multi-nugget binary reward for multi-constraint trivia over Wikipedia.",
+    ),
     "BrowseCompPlus": TaskRewardSpec(
         task_name="BrowseCompPlus",
         policy_name="BrowseCompPlus",
