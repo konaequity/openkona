@@ -80,6 +80,7 @@ class _OpenAILLMClient:
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}",
+                "User-Agent": "KONASH/0.1",
             },
         )
 
