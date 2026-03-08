@@ -267,7 +267,7 @@ class Agent:
                 engine = self._get_model_engine()
                 if verbose:
                     print(f"Model loaded: {self.base_model}")
-            except (ImportError, OSError) as e:
+            except (ImportError, OSError, ValueError, RuntimeError) as e:
                 if verbose:
                     print(f"  Note: Could not load model locally ({e}).")
                     print("  Using lightweight mode (no gradient updates).")
@@ -314,10 +314,16 @@ class Agent:
             if verbose:
                 print("  Synthesizing training examples ...")
             documents = [d["text"] for d in self.corpus.documents]
-            examples = pipeline.run_stage_one(
-                documents=documents,
-                num_examples=max_examples,
-            )
+            try:
+                examples = pipeline.run_stage_one(
+                    documents=documents,
+                    num_examples=max_examples,
+                )
+            except (ValueError, RuntimeError) as e:
+                if verbose:
+                    print(f"  Synthesis failed: {e}")
+                    print("  Skipping this iteration.")
+                continue
             if verbose:
                 print(f"  Generated {len(examples)} examples.")
 

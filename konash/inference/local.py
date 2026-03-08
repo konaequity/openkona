@@ -164,10 +164,10 @@ class LocalModelEngine:
                 base_model, adapter_path, is_trainable=True,
             )
         else:
-            targets = lora_target_modules or [
-                "q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj",
-            ]
+            if lora_target_modules:
+                targets = lora_target_modules
+            else:
+                targets = self._detect_lora_targets(base_model)
             lora_config = LoraConfig(
                 r=lora_r,
                 lora_alpha=lora_alpha,
@@ -196,6 +196,51 @@ class LocalModelEngine:
             )
 
         print(f"[konash] Model ready on {self.device}")
+
+    @staticmethod
+    def _detect_lora_targets(model) -> list:
+        """Auto-detect LoRA target modules based on the model architecture.
+
+        Checks for common linear layer naming conventions across architectures:
+        - Llama/Qwen/Mistral: q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
+        - GPT-2/GPT-J: c_attn, c_proj, c_fc
+        - Falcon: query_key_value, dense, dense_h_to_4h, dense_4h_to_h
+        - BLOOM: query_key_value, dense, dense_h_to_4h, dense_4h_to_h
+
+        Falls back to all Linear layers if no known pattern matches.
+        """
+        import torch.nn as nn
+
+        named_modules = dict(model.named_modules())
+        module_names = set()
+        for name, mod in named_modules.items():
+            if isinstance(mod, nn.Linear):
+                # Get the short name (last component)
+                short = name.split(".")[-1]
+                module_names.add(short)
+
+        # Try known architecture patterns in priority order
+        llama_targets = {"q_proj", "k_proj", "v_proj", "o_proj",
+                         "gate_proj", "up_proj", "down_proj"}
+        gpt2_targets = {"c_attn", "c_proj", "c_fc"}
+        falcon_targets = {"query_key_value", "dense", "dense_h_to_4h", "dense_4h_to_h"}
+
+        for pattern in [llama_targets, gpt2_targets, falcon_targets]:
+            found = pattern & module_names
+            if len(found) >= 2:  # at least 2 matches = likely correct arch
+                return sorted(found)
+
+        # Fallback: target all Linear layers (PEFT supports this)
+        if module_names:
+            logger.info(
+                "Could not detect model architecture; targeting all Linear layers: %s",
+                sorted(module_names),
+            )
+            return sorted(module_names)
+
+        # Last resort: use Llama-style defaults
+        return ["q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj"]
 
     def _setup_distributed(
         self,
@@ -286,11 +331,11 @@ class LocalModelEngine:
         """
         torch = self._torch
 
-        if hasattr(self.tokenizer, "apply_chat_template"):
+        try:
             text = self.tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True,
             )
-        else:
+        except (ValueError, AttributeError):
             text = _format_messages(messages)
 
         inputs = self.tokenizer(text, return_tensors="pt").to(self.model.device)
@@ -402,14 +447,14 @@ class LocalModelEngine:
         user_msg = {"role": "user", "content": prompt}
         full_msgs = [user_msg, {"role": "assistant", "content": response}]
 
-        if hasattr(self.tokenizer, "apply_chat_template"):
+        try:
             full_text = self.tokenizer.apply_chat_template(
                 full_msgs, tokenize=False, add_generation_prompt=False,
             )
             prompt_text = self.tokenizer.apply_chat_template(
                 [user_msg], tokenize=False, add_generation_prompt=True,
             )
-        else:
+        except (ValueError, AttributeError):
             full_text = _format_messages(full_msgs)
             prompt_text = _format_messages([user_msg])
 
