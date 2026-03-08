@@ -314,18 +314,49 @@ class Agent:
             if verbose:
                 print(f"  Indexed {self.corpus.num_documents} chunks.")
 
-        # Set up synthesis components (LLM-backed via local model)
-        generate_fn = self._get_generate_fn()
+        # Set up synthesis and rollout generate functions.
+        # KARL paper Section 7.2: rollouts must use the MODEL BEING TRAINED
+        # so there's variance at the learning frontier.  A stronger model
+        # (e.g. 32B via Groq) aces or fails everything → no learning signal.
+        #
+        # Split mode: inference API (Groq) for synthesis, local model for rollouts.
+        synthesis_generate_fn = self._get_generate_fn()
+
+        # Rollout function: always prefer the local model engine
+        import re as _re_local
+
+        def _strip_think(result):
+            if isinstance(result, dict) and "content" in result:
+                result["content"] = _re_local.sub(
+                    r"<think>.*?</think>\s*", "", result["content"],
+                    flags=_re_local.DOTALL,
+                )
+                result["content"] = _re_local.sub(
+                    r"<think>.*", "", result["content"],
+                    flags=_re_local.DOTALL,
+                ).strip()
+            return result
+
+        if engine is not None:
+            # Local model for rollouts (matches KARL: same model for both)
+            def rollout_generate_fn(messages, **kwargs):
+                return _strip_think(engine.generate(messages, **kwargs))
+            if verbose and self.inference_api_base:
+                print("  Rollouts: local model (learning frontier)")
+                print("  Synthesis: inference API (strong model)")
+        else:
+            # No local engine — fall back to inference API for everything
+            rollout_generate_fn = synthesis_generate_fn
 
         # Synthesis needs more tokens (thinking + many QA pairs).
         # Rollouts need fewer (short JSON reasoning steps).
         def _synthesis_fn(messages, **kwargs):
             kwargs.setdefault("max_new_tokens", 2048)
-            return generate_fn(messages, **kwargs)
+            return synthesis_generate_fn(messages, **kwargs)
 
         def _rollout_fn(messages, **kwargs):
             kwargs.setdefault("max_new_tokens", 256)
-            return generate_fn(messages, **kwargs)
+            return rollout_generate_fn(messages, **kwargs)
 
         synthesizer = QuestionAnswerSynthesizer(
             vector_search_tool=self.corpus.vector_search,
