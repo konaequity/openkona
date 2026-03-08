@@ -306,10 +306,16 @@ class Agent:
             llm_fn=_synthesis_fn,
         )
 
-        # Progress callback for rollouts
+        # Progress callback for rollouts — _current_examples is mutated
+        # before each stage-two call so the closure sees the right list.
+        _current_examples: List[Any] = []
+
         def _on_step(qa_idx, rollout_idx, step_idx, step_record):
             if verbose and step_idx == 0 and rollout_idx == 0:
-                print(f"    Question {qa_idx + 1} ...")
+                q_text = ""
+                if qa_idx < len(_current_examples):
+                    q_text = (_current_examples[qa_idx].question or "")[:80]
+                print(f"    [{qa_idx + 1}] {q_text}")
 
         rollout_gen = RolloutGenerator(
             search_tool=self.corpus.vector_search,
@@ -366,6 +372,7 @@ class Agent:
             # Step 4: Generate rollouts + filter
             if verbose:
                 print("  Generating rollouts ...")
+            _current_examples[:] = examples
             final_examples = pipeline.run_stage_two(
                 examples=examples,
                 num_rollouts=rollouts_per_example,
