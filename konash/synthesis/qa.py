@@ -383,6 +383,9 @@ class QuestionAnswerSynthesizer:
         # Strip thinking tags (e.g. Qwen3 <think>...</think>) before parsing
         text = _re.sub(r'<think>.*?</think>\s*', '', text, flags=_re.DOTALL)
 
+        # Strip markdown bold markers that confuse Q/A parsers
+        text = text.replace("**", "")
+
         # Multi-strategy parsing
         examples = self._parse_json_examples(text)
         if not examples:
