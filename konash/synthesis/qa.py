@@ -380,6 +380,9 @@ class QuestionAnswerSynthesizer:
         else:
             text = str(response)
 
+        # Strip thinking tags (e.g. Qwen3 <think>...</think>) before parsing
+        text = _re.sub(r'<think>.*?</think>\s*', '', text, flags=_re.DOTALL)
+
         # Multi-strategy parsing
         examples = self._parse_json_examples(text)
         if not examples:
