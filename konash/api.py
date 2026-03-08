@@ -290,13 +290,31 @@ class Agent:
 
         # Set up synthesis components (LLM-backed via local model)
         generate_fn = self._get_generate_fn()
+
+        # Synthesis needs more tokens (thinking + many QA pairs).
+        # Rollouts need fewer (short JSON reasoning steps).
+        def _synthesis_fn(messages, **kwargs):
+            kwargs.setdefault("max_new_tokens", 2048)
+            return generate_fn(messages, **kwargs)
+
+        def _rollout_fn(messages, **kwargs):
+            kwargs.setdefault("max_new_tokens", 512)
+            return generate_fn(messages, **kwargs)
+
         synthesizer = QuestionAnswerSynthesizer(
             vector_search_tool=self.corpus.vector_search,
-            llm_fn=generate_fn,
+            llm_fn=_synthesis_fn,
         )
+
+        # Progress callback for rollouts
+        def _on_step(qa_idx, rollout_idx, step_idx, step_record):
+            if verbose and step_idx == 0 and rollout_idx == 0:
+                print(f"    Question {qa_idx + 1} ...")
+
         rollout_gen = RolloutGenerator(
             search_tool=self.corpus.vector_search,
-            llm_fn=generate_fn,
+            llm_fn=_rollout_fn,
+            on_step=_on_step,
         )
         pipeline = SynthesisPipeline(
             synthesizer=synthesizer,
@@ -320,7 +338,13 @@ class Agent:
             # Step 3: Synthesize QA pairs
             if verbose:
                 print("  Synthesizing training examples ...")
-            documents = [d["text"] for d in self.corpus.documents]
+            # Sample a subset of documents to keep the prompt manageable
+            # on small GPUs (full corpus can be hundreds of chunks).
+            import random as _random
+            all_docs = [d["text"] for d in self.corpus.documents]
+            sample_size = min(10, len(all_docs))
+            documents = _random.sample(all_docs, sample_size)
+            documents = [d[:1000] for d in documents]  # truncate for VRAM
             try:
                 examples = pipeline.run_stage_one(
                     documents=documents,
@@ -656,19 +680,33 @@ class Agent:
         """Return a callable that generates text from messages.
 
         Priority: model engine (local) > API client > None (stubs).
+
+        The returned function strips ``<think>...</think>`` tags from
+        reasoning models (e.g. Qwen3) so downstream parsers see only the
+        actual content.
         """
+        import re as _re
+
+        def _strip_think_tags(result):
+            if isinstance(result, dict) and "content" in result:
+                result["content"] = _re.sub(
+                    r"<think>.*?</think>\s*", "", result["content"],
+                    flags=_re.DOTALL,
+                )
+            return result
+
         # Local model is loaded — use it
         if self._model_engine is not None:
             engine = self._model_engine
             def generate_fn(messages, **kwargs):
-                return engine.generate(messages, **kwargs)
+                return _strip_think_tags(engine.generate(messages, **kwargs))
             return generate_fn
 
         # API client configured — use it
         if self.api_base is not None:
             client = self._get_llm_client()
             def generate_fn(messages, **kwargs):
-                return client.generate(messages, **kwargs)
+                return _strip_think_tags(client.generate(messages, **kwargs))
             return generate_fn
 
         # No backend — return None so synthesis uses stubs
