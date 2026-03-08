@@ -294,7 +294,7 @@ class Agent:
         # Synthesis needs more tokens (thinking + many QA pairs).
         # Rollouts need fewer (short JSON reasoning steps).
         def _synthesis_fn(messages, **kwargs):
-            kwargs.setdefault("max_new_tokens", 1024)
+            kwargs.setdefault("max_new_tokens", 2048)
             return generate_fn(messages, **kwargs)
 
         def _rollout_fn(messages, **kwargs):

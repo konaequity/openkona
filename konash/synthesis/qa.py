@@ -381,7 +381,9 @@ class QuestionAnswerSynthesizer:
             text = str(response)
 
         # Strip thinking tags (e.g. Qwen3 <think>...</think>) before parsing
+        # Also handle unclosed <think> when model runs out of tokens mid-thought
         text = _re.sub(r'<think>.*?</think>\s*', '', text, flags=_re.DOTALL)
+        text = _re.sub(r'<think>.*', '', text, flags=_re.DOTALL).strip()
 
         # Strip markdown bold markers that confuse Q/A parsers
         text = text.replace("**", "")

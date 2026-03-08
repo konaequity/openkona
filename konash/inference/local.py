@@ -359,8 +359,10 @@ class LocalModelEngine:
         content = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
         # Strip reasoning-model thinking tags (e.g. Qwen3 <think>...</think>)
+        # Also handle unclosed <think> when model runs out of tokens mid-thought
         import re as _re
         content = _re.sub(r"<think>.*?</think>\s*", "", content, flags=_re.DOTALL)
+        content = _re.sub(r"<think>.*", "", content, flags=_re.DOTALL).strip()
 
         return {"role": "assistant", "content": content}
 
