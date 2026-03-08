@@ -324,7 +324,7 @@ class Agent:
             return generate_fn(messages, **kwargs)
 
         def _rollout_fn(messages, **kwargs):
-            kwargs.setdefault("max_new_tokens", 256)
+            kwargs.setdefault("max_new_tokens", 512)
             return generate_fn(messages, **kwargs)
 
         synthesizer = QuestionAnswerSynthesizer(

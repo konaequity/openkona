@@ -361,7 +361,7 @@ class RolloutGenerator:
         solver that can search or answer.  It includes the step budget so the
         LLM knows when to commit to an answer.
         """
-        evidence_text = "\n".join(f"- {e[:300]}" for e in evidence[:10])
+        evidence_text = "\n".join(f"- {e[:1000]}" for e in evidence[:10])
         steps_remaining = self.max_steps - step_idx - 1
 
         # Detect cycling: if we've done 2+ reasoning steps with evidence,
@@ -422,12 +422,14 @@ class RolloutGenerator:
             except _json.JSONDecodeError:
                 pass
 
-        # If we can't parse, decide based on evidence availability
+        # If we can't parse JSON, force a clean natural-language answer
+        # instead of leaking raw LLM content (which may be malformed JSON).
         if evidence:
+            answer = self._force_answer(prompt, steps)
             return {
                 "thought": content[:200],
                 "has_answer": True,
-                "answer": content[:500],
+                "answer": answer,
                 "needs_retrieval": False,
             }
         return {
@@ -438,17 +440,24 @@ class RolloutGenerator:
         }
 
     def _force_answer(self, prompt: str, steps: List[Dict[str, Any]]) -> str:
-        """Force an answer when max_steps is reached."""
+        """Force an answer when max_steps is reached.
+
+        Uses a larger token budget (512) than reasoning steps because
+        thinking models (e.g. Qwen3) spend most tokens inside
+        ``<think>...</think>`` tags which get stripped, leaving little
+        room for the actual answer at the default 256 budget.
+        """
         evidence = self._collect_evidence(steps)
         thoughts = [s["thought"] for s in steps if s.get("thought")]
 
         if self.llm_fn is not None and (evidence or thoughts):
-            evidence_text = "\n".join(f"- {e[:300]}" for e in evidence[:10])
+            evidence_text = "\n".join(f"- {e[:1000]}" for e in evidence[:10])
             thoughts_text = "\n".join(f"- {t[:200]}" for t in thoughts[:5])
             messages = [
                 {"role": "system", "content": (
                     "Answer the question concisely based on the evidence. "
-                    "If the evidence is insufficient, give your best answer."
+                    "If the evidence is insufficient, give your best answer. "
+                    "Do NOT output JSON — answer in plain text only."
                 )},
                 {"role": "user", "content": (
                     f"Question: {prompt}\n\n"
@@ -457,7 +466,9 @@ class RolloutGenerator:
                     "Final answer:"
                 )},
             ]
-            response = self.llm_fn(messages)
+            # Use a larger token budget so thinking models have room
+            # for <think> tags AND a complete answer.
+            response = self.llm_fn(messages, max_new_tokens=512)
             content = response.get("content", "") if isinstance(response, dict) else str(response)
             if content.strip():
                 return content.strip()
@@ -697,6 +708,10 @@ def _heuristic_evaluate(predicted: str, reference: str) -> bool:
     4. Token-level F1 (threshold 0.5)
     """
     def normalize(text: str) -> str:
+        # Strip punctuation and citation markers before comparing
+        text = _re.sub(r'\[Document \d+\]', '', text)
+        text = _re.sub(r'\(Document \d+\)', '', text)
+        text = _re.sub(r'[^\w\s]', ' ', text)
         return " ".join(text.lower().split())
 
     pred_norm = normalize(predicted)
