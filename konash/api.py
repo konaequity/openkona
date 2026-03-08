@@ -111,22 +111,22 @@ class Agent:
 
         import konash
 
-        # Local model (loads on GPU with LoRA) — paper default: GLM 4.5 Air
-        agent = konash.Agent(
-            base_model="THUDM/glm-4-9b-chat",
-            corpus="./my_docs",
-            project="my-knowledge-agent",
-        )
-        agent.train()
-        answer = agent.solve("What caused the 2008 financial crisis?")
-
-        # Or with Zhipu API (GLM 4.5 Air, matching the paper)
+        # Zhipu API (GLM 4.5 Air — the paper's default)
         agent = konash.Agent(
             base_model="glm-4.5-air",
             corpus="./my_docs",
             api_base="https://api.z.ai/api/paas/v4",
-            api_key="your-zhipu-key",
+            api_key="your-zhipu-key",  # or set ZHIPU_API_KEY env var
         )
+        agent.train()
+        answer = agent.solve("What caused the 2008 financial crisis?")
+
+        # Or load locally on GPU with LoRA (for training)
+        agent = konash.Agent(
+            base_model="THUDM/glm-4-9b-chat",
+            corpus="./my_docs",
+        )
+        agent.train()
         answer = agent.solve("What is KONASH?")
 
     Parameters
