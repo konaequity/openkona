@@ -194,7 +194,9 @@ class QuestionAnswerSynthesizer:
         Performs a diverse retrieval pass using multiple strategies:
         1. Seed queries from few-shot examples.
         2. Topic-diversified queries derived from seed answers.
-        3. Random exploration queries to increase coverage.
+        3. When no seeds are available, sample diverse chunks from the
+           indexed corpus and use their content as search queries to
+           find related passages (spreading across different topics).
 
         Parameters
         ----------
@@ -300,27 +302,42 @@ class QuestionAnswerSynthesizer:
     # ------------------------------------------------------------------
 
     def _derive_exploration_queries(self, k: int) -> List[str]:
-        """Build diverse queries for corpus exploration from few-shot examples.
+        """Build diverse queries for corpus exploration.
 
         Derives queries from:
-        1. Seed questions (direct use)
-        2. Seed answers (keyword extraction for topic diversity)
-        3. Cross-seed queries (combine elements from different seeds)
+        1. Seed questions (direct use) if few-shot examples are available.
+        2. Seed answers (keyword extraction for topic diversity).
+        3. When no seeds exist, samples diverse chunks from the indexed
+           corpus and extracts key phrases as exploration queries.
         """
         queries: List[str] = []
         if self.few_shot_examples:
             for ex in self.few_shot_examples:
                 if ex.question:
                     queries.append(ex.question)
-                # Also use answer keywords for topic-diverse exploration
                 if ex.answer:
-                    # Extract key phrases from answers
                     words = [
                         w for w in ex.answer.split()
                         if len(w) > 3 and w[0].isupper()
                     ]
                     if words:
                         queries.append(" ".join(words[:5]))
+
+        # When no few-shot examples, sample diverse chunks from the corpus
+        # and extract key phrases to use as exploration queries.
+        if not queries and self.vector_search_tool is not None:
+            docs = getattr(self.vector_search_tool, "_documents", [])
+            if docs:
+                # Sample spread across the corpus for topic diversity
+                step = max(1, len(docs) // 8)
+                sampled = docs[::step][:8]
+                for doc in sampled:
+                    text = doc.get("text", "") if isinstance(doc, dict) else str(doc)
+                    # Extract first sentence or first 100 chars as a query
+                    first_sentence = text.split(".")[0].strip()
+                    if len(first_sentence) > 15:
+                        queries.append(first_sentence[:100])
+
         if not queries:
             queries.append("relevant information")
         return queries[:max(k, 8)]

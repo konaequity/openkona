@@ -373,22 +373,15 @@ class Agent:
             gc.collect()
             if self._model_engine is not None:
                 self._model_engine._torch.cuda.empty_cache()
-            # Sample a subset of documents to keep the prompt manageable
-            # on small GPUs (full corpus can be hundreds of chunks).
-            import random as _random
-            all_docs = [d["text"] for d in self.corpus.documents]
-            sample_size = min(5, len(all_docs))
-            documents = _random.sample(all_docs, sample_size)
-            documents = [d[:500] for d in documents]  # truncate for VRAM
+
+            # Let the synthesizer explore the corpus via vector search
+            # (KARL paper approach: agent searches, reads, then proposes QA
+            # pairs grounded in retrieved content).
             if verbose:
-                previews = [d[:60].replace("\n", " ") for d in documents]
-                print(f"  Synthesizing from {len(documents)} chunks:")
-                for p in previews:
-                    print(f"    - {p}...")
-                print("  Generating QA pairs ...")
+                print("  Synthesizing QA pairs (agent exploring corpus) ...")
             try:
                 examples = pipeline.run_stage_one(
-                    documents=documents,
+                    documents=None,  # let synthesizer search the corpus
                     num_examples=max_examples,
                 )
             except (ValueError, RuntimeError) as e:
