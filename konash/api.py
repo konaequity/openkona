@@ -57,6 +57,8 @@ class _OpenAILLMClient:
         messages: List[Dict[str, str]],
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        import time
+        import urllib.error
         import urllib.request
 
         url = f"{self.api_base}/chat/completions"
@@ -81,8 +83,17 @@ class _OpenAILLMClient:
             },
         )
 
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            result = json.loads(resp.read())
+        for attempt in range(4):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    result = json.loads(resp.read())
+                break
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and attempt < 3:
+                    retry_after = int(e.headers.get("Retry-After", 10))
+                    time.sleep(retry_after)
+                    continue
+                raise
 
         choice = result["choices"][0]
         message = choice["message"]
@@ -173,6 +184,9 @@ class Agent:
         project: str = "default",
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
+        inference_api_base: Optional[str] = None,
+        inference_api_key: Optional[str] = None,
+        inference_model: Optional[str] = None,
         checkpoint_dir: Optional[str] = None,
         chunk_size: int = 512,
         temperature: float = 0.7,
@@ -199,6 +213,11 @@ class Agent:
         self.api_base = api_base or os.environ.get("KONASH_API_BASE")
         self.api_key = api_key or os.environ.get("KONASH_API_KEY", "no-key")
 
+        # Inference API (split mode: fast API for inference, local model for training)
+        self.inference_api_base = inference_api_base or os.environ.get("KONASH_INFERENCE_API_BASE")
+        self.inference_api_key = inference_api_key or os.environ.get("KONASH_INFERENCE_API_KEY")
+        self.inference_model = inference_model or os.environ.get("KONASH_INFERENCE_MODEL")
+
         # Checkpoints
         self.checkpoint_dir = checkpoint_dir or os.path.join(
             ".konash", project, "checkpoints"
@@ -215,6 +234,7 @@ class Agent:
 
         # Internal state (built lazily)
         self._llm_client: Optional[_OpenAILLMClient] = None
+        self._inference_client: Optional[_OpenAILLMClient] = None
         self._model_engine: Optional[Any] = None  # LocalModelEngine
         self._base_agent: Optional[BaseAgent] = None
         self._trained = False
@@ -268,12 +288,17 @@ class Agent:
             Training summary with per-iteration statistics.
         """
         # Step 1: Load model locally (for real OAPL training)
+        # In split mode (inference_api_base set), still load the local model
+        # because OAPL gradient updates require local weights.
         engine = None
-        if self.api_base is None:
+        if self.api_base is None or self.inference_api_base is not None:
             try:
                 engine = self._get_model_engine()
                 if verbose:
                     print(f"Model loaded: {self.base_model}")
+                    if self.inference_api_base:
+                        print(f"Inference via: {self.inference_model or self.base_model} "
+                              f"@ {self.inference_api_base}")
             except (ImportError, OSError, ValueError, RuntimeError) as e:
                 if verbose:
                     print(f"  Note: Could not load model locally ({e}).")
@@ -359,7 +384,7 @@ class Agent:
                 print(f"  Synthesizing from {len(documents)} chunks:")
                 for p in previews:
                     print(f"    - {p}...")
-                print("  Generating QA pairs (this may take a few minutes) ...")
+                print("  Generating QA pairs ...")
             try:
                 examples = pipeline.run_stage_one(
                     documents=documents,
@@ -677,6 +702,19 @@ class Agent:
         )
         return self._model_engine
 
+    def _get_inference_client(self) -> _OpenAILLMClient:
+        """Lazily build the inference-specific API client (split mode)."""
+        if self._inference_client is None:
+            if self.inference_api_base is None:
+                raise RuntimeError("No inference API configured.")
+            self._inference_client = _OpenAILLMClient(
+                api_base=self.inference_api_base,
+                api_key=self.inference_api_key or "no-key",
+                model=self.inference_model or self.base_model,
+                temperature=self.temperature,
+            )
+        return self._inference_client
+
     def _get_llm_client(self) -> _OpenAILLMClient:
         if self._llm_client is None:
             if self.api_base is None:
@@ -697,7 +735,7 @@ class Agent:
     def _get_generate_fn(self):
         """Return a callable that generates text from messages.
 
-        Priority: model engine (local) > API client > None (stubs).
+        Priority: inference API (split mode) > local model > API client > None.
 
         The returned function strips ``<think>...</think>`` tags from
         reasoning models (e.g. Qwen3) so downstream parsers see only the
@@ -711,7 +749,20 @@ class Agent:
                     r"<think>.*?</think>\s*", "", result["content"],
                     flags=_re.DOTALL,
                 )
+                result["content"] = _re.sub(
+                    r"<think>.*", "", result["content"],
+                    flags=_re.DOTALL,
+                ).strip()
             return result
+
+        # Inference API takes priority (split mode: API for inference, local for training)
+        if self.inference_api_base is not None:
+            client = self._get_inference_client()
+            def generate_fn(messages, **kwargs):
+                if "max_new_tokens" in kwargs and "max_tokens" not in kwargs:
+                    kwargs["max_tokens"] = kwargs.pop("max_new_tokens")
+                return _strip_think_tags(client.generate(messages, **kwargs))
+            return generate_fn
 
         # Local model is loaded — use it
         if self._model_engine is not None:
@@ -724,6 +775,8 @@ class Agent:
         if self.api_base is not None:
             client = self._get_llm_client()
             def generate_fn(messages, **kwargs):
+                if "max_new_tokens" in kwargs and "max_tokens" not in kwargs:
+                    kwargs["max_tokens"] = kwargs.pop("max_new_tokens")
                 return _strip_think_tags(client.generate(messages, **kwargs))
             return generate_fn
 
@@ -740,8 +793,10 @@ class Agent:
             "clear, well-supported answer."
         )
 
-        # Prefer local model engine, fall back to API client
-        if self._model_engine is not None:
+        # Prefer inference API (split mode), then local, then general API
+        if self.inference_api_base is not None:
+            llm_client = self._get_inference_client()
+        elif self._model_engine is not None:
             llm_client = self._model_engine
         elif self.api_base is not None:
             llm_client = self._get_llm_client()
