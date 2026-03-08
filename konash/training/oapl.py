@@ -180,6 +180,12 @@ class OAPLTrainer:
         and the frozen reference (base) policy, then applies the
         squared-advantage OAPL loss with gradient accumulation per group.
 
+        **Token masking** (KARL paper Section 5): Tool-output tokens are
+        excluded from the loss so the model only learns from tokens it
+        actually generated.  Without this, search-result tokens corrupt
+        the policy gradient because the model receives credit/blame for
+        text it didn't produce.
+
         Parameters
         ----------
         dataset :
@@ -198,7 +204,7 @@ class OAPLTrainer:
         -------
         dict
             Training statistics: ``mean_loss``, ``num_groups``,
-            ``num_rollouts``, ``learning_rate``.
+            ``num_rollouts``, ``masked_token_pct``, ``learning_rate``.
         """
         import torch
 
@@ -209,6 +215,8 @@ class OAPLTrainer:
         total_loss = 0.0
         num_groups = 0
         num_rollouts = 0
+        total_tokens = 0
+        masked_tokens = 0
 
         model_engine.model.train()
 
@@ -229,8 +237,31 @@ class OAPLTrainer:
                 input_ids = tokens["input_ids"]
                 labels = tokens["labels"]
 
+                # --- Tool-output token masking (KARL Section 5) ---
+                # Build a mask that is True for model-generated tokens,
+                # False for tool-output tokens (search results, etc.)
+                tool_output_ranges = tokens.get("tool_output_ranges", None)
+                if tool_output_ranges is None:
+                    tool_output_ranges = self._extract_tool_output_ranges(
+                        rollout, tokens
+                    )
+
+                seq_len = (
+                    input_ids.shape[-1]
+                    if hasattr(input_ids, "shape")
+                    else len(input_ids)
+                )
+                tool_mask_np = self.mask_non_model_tokens(
+                    list(range(seq_len)),
+                    tool_output_ranges=tool_output_ranges,
+                )
+                tool_mask = torch.tensor(
+                    tool_mask_np, dtype=torch.bool,
+                    device=input_ids.device if hasattr(input_ids, "device") else "cpu",
+                )
+
                 # Current policy log-probs (with gradient)
-                log_probs, mask = model_engine.compute_log_probs(
+                log_probs, valid_mask = model_engine.compute_log_probs(
                     input_ids, labels, use_reference=False,
                 )
 
@@ -240,12 +271,24 @@ class OAPLTrainer:
                         input_ids, labels, use_reference=True,
                     )
 
-                # Mean log-ratio over valid tokens
-                valid_count = mask.sum()
+                # Combine valid-token mask with tool-output mask.
+                # Only compute loss on tokens that are both:
+                #   (a) valid (non-padding), AND
+                #   (b) model-generated (not tool output)
+                combined_mask = valid_mask & tool_mask
+                valid_count = combined_mask.sum()
+
+                # Track masking statistics
+                total_tokens += int(valid_mask.sum().item())
+                masked_tokens += int(
+                    (valid_mask & ~tool_mask).sum().item()
+                )
+
                 if valid_count == 0:
                     continue
 
-                log_ratio = (log_probs - ref_log_probs)
+                # Apply mask: zero out tool-output token log-ratios
+                log_ratio = (log_probs - ref_log_probs) * combined_mask.float()
                 mean_log_ratio = log_ratio.sum() / valid_count
 
                 # OAPL squared-advantage loss
@@ -272,13 +315,100 @@ class OAPLTrainer:
 
         model_engine.model.eval()
         mean_loss = total_loss / max(num_groups, 1)
+        masked_pct = (
+            masked_tokens / total_tokens * 100 if total_tokens > 0 else 0.0
+        )
 
         return {
             "mean_loss": float(mean_loss),
             "num_groups": num_groups,
             "num_rollouts": num_rollouts,
+            "masked_token_pct": float(masked_pct),
             "learning_rate": learning_rate,
         }
+
+    # ------------------------------------------------------------------
+    # Tool-output range detection
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_tool_output_ranges(
+        rollout: Any,
+        tokens: Dict[str, Any],
+    ) -> Optional[List[tuple]]:
+        """Extract (start, end) token-index pairs for tool-output spans.
+
+        The KARL paper (Section 5) masks tool-output tokens from the
+        policy gradient.  This method identifies which token ranges
+        correspond to tool outputs (search results, retrieved documents)
+        so they can be excluded from the loss.
+
+        Detection strategies (in order of preference):
+
+        1. ``tokens["tool_output_ranges"]`` — explicit ranges from the
+           tokenizer (highest fidelity).
+        2. ``tokens["token_types"]`` — per-token type labels; tokens
+           labelled ``"tool_output"`` are masked.
+        3. Marker-based detection — scans the token stream for
+           ``<|tool_start|>`` / ``<|tool_end|>`` sentinel tokens.
+        4. Rollout-structure heuristic — estimates ranges from step
+           metadata when the rollout is a list of step dicts.
+
+        Parameters
+        ----------
+        rollout :
+            The original rollout (string, list of messages, or list of
+            step dicts).
+        tokens :
+            Dict returned by ``model_engine.tokenize_rollout`` containing
+            at minimum ``input_ids`` and ``labels``.
+
+        Returns
+        -------
+        list of (start, end) | None
+            Index pairs into the token sequence.  ``None`` if no tool
+            outputs can be identified (no masking will be applied).
+        """
+        # Strategy 1: explicit ranges from tokenizer
+        if "tool_output_ranges" in tokens:
+            return tokens["tool_output_ranges"]
+
+        # Strategy 2: per-token type labels
+        if "token_types" in tokens:
+            token_types = tokens["token_types"]
+            ranges: List[tuple] = []
+            start = None
+            for i, tt in enumerate(token_types):
+                if tt == "tool_output":
+                    if start is None:
+                        start = i
+                else:
+                    if start is not None:
+                        ranges.append((start, i))
+                        start = None
+            if start is not None:
+                ranges.append((start, len(token_types)))
+            return ranges if ranges else None
+
+        # Strategy 3: marker-based detection in decoded tokens
+        if "decoded_tokens" in tokens:
+            decoded = tokens["decoded_tokens"]
+            ranges = []
+            start = None
+            for i, tok in enumerate(decoded):
+                tok_str = str(tok)
+                if "<|tool_start|>" in tok_str:
+                    start = i
+                if "<|tool_end|>" in tok_str and start is not None:
+                    ranges.append((start, i + 1))
+                    start = None
+            return ranges if ranges else None
+
+        # Strategy 4: rollout-structure heuristic
+        if isinstance(rollout, (list, tuple)) and rollout:
+            return _estimate_tool_ranges_from_steps(rollout, tokens)
+
+        return None
 
     # ------------------------------------------------------------------
     # High-level training API (numpy reference)
@@ -406,3 +536,99 @@ class OAPLTrainer:
             "num_rollouts": num_rollouts,
             "learning_rate": learning_rate,
         }
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def _estimate_tool_ranges_from_steps(
+    rollout: list,
+    tokens: Dict[str, Any],
+) -> Optional[List[tuple]]:
+    """Estimate tool-output token ranges from rollout step structure.
+
+    When the rollout is a list of step dicts (from ``RolloutGenerator``),
+    we can identify which steps contain retrieval results (tool outputs)
+    and estimate their proportion of the total token sequence.
+
+    This is a best-effort heuristic — proper marker-based detection
+    (Strategy 2 or 3) is preferred when available.
+
+    Parameters
+    ----------
+    rollout :
+        List of step dicts, each with a ``"type"`` field.
+    tokens :
+        Tokenized output with ``"input_ids"``.
+
+    Returns
+    -------
+    list of (start, end) | None
+    """
+    # Identify which steps are tool outputs
+    tool_step_indices: List[int] = []
+    step_char_counts: List[int] = []
+
+    for i, step in enumerate(rollout):
+        if not isinstance(step, dict):
+            continue
+
+        stype = step.get("type", "")
+        step_text = ""
+
+        if stype == "retrieval":
+            # The entire retrieval step (results) is tool output
+            results = step.get("results", [])
+            for r in results:
+                if isinstance(r, dict):
+                    step_text += r.get("text", str(r))
+                else:
+                    step_text += str(r)
+            tool_step_indices.append(i)
+        elif stype == "reasoning":
+            # Reasoning is model-generated, but sub-retrieval results
+            # within it are tool output
+            step_text = step.get("thought", "")
+            sub = step.get("sub_retrieval")
+            if sub and sub.get("results"):
+                sub_text = ""
+                for r in sub["results"]:
+                    if isinstance(r, dict):
+                        sub_text += r.get("text", str(r))
+                    else:
+                        sub_text += str(r)
+                # Mark this step as partially tool output
+                step_text += sub_text
+                tool_step_indices.append(i)
+        else:
+            step_text = str(step.get("thought", "")) + str(step.get("answer", ""))
+
+        step_char_counts.append(max(1, len(step_text)))
+
+    if not tool_step_indices or not step_char_counts:
+        return None
+
+    # Estimate token ranges proportionally from character counts
+    total_chars = sum(step_char_counts)
+    if total_chars == 0:
+        return None
+
+    input_ids = tokens.get("input_ids")
+    if input_ids is None:
+        return None
+
+    seq_len = input_ids.shape[-1] if hasattr(input_ids, "shape") else len(input_ids)
+
+    ranges: List[tuple] = []
+    cumulative_chars = 0
+    for i, char_count in enumerate(step_char_counts):
+        token_start = int(cumulative_chars / total_chars * seq_len)
+        cumulative_chars += char_count
+        token_end = int(cumulative_chars / total_chars * seq_len)
+
+        if i in tool_step_indices:
+            ranges.append((token_start, token_end))
+
+    return ranges if ranges else None

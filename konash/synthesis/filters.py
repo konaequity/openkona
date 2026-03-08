@@ -72,35 +72,44 @@ class PassRateFilter:
 
 
 class QualityFilter:
-    """Multi-dimensional quality filter that checks for ambiguity and
-    reference accuracy using an LLM judge.
+    """Quality filter matching the KARL paper (Sections 7.2.1-7.2.2).
 
-    When ``judge_fn`` is provided, ambiguity and reference-accuracy checks
-    call the LLM (e.g. gpt-4o-mini, matching the KARL paper Sections 7.2.1–
-    7.2.2).  Without an LLM, heuristic checks are used as a fallback.
+    Uses the exact prompts from Figures 35 (BrowseComp-Plus) and 36
+    (TREC-Biogen) to evaluate whether synthetic QA pairs are valid for
+    training.  The paper's approach is a single unified check that combines
+    ambiguity and reference accuracy into one LLM call, using solver rollout
+    attempts as evidence.
+
+    When ``task_name`` is set and ``rollout_attempts`` are provided to
+    :meth:`apply`, the paper's structured prompts are used.  Otherwise
+    falls back to heuristic checks.
 
     Parameters
     ----------
     judge_fn : callable | None
         LLM function ``(messages) -> {"role": ..., "content": ...}``.
-        When provided, both quality checks use the LLM instead of heuristics.
     judge_model : str | None
         Model name (informational / for logging).
+    task_name : str | None
+        Task identifier (``"BrowseCompPlus"`` or ``"TRECBiogen"``).
+        Determines which paper prompt to use.
     checks_ambiguity : bool
-        Whether to run the ambiguity check.
+        Whether to run the ambiguity check (heuristic fallback path).
     checks_reference_accuracy : bool
-        Whether to run the reference-accuracy check.
+        Whether to run the reference-accuracy check (heuristic fallback path).
     """
 
     def __init__(
         self,
         judge_fn: Any = None,
         judge_model: Optional[str] = None,
+        task_name: Optional[str] = None,
         checks_ambiguity: bool = True,
         checks_reference_accuracy: bool = True,
     ):
         self.judge_fn = judge_fn
         self.judge_model = judge_model
+        self.task_name = task_name
         self.checks_ambiguity = checks_ambiguity
         self.checks_reference_accuracy = checks_reference_accuracy
 
@@ -108,6 +117,7 @@ class QualityFilter:
         self,
         examples: List[Any],
         reference_documents: Optional[List[str]] = None,
+        rollout_attempts: Optional[List[List[Dict[str, Any]]]] = None,
     ) -> List[Any]:
         """Filter examples by quality, removing ambiguous or inaccurate ones.
 
@@ -115,9 +125,14 @@ class QualityFilter:
         ----------
         examples : list
             QA examples to evaluate. Each should have ``question``, ``answer``,
-            and optionally ``citations`` attributes.
+            and optionally ``nuggets`` attributes.
         reference_documents : list[str] | None
-            Source documents for reference-accuracy checking.
+            Source documents for reference-accuracy checking (heuristic path).
+        rollout_attempts : list[list[dict]] | None
+            Per-example lists of solver rollout attempts.  Each attempt dict
+            should have ``answer`` (str) and ``score`` (float).  When provided
+            alongside ``judge_fn`` and ``task_name``, the paper's structured
+            prompts (Figures 35-36) are used.
 
         Returns
         -------
@@ -125,7 +140,7 @@ class QualityFilter:
             Examples that pass all enabled quality checks.
         """
         passed: List[Any] = []
-        for example in examples:
+        for idx, example in enumerate(examples):
             question = getattr(example, "question", None) or (
                 example.get("question") if isinstance(example, dict) else None
             )
@@ -136,13 +151,25 @@ class QualityFilter:
             if question is None or answer is None:
                 continue
 
-            # Ambiguity check
+            # Paper path: unified quality check with solver attempts
+            attempts = (
+                rollout_attempts[idx]
+                if rollout_attempts is not None and idx < len(rollout_attempts)
+                else None
+            )
+            if self.judge_fn is not None and self.task_name and attempts:
+                result = self._llm_judge_quality(question, answer, example, attempts)
+                if result is not None:
+                    if result.get("is_valid", True):
+                        passed.append(example)
+                    continue
+
+            # Fallback: separate heuristic checks
             if self.checks_ambiguity:
                 ambiguity_result = self.judge_ambiguity(question, answer)
                 if ambiguity_result.get("is_ambiguous", False):
                     continue
 
-            # Reference accuracy check
             if self.checks_reference_accuracy and reference_documents:
                 accuracy_result = self.judge_reference_accuracy(
                     question, answer, reference_documents
@@ -153,21 +180,165 @@ class QualityFilter:
             passed.append(example)
         return passed
 
+    # -- Paper-faithful unified quality judge (Figures 35-36) ---------------
+
+    def _llm_judge_quality(
+        self,
+        question: str,
+        answer: str,
+        example: Any,
+        attempts: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Unified quality check using the KARL paper's exact prompts.
+
+        For BrowseComp-Plus (Figure 35): formats attempts with
+        correct/incorrect labels, checks if ground truth is wrong or
+        question is ambiguous.
+
+        For TREC-Biogen (Figure 36): formats attempts with nugget coverage
+        percentages, includes avg/max/min stats.
+
+        Returns
+        -------
+        dict or None
+            ``{"is_valid": bool, "reason": str}`` on success, ``None`` on
+            failure (caller falls back to heuristics).
+        """
+        from konash.prompts.registry import PromptRegistry
+
+        task = self.task_name or ""
+
+        if "browsecomp" in task.lower() or "BrowseComp" in task:
+            return self._judge_browsecomp(question, answer, attempts)
+        elif "trec" in task.lower() or "TRECBiogen" in task:
+            return self._judge_trec(question, answer, example, attempts)
+
+        return None
+
+    def _judge_browsecomp(
+        self,
+        question: str,
+        ground_truth: str,
+        attempts: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """BrowseComp-Plus quality filter (Figure 35).
+
+        Uses binary correct/incorrect labels for each solver attempt.
+        """
+        from konash.prompts.registry import PromptRegistry
+
+        # Format attempts: truncate each to 1000 chars, label correct/incorrect
+        attempt_lines: List[str] = []
+        for i, att in enumerate(attempts, 1):
+            att_answer = str(att.get("answer", ""))[:1000]
+            score = att.get("score", 0.0)
+            label = "Correct" if score >= 0.5 else "Incorrect"
+            attempt_lines.append(f"Attempt {i} ({label}): {att_answer}")
+        attempts_text = "\n".join(attempt_lines)
+
+        template = PromptRegistry.get("figure_35_browsecomp_quality_filter").template
+        prompt = template.format(
+            question=question,
+            ground_truth=ground_truth,
+            attempts=attempts_text,
+        )
+        return self._call_quality_judge(prompt)
+
+    def _judge_trec(
+        self,
+        question: str,
+        answer: str,
+        example: Any,
+        attempts: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """TREC-Biogen quality filter (Figure 36).
+
+        Uses nugget coverage percentages and computes avg/max/min stats.
+        """
+        from konash.prompts.registry import PromptRegistry
+
+        # Extract nuggets from example
+        nuggets = getattr(example, "nuggets", None) or (
+            example.get("nuggets") if isinstance(example, dict) else None
+        )
+        if nuggets is None:
+            nuggets = answer  # Fall back to answer as nugget source
+
+        nuggets_text = nuggets if isinstance(nuggets, str) else "\n".join(str(n) for n in nuggets)
+
+        # Format attempts with nugget coverage scores
+        attempt_lines: List[str] = []
+        scores: List[float] = []
+        for i, att in enumerate(attempts, 1):
+            att_answer = str(att.get("answer", ""))[:1000]
+            score = float(att.get("score", 0.0))
+            scores.append(score)
+            pct = int(score * 100)
+            attempt_lines.append(f"Attempt {i} (Coverage: {pct}%): {att_answer}")
+        attempts_text = "\n".join(attempt_lines)
+
+        # Compute stats
+        avg_score = int((sum(scores) / len(scores)) * 100) if scores else 0
+        max_score = int(max(scores) * 100) if scores else 0
+        min_score = int(min(scores) * 100) if scores else 0
+
+        template = PromptRegistry.get("figure_36_trec_quality_filter").template
+        prompt = template.format(
+            question=question,
+            nuggets=nuggets_text,
+            attempts=attempts_text,
+            avg=avg_score,
+            max=max_score,
+            min=min_score,
+        )
+        return self._call_quality_judge(prompt)
+
+    def _call_quality_judge(self, prompt: str) -> Optional[Dict[str, Any]]:
+        """Send a quality-filter prompt to the LLM and parse the response.
+
+        Expects ``<valid>yes/no</valid>`` in the response (paper format).
+        """
+        try:
+            resp = self.judge_fn([{"role": "user", "content": prompt}])
+            text = resp.get("content", "") if isinstance(resp, dict) else str(resp)
+
+            # Parse <valid>yes/no</valid>
+            valid_match = re.search(r"<valid>\s*(yes|no)\s*</valid>", text, re.IGNORECASE)
+            if valid_match:
+                is_valid = valid_match.group(1).strip().lower() == "yes"
+            else:
+                # Fallback: look for "yes" or "no" at end of response
+                is_valid = "yes" in text.lower().split()[-3:]
+
+            # Extract reasoning if present
+            reason = ""
+            reason_match = re.search(
+                r"<reasoning>(.*?)</reasoning>", text, re.DOTALL | re.IGNORECASE
+            )
+            if reason_match:
+                reason = reason_match.group(1).strip()
+
+            return {"is_valid": is_valid, "reason": reason}
+        except Exception:
+            return None
+
+    # -- Legacy separate checks (heuristic fallback) ------------------------
+
     def judge_ambiguity(
         self, question: str, answer: str
     ) -> Dict[str, Any]:
         """Evaluate whether a question is ambiguous.
 
-        When ``judge_fn`` is set, calls the LLM (e.g. gpt-4o-mini) as the
-        judge, matching the KARL paper (Table 9).  Falls back to heuristics
-        if no LLM is available or the call fails.
+        When ``judge_fn`` is set and no ``task_name`` is configured, calls
+        the LLM with a generic prompt.  Falls back to heuristics if no LLM
+        is available or the call fails.
 
         Returns
         -------
         dict
             Keys: ``is_ambiguous`` (bool), ``confidence`` (float), ``reason`` (str).
         """
-        if self.judge_fn is not None:
+        if self.judge_fn is not None and not self.task_name:
             result = self._llm_judge_ambiguity(question, answer)
             if result is not None:
                 return result
@@ -177,7 +348,7 @@ class QualityFilter:
     def _llm_judge_ambiguity(
         self, question: str, answer: str
     ) -> Optional[Dict[str, Any]]:
-        """LLM-backed ambiguity check (KARL paper Table 9)."""
+        """LLM-backed ambiguity check (generic fallback when no task_name)."""
         prompt = (
             "You are evaluating a synthetic question-answer pair for ambiguity.\n\n"
             f"Question: {question}\n"

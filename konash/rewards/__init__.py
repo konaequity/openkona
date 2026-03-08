@@ -132,12 +132,56 @@ class RewardRegistry:
 
     @staticmethod
     def _make_default_reward(task: str) -> RewardFn:
-        """Create a simple exact-match reward as a sensible default."""
+        """Create a nugget-based binary reward matching the KARL paper.
 
-        def _exact_match(prediction: str = "", reference: str = "", **kw: Any) -> float:
-            if not reference:
+        The paper (Section 2.3, 5) uses nugget-based completion scoring
+        as the reward signal for RL training:
+
+        1. Decompose the reference answer into nuggets (atomic facts).
+        2. Judge each nugget against the candidate answer.
+        3. Compute the mean nugget score (nugget completion rate).
+        4. Binary reward: 1.0 if completion >= 0.5, else 0.0.
+
+        This is strictly better than exact-match because it handles:
+        - Partial matches and paraphrases
+        - Entity-level matching (QAMPARI)
+        - Report-style multi-nugget evaluation (TREC-Biogen)
+        - Single-nugget containment (BrowseComp, FinanceBench)
+
+        When an ``LLMNuggetJudge`` is passed via the ``nugget_judge``
+        kwarg, the full paper-faithful LLM evaluation is used.
+        Otherwise, the heuristic substring/word-overlap judge provides
+        a reasonable approximation.
+        """
+        from konash.eval.nuggets import NuggetPolicyRegistry, NuggetScorer
+
+        # Get task-specific nugget policy if available
+        try:
+            policy = NuggetPolicyRegistry.get(task)
+        except KeyError:
+            policy = None
+
+        def _nugget_reward(
+            prediction: str = "",
+            reference: str = "",
+            **kw: Any,
+        ) -> float:
+            if not reference or not prediction:
                 return 0.0
-            return 1.0 if prediction.strip().lower() == reference.strip().lower() else 0.0
 
-        _exact_match.__qualname__ = f"default_reward[{task}]"
-        return _exact_match
+            # Fast path: exact match always passes
+            if prediction.strip().lower() == reference.strip().lower():
+                return 1.0
+
+            # Build scorer — use caller-supplied judge if available
+            judge = kw.get("nugget_judge", None)
+            scorer = NuggetScorer(judge=judge, policy=policy)
+
+            result = scorer.score(prediction, reference)
+            score = result.get("score", 0.0)
+
+            # Binary reward: pass if nugget completion >= 0.5
+            return 1.0 if score >= 0.5 else 0.0
+
+        _nugget_reward.__qualname__ = f"nugget_reward[{task}]"
+        return _nugget_reward

@@ -5,12 +5,19 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 class ValueGuidedSearchEngine:
-    """Value-Guided Search (VGS) for test-time compute.
+    """Value-Guided Search (VGS) for test-time compute (KARL Section 6).
 
     Implements a parallel breadth-first search over reasoning trajectories,
     where a learned value model scores partial rollouts and the top-*k*
     candidates are expanded at each step.  Multiple independent search trees
     are run in parallel and their results are aggregated.
+
+    Key paper details:
+    - The value model uses a *lagged inference policy* (frozen reference model)
+      so value scoring is decoupled from the current training policy.
+    - Expansion builds proper conversation history from the trajectory so each
+      step has full context of prior retrieval and reasoning.
+    - The agent generates steps in the retrieval → reasoning → answer flow.
 
     Attributes:
         candidate_width: Number of candidate continuations to generate at
@@ -19,11 +26,15 @@ class ValueGuidedSearchEngine:
             ``None`` means determined at call time.
         value_model: A :class:`ValueModel` instance used to score partial
             rollouts.  ``None`` means scores default to 0.
+        reference_model: Frozen reference model for lagged inference policy
+            scoring (Section 6).  When set, value scoring uses this model
+            instead of the current training policy.
     """
 
     candidate_width = 2
     parallel_searches = None
     value_model = None
+    reference_model = None
 
     def __init__(
         self,
@@ -31,6 +42,7 @@ class ValueGuidedSearchEngine:
         value_model=None,
         aggregator=None,
         *,
+        reference_model=None,
         candidate_width: int = 2,
         parallel_searches: Optional[int] = None,
         max_depth: int = 10,
@@ -43,6 +55,8 @@ class ValueGuidedSearchEngine:
                 partial rollouts.
             aggregator: A :class:`GenerativeAggregator` (or compatible) for
                 final answer aggregation.
+            reference_model: Frozen reference model for lagged inference
+                policy (Section 6).  Used for value scoring when set.
             candidate_width: *k* -- how many candidates per expansion.
             parallel_searches: *N* -- how many independent search trees.
             max_depth: Maximum number of BFS expansion steps per tree.
@@ -50,6 +64,8 @@ class ValueGuidedSearchEngine:
         self.agent = agent
         if value_model is not None:
             self.value_model = value_model
+        if reference_model is not None:
+            self.reference_model = reference_model
         if parallel_searches is not None:
             self.parallel_searches = parallel_searches
         self.candidate_width = candidate_width
@@ -115,14 +131,30 @@ class ValueGuidedSearchEngine:
         """Generate *k* candidate continuations from *state*.
 
         Each candidate is a new state dict that extends the trajectory by one
-        step.  If no agent is configured, returns *k* copies of *state* with
+        step.  Builds conversation history from the state's prior steps so
+        the agent has full context of retrieval results and reasoning so far.
+
+        If no agent is configured, returns *k* copies of *state* with
         a placeholder step appended.
         """
         k = k or self.candidate_width
         candidates: List[Dict[str, Any]] = []
+
+        # Build conversation history from prior steps for agent context
+        history = self._build_conversation_history(state)
+
+        # Merge history into context so the agent sees the full trajectory
+        expanded_context = dict(context or {})
+        if history:
+            expanded_context["conversation_history"] = history
+
         for i in range(k):
             if self.agent is not None:
-                step = self.agent.generate_step(state, candidate_index=i, context=context)
+                step = self.agent.generate_step(
+                    state,
+                    candidate_index=i,
+                    context=expanded_context,
+                )
                 new_state = self._extend_state(state, step)
             else:
                 new_state = copy.deepcopy(state)
@@ -136,6 +168,10 @@ class ValueGuidedSearchEngine:
     ) -> List[float]:
         """Score each candidate trajectory using the value model.
 
+        Per Section 6 of the KARL paper, when a ``reference_model`` (lagged
+        inference policy) is available, it is passed to the value model so
+        scoring is decoupled from the current training policy.
+
         Returns a list of float scores, one per candidate.  When no value
         model is available, all candidates receive a score of 0.0.
         """
@@ -146,7 +182,14 @@ class ValueGuidedSearchEngine:
         for cand in candidates:
             steps = cand.get("steps", [])
             rollout_tokens = cand.get("tokens", steps)
-            score = self.value_model.score_partial_rollout(rollout_tokens)
+
+            # Use reference model for lagged inference policy scoring
+            if self.reference_model is not None:
+                score = self.value_model.score_partial_rollout(
+                    rollout_tokens, reference_model=self.reference_model
+                )
+            else:
+                score = self.value_model.score_partial_rollout(rollout_tokens)
             scores.append(float(score))
         return scores
 
@@ -281,6 +324,46 @@ class ValueGuidedSearchEngine:
             "beam_size": len(beam),
             "depth": min(depth + 1, self.max_depth) if beam else 0,
         }
+
+    @staticmethod
+    def _build_conversation_history(
+        state: Dict[str, Any],
+    ) -> List[Dict[str, str]]:
+        """Build a conversation history from the state's step trajectory.
+
+        Converts each step into a message so the agent has full context of
+        prior retrieval results and reasoning when generating the next step.
+        This matches the KARL paper's approach where the agent sees its full
+        trajectory during search expansion.
+        """
+        messages: List[Dict[str, str]] = []
+        query = state.get("query", "")
+        if query:
+            messages.append({"role": "user", "content": query})
+
+        for step in state.get("steps", []):
+            if isinstance(step, dict):
+                step_type = step.get("type", "reasoning")
+                content = step.get("content", "")
+
+                if step_type == "tool_call" or step_type == "retrieval":
+                    # Agent's tool call / search action
+                    messages.append({"role": "assistant", "content": content})
+                    # Tool result (search results, retrieval output)
+                    tool_result = step.get("result", step.get("tool_output", ""))
+                    if tool_result:
+                        messages.append({"role": "tool", "content": str(tool_result)})
+                elif step_type == "compression":
+                    # Compressed context replaces prior messages
+                    messages.append({"role": "assistant", "content": content})
+                else:
+                    # Reasoning / answer step
+                    if content:
+                        messages.append({"role": "assistant", "content": content})
+            elif isinstance(step, str) and step:
+                messages.append({"role": "assistant", "content": step})
+
+        return messages
 
     @staticmethod
     def _extend_state(

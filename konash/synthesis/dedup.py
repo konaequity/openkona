@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Dict, List, Optional, Set, Tuple
+import re as _re
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 try:
     import numpy as np
@@ -441,35 +442,48 @@ class DeduplicationAgent:
 
         return kept
 
-    def judge_paraphrase(self, question_a: str, question_b: str) -> bool:
+    def judge_paraphrase(
+        self,
+        question_a: str,
+        question_b: str,
+        answer_a: Optional[str] = None,
+        answer_b: Optional[str] = None,
+    ) -> bool:
         """Determine whether two questions are paraphrases of each other.
 
-        In a full deployment, this calls an LLM judge. The base
-        implementation uses token-overlap heuristics.
+        When ``paraphrase_judge`` is an :class:`LLMParaphraseJudge` (or
+        any callable), delegates to it using the exact prompts from the
+        KARL paper (Figure 32 for TREC-Biogen, Figure 33 for
+        BrowseComp-Plus).  Falls back to token-overlap heuristic when
+        no judge is configured.
 
         Parameters
         ----------
         question_a : str
+            First question (typically the generated/synthetic question).
         question_b : str
+            Second question (typically the validation-set question).
+        answer_a : str | None
+            Answer for question_a (used in BrowseComp-Plus mode).
+        answer_b : str | None
+            Answer for question_b (used in BrowseComp-Plus mode).
 
         Returns
         -------
         bool
             True if the questions are judged to be paraphrases.
         """
-        if self.paraphrase_judge is not None and callable(self.paraphrase_judge):
-            return bool(self.paraphrase_judge(question_a, question_b))
+        if self.paraphrase_judge is not None:
+            if isinstance(self.paraphrase_judge, LLMParaphraseJudge):
+                return self.paraphrase_judge.judge(
+                    question_a, question_b,
+                    answer_a=answer_a, answer_b=answer_b,
+                )
+            if callable(self.paraphrase_judge):
+                return bool(self.paraphrase_judge(question_a, question_b))
 
-        # Heuristic: high token overlap indicates paraphrase
-        tokens_a = set(question_a.lower().split())
-        tokens_b = set(question_b.lower().split())
-
-        if not tokens_a or not tokens_b:
-            return False
-
-        overlap = tokens_a & tokens_b
-        jaccard = len(overlap) / len(tokens_a | tokens_b)
-        return jaccard >= 0.6
+        # Heuristic fallback: high token overlap indicates paraphrase
+        return _heuristic_paraphrase_check(question_a, question_b)
 
     def retrieve_similar_questions(
         self,
@@ -523,11 +537,195 @@ class DeduplicationAgent:
         return " ".join(text.lower().split())
 
 
+class LLMParaphraseJudge:
+    """LLM-backed paraphrase judge using the KARL paper's deduplication
+    prompts (Appendix D.2, Figures 32–33).
+
+    Two modes match the two tasks in the paper:
+
+    - **question_only** (Figure 32, TREC-Biogen): compares questions only.
+      Uses ``gpt-4o-mini`` at temperature 0.
+    - **question_and_answer** (Figure 33, BrowseComp-Plus): compares
+      question-answer pairs, including "inverse" detection where one
+      pair's answer appears in the other's question.
+
+    Parameters
+    ----------
+    llm_fn : callable
+        ``(messages) -> {"role": "assistant", "content": "..."}``.
+    mode : str
+        ``"question_only"`` or ``"question_and_answer"``.
+    """
+
+    def __init__(
+        self,
+        llm_fn: Callable,
+        mode: str = "question_only",
+    ):
+        self.llm_fn = llm_fn
+        self.mode = mode
+
+    def judge(
+        self,
+        question_a: str,
+        question_b: str,
+        answer_a: Optional[str] = None,
+        answer_b: Optional[str] = None,
+    ) -> bool:
+        """Judge whether two questions (or QA pairs) are duplicates.
+
+        Returns True if the LLM determines they are duplicates.
+        Falls back to heuristic if the LLM call fails.
+        """
+        if self.mode == "question_and_answer" and answer_a and answer_b:
+            return self._judge_qa_pairs(
+                question_a, answer_a, question_b, answer_b,
+            )
+        return self._judge_questions(question_a, question_b)
+
+    def _judge_questions(self, q1: str, q2: str) -> bool:
+        """TREC-Biogen dedup prompt (Figure 32, Appendix D.2).
+
+        Question-only comparison. The judge determines if two questions
+        ask for the SAME information, even if phrased differently.
+        """
+        prompt = (
+            "Question Deduplication Judge Prompt for TREC-Biogen\n\n"
+            "Your Role: You are judging whether two questions are "
+            "semantically equivalent or duplicate.\n\n"
+            f"Question 1: {q1}\n"
+            f"Question 2: {q2}\n\n"
+            "Your Task: Determine if Question 1 and Question 2 are asking "
+            "for the SAME information, even if phrased differently.\n\n"
+            "Guidelines:\n"
+            '- "What is the capital of France?" and "Which city is the '
+            'capital of France?" are duplicates (same question).\n'
+            '- "What is the capital of France?" and "What is the population '
+            'of France?" are NOT duplicates (different questions).\n'
+            '- "Who invented the telephone?" and "Who created the '
+            'telephone?" are duplicates (same question).\n'
+            "- Minor differences in wording are acceptable if the core "
+            "question is the same.\n"
+            "- Consider paraphrasing -- different words can ask the same "
+            "question.\n\n"
+            "Output Format:\n"
+            "<reasoning>[Brief explanation of judgment]</reasoning>\n"
+            "<duplicate>[yes or no]</duplicate>"
+        )
+        return self._call_and_parse(prompt)
+
+    def _judge_qa_pairs(
+        self, q1: str, a1: str, q2: str, a2: str,
+    ) -> bool:
+        """BrowseComp-Plus dedup prompt (Figure 33, Appendix D.2).
+
+        Question-answer pair comparison. Handles "inverse" questions
+        where one pair's answer appears in the other's question.
+        """
+        prompt = (
+            "Deduplication Judge Prompt for BrowseComp-Plus\n\n"
+            "You are judging whether two question-answer pairs are "
+            "duplicates.\n\n"
+            "Question-Answer Pair 1 (Generated):\n"
+            f"Question 1: {q1}\n"
+            f"Answer 1: {a1}\n\n"
+            "Question-Answer Pair 2 (Validation Set):\n"
+            f"Question 2: {q2}\n"
+            f"Answer 2: {a2}\n\n"
+            "Your Task: Determine if these question-answer pairs are about "
+            "the same underlying fact or relationship. Two pairs are "
+            "duplicates if:\n"
+            "1. They are about the same underlying fact, relationship, or "
+            "piece of knowledge.\n"
+            "2. This includes \"inverse\" questions where Q1's answer "
+            "appears in Q2's question and vice versa.\n\n"
+            "Examples:\n"
+            '- Q1: "Who is the CEO of Apple?" A1: "Tim Cook" vs '
+            'Q2: "Who leads Apple Inc?" A2: "Tim Cook"\n'
+            "  -> DUPLICATE (same fact)\n"
+            '- Q1: "Who is the CEO of Apple?" A1: "Tim Cook" vs '
+            'Q2: "Who is Tim Cook?" A2: "CEO of Apple"\n'
+            "  -> DUPLICATE (same fact, inverse framing)\n"
+            '- Q1: "What year was Obama born?" A1: "1961" vs '
+            'Q2: "When did Obama become president?" A2: "2009"\n'
+            "  -> NOT DUPLICATE (different facts about the same person)\n"
+            '- Q1: "Capital of France?" A1: "Paris" vs '
+            'Q2: "Largest city in France?" A2: "Paris"\n'
+            "  -> NOT DUPLICATE (different facts, answer happens to be "
+            "the same)\n"
+            '- Q1: "Who directed Inception?" A1: "Christopher Nolan" vs '
+            'Q2: "Who directed The Dark Knight?" A2: "Christopher Nolan"\n'
+            "  -> NOT DUPLICATE (different facts, same answer)\n\n"
+            "Output Format:\n"
+            "<reasoning>Analyze whether both pairs encode the same "
+            "underlying fact or relationship</reasoning>\n"
+            "<duplicate>yes or no</duplicate>"
+        )
+        return self._call_and_parse(prompt)
+
+    def _call_and_parse(self, prompt: str) -> bool:
+        """Call the LLM and parse the <duplicate> tag from the response."""
+        try:
+            response = self.llm_fn([{"role": "user", "content": prompt}])
+            content = (
+                response.get("content", "")
+                if isinstance(response, dict)
+                else str(response)
+            )
+
+            # Parse <duplicate>yes/no</duplicate>
+            match = _re.search(
+                r"<duplicate>\s*(yes|no)\s*</duplicate>",
+                content,
+                _re.IGNORECASE,
+            )
+            if match:
+                return match.group(1).strip().lower() == "yes"
+
+            # Fallback: look for "yes" or "no" in the last line
+            lines = content.strip().split("\n")
+            last_line = lines[-1].strip().lower() if lines else ""
+            if "yes" in last_line:
+                return True
+            if "no" in last_line:
+                return False
+        except Exception:
+            pass
+
+        # LLM failed — fall back to heuristic
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def _heuristic_paraphrase_check(question_a: str, question_b: str) -> bool:
+    """Token-overlap heuristic for paraphrase detection.
+
+    Uses Jaccard similarity >= 0.6 as threshold.  This is the fallback
+    when no LLM judge is configured.
+    """
+    tokens_a = set(question_a.lower().split())
+    tokens_b = set(question_b.lower().split())
+
+    if not tokens_a or not tokens_b:
+        return False
+
+    overlap = tokens_a & tokens_b
+    jaccard = len(overlap) / len(tokens_a | tokens_b)
+    return jaccard >= 0.6
+
+
 class TRECBiogenDedupPolicy:
     """Deduplication policy tuned for the TREC Biogen benchmark.
 
     Uses a large embedding model (Qwen3-8B-Embedding) and retrieves more
     candidates (top_k=20) to catch subtle paraphrases in biomedical text.
+
+    The paraphrase judge uses the Figure 32 prompt (question-only
+    comparison) with ``gpt-4o-mini`` at temperature 0.
 
     Attributes
     ----------
@@ -554,12 +752,23 @@ class TRECBiogenDedupPolicy:
         self.exact_match_scope = exact_match_scope or "question_and_answer"
         self.paraphrase_judge_model = paraphrase_judge_model
 
-    def create_agent(self, **kwargs: Any) -> DeduplicationAgent:
-        """Create a DeduplicationAgent configured with this policy."""
+    def create_agent(self, llm_fn: Any = None, **kwargs: Any) -> DeduplicationAgent:
+        """Create a DeduplicationAgent configured with this policy.
+
+        Parameters
+        ----------
+        llm_fn : callable | None
+            LLM function for paraphrase judging.  When provided, creates
+            an ``LLMParaphraseJudge`` using the TREC-Biogen prompt
+            (Figure 32, question-only mode).
+        """
+        judge = None
+        if llm_fn is not None:
+            judge = LLMParaphraseJudge(llm_fn=llm_fn, mode="question_only")
         return DeduplicationAgent(
             embedding_model=self.embedding_model,
             similarity_top_k=self.similarity_top_k,
-            paraphrase_judge=self.paraphrase_judge_model,
+            paraphrase_judge=judge,
             **kwargs,
         )
 
@@ -569,6 +778,10 @@ class BrowseCompDedupPolicy:
 
     Uses a smaller embedding model (Qwen3-0.6B-Embedding) and fewer candidates
     (top_k=10) since BrowseComp questions tend to be more distinct.
+
+    The paraphrase judge uses the Figure 33 prompt (question+answer
+    comparison with inverse detection) with ``gpt-4o-mini`` at
+    temperature 0.
 
     Attributes
     ----------
@@ -595,11 +808,24 @@ class BrowseCompDedupPolicy:
         self.exact_answer_blocklist = exact_answer_blocklist or []
         self.paraphrase_judge_model = paraphrase_judge_model
 
-    def create_agent(self, **kwargs: Any) -> DeduplicationAgent:
-        """Create a DeduplicationAgent configured with this policy."""
+    def create_agent(self, llm_fn: Any = None, **kwargs: Any) -> DeduplicationAgent:
+        """Create a DeduplicationAgent configured with this policy.
+
+        Parameters
+        ----------
+        llm_fn : callable | None
+            LLM function for paraphrase judging.  When provided, creates
+            an ``LLMParaphraseJudge`` using the BrowseComp-Plus prompt
+            (Figure 33, question+answer mode with inverse detection).
+        """
+        judge = None
+        if llm_fn is not None:
+            judge = LLMParaphraseJudge(
+                llm_fn=llm_fn, mode="question_and_answer",
+            )
         return DeduplicationAgent(
             embedding_model=self.embedding_model,
             similarity_top_k=self.similarity_top_k,
-            paraphrase_judge=self.paraphrase_judge_model,
+            paraphrase_judge=judge,
             **kwargs,
         )
