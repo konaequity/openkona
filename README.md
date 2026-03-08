@@ -49,7 +49,7 @@ KONASH is an open-source RL framework that improves agent reliability by trainin
 
 | Agent Task | Example Notebook | Description | Comparative Performance |
 |---|---|---|---|
-| **Trivia Night** | [Train agent](notebooks/trivia_night.ipynb) | Qwen 3.5 7B learns to answer multi-constraint trivia by searching Wikipedia | [Link coming soon] |
+| **Trivia Night** | [Train agent](notebooks/trivia_night.ipynb) | Qwen 3 8B learns to answer multi-constraint trivia by searching Wikipedia | [Link coming soon] |
 | **20 Questions** | [Train agent](#) | Qwen 3.5 7B learns to identify a mystery entity in 20 yes/no searches | [Link coming soon] |
 | **GeoGuessr** | [Train agent](#) | Qwen 3.5 7B learns to pinpoint locations from landmark and terrain descriptions | [Link coming soon] |
 

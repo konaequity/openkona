@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "konash"
-version = "0.1.1"
+version = "0.1.2"
 description = "Train knowledge agents that search, retrieve, compress, and reason — on a single GPU."
 requires-python = ">=3.11"
 dependencies = [
@@ -18,6 +18,7 @@ train = [
     "transformers>=4.36",
     "peft>=0.7",
     "accelerate>=0.25",
+    "bitsandbytes>=0.46.1",
 ]
 quant = [
     "bitsandbytes>=0.41",
