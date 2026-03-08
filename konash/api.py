@@ -342,8 +342,6 @@ class Agent:
                 print(f"{'='*60}")
 
             # Step 3: Synthesize QA pairs
-            if verbose:
-                print("  Synthesizing training examples ...")
             # Free transient GPU memory before generation
             import gc
             gc.collect()
@@ -356,6 +354,12 @@ class Agent:
             sample_size = min(5, len(all_docs))
             documents = _random.sample(all_docs, sample_size)
             documents = [d[:500] for d in documents]  # truncate for VRAM
+            if verbose:
+                previews = [d[:60].replace("\n", " ") for d in documents]
+                print(f"  Synthesizing from {len(documents)} chunks:")
+                for p in previews:
+                    print(f"    - {p}...")
+                print("  Generating QA pairs (this may take a few minutes) ...")
             try:
                 examples = pipeline.run_stage_one(
                     documents=documents,
@@ -367,7 +371,9 @@ class Agent:
                     print("  Skipping this iteration.")
                 continue
             if verbose:
-                print(f"  Generated {len(examples)} examples.")
+                print(f"  Generated {len(examples)} examples:")
+                for i, ex in enumerate(examples):
+                    print(f"    [{i+1}] {(ex.question or '')[:80]}")
 
             # Step 4: Generate rollouts + filter
             if verbose:
