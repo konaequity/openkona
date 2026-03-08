@@ -209,12 +209,13 @@ class RolloutGenerator:
                 self._notify(qa_idx, rollout_id, step_idx, step_record)
                 continue
 
-            # Check if we need context compression
+            # Check if we need context compression (KARL paper Section 4.2)
             if (self.compression_trigger_chars
                     and total_chars > self.compression_trigger_chars):
-                steps = self._compress_context(steps)
+                steps = self._compress_context(steps, prompt)
                 total_chars = sum(
                     len(str(s.get("thought", ""))) + len(str(s.get("results", "")))
+                    + len(str(s.get("summary", "")))
                     for s in steps
                 )
 
@@ -466,23 +467,172 @@ class RolloutGenerator:
         return f"Unable to determine answer for: {prompt[:200]}"
 
     def _compress_context(
-        self, steps: List[Dict[str, Any]],
+        self,
+        steps: List[Dict[str, Any]],
+        prompt: str = "",
     ) -> List[Dict[str, Any]]:
-        """Compress the trajectory context when it exceeds the trigger.
+        """Compress the trajectory context using LLM-generated summarization.
 
-        Keeps the first retrieval step (grounding) and the most recent steps,
-        summarizing middle steps into a single condensed record.  Matches the
-        KARL paper's compression mechanism (Section 4.2).
+        Matches the KARL paper's compression mechanism (Section 4.2):
+
+        - **The agent compresses its own history** — the same LLM that runs
+          the search trajectory produces the summary.
+        - Achieves ~100x reduction (e.g. 112K chars -> ~1,100 chars) while
+          preserving conclusions, key evidence, and reasoning state.
+        - Compression quality improves through RL training because bad
+          compressions lead to wrong answers and low reward.
+
+        When no ``llm_fn`` is available, falls back to a mechanical
+        keep-first-and-last truncation strategy.
+
+        Parameters
+        ----------
+        steps : list[dict]
+            The trajectory steps accumulated so far.
+        prompt : str
+            The question being answered — included so the LLM knows what
+            information is most important to retain.
+
+        Returns
+        -------
+        list[dict]
+            Compressed trajectory with a ``compression`` step marker.
         """
         if len(steps) <= 3:
             return steps
 
-        # Keep first step + last 2 steps, summarize the middle
+        if self.llm_fn is not None:
+            return self._llm_compress(steps, prompt)
+        return self._mechanical_compress(steps)
+
+    def _llm_compress(
+        self,
+        steps: List[Dict[str, Any]],
+        prompt: str,
+    ) -> List[Dict[str, Any]]:
+        """Use the LLM to compress the trajectory (paper-faithful).
+
+        The full trajectory is serialized and sent to the LLM with a
+        compression prompt.  The LLM returns a concise summary preserving
+        key findings, conclusions, and evidence.
+        """
+        # Serialize the trajectory into a readable format
+        trajectory_parts: List[str] = []
+        for s in steps:
+            stype = s.get("type", "unknown")
+            if stype == "retrieval":
+                results = s.get("results", [])
+                docs_preview = []
+                for r in results[:5]:
+                    text = r.get("text", str(r)) if isinstance(r, dict) else str(r)
+                    docs_preview.append(text[:300])
+                trajectory_parts.append(
+                    f"[Step {s.get('step', '?')}] RETRIEVAL for: "
+                    f"{s.get('query', '?')}\n"
+                    f"  Retrieved {s.get('num_results', 0)} documents. "
+                    f"Top results:\n" +
+                    "\n".join(f"  - {d}" for d in docs_preview)
+                )
+            elif stype == "reasoning":
+                thought = s.get("thought", "")
+                part = f"[Step {s.get('step', '?')}] REASONING: {thought}"
+                sub = s.get("sub_retrieval")
+                if sub:
+                    sub_results = sub.get("results", [])
+                    sub_preview = []
+                    for r in sub_results[:3]:
+                        text = r.get("text", str(r)) if isinstance(r, dict) else str(r)
+                        sub_preview.append(text[:200])
+                    part += (
+                        f"\n  Sub-retrieval for: {sub.get('query', '?')}\n" +
+                        "\n".join(f"  - {d}" for d in sub_preview)
+                    )
+                trajectory_parts.append(part)
+            elif stype == "answer":
+                trajectory_parts.append(
+                    f"[Step {s.get('step', '?')}] ANSWER: {s.get('answer', '')}"
+                )
+            elif stype == "compression":
+                trajectory_parts.append(
+                    f"[Step {s.get('step', '?')}] PREVIOUS COMPRESSION: "
+                    f"{s.get('summary', '')}"
+                )
+
+        trajectory_text = "\n\n".join(trajectory_parts)
+
+        # Truncate if the serialized trajectory itself is enormous
+        if len(trajectory_text) > 200_000:
+            trajectory_text = trajectory_text[:200_000] + "\n\n[... truncated ...]"
+
+        messages = [
+            {"role": "system", "content": (
+                "You are compressing your own search trajectory into a concise "
+                "summary. Your goal is to preserve ALL information needed to "
+                "answer the question correctly.\n\n"
+                "What to preserve:\n"
+                "- Any conclusions or candidate answers you have reached\n"
+                "- Key evidence and facts discovered from retrieved documents\n"
+                "- Important entity names, dates, numbers, and relationships\n"
+                "- Which search queries have already been tried\n\n"
+                "What to drop:\n"
+                "- Redundant or irrelevant retrieved passages\n"
+                "- Verbose reasoning that can be stated more concisely\n"
+                "- Document text that doesn't relate to the question\n\n"
+                "Return ONLY the compressed summary. Be concise but complete."
+            )},
+            {"role": "user", "content": (
+                f"Question being answered: {prompt}\n\n"
+                f"Full search trajectory ({len(steps)} steps, "
+                f"{len(trajectory_text)} chars):\n\n"
+                f"{trajectory_text}\n\n"
+                "Compress this trajectory into a summary of roughly "
+                "1000-2000 characters, preserving all critical information "
+                "needed to answer the question."
+            )},
+        ]
+
+        try:
+            response = self.llm_fn(messages)
+            summary = (
+                response.get("content", "")
+                if isinstance(response, dict)
+                else str(response)
+            ).strip()
+
+            if summary:
+                compressed_step: Dict[str, Any] = {
+                    "step": "compressed",
+                    "type": "compression",
+                    "original_steps": len(steps),
+                    "original_chars": len(trajectory_text),
+                    "summary_chars": len(summary),
+                    "summary": summary,
+                }
+                # Keep the most recent step alongside the compression
+                # so the agent has immediate context
+                recent = steps[-1:] if len(steps) > 1 else []
+                return [compressed_step] + recent
+        except Exception:
+            pass
+
+        # LLM call failed — fall back to mechanical compression
+        return self._mechanical_compress(steps)
+
+    @staticmethod
+    def _mechanical_compress(
+        steps: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Mechanical fallback: keep first + last 2 steps, drop the middle.
+
+        Used only when no LLM is available for proper compression.
+        """
+        if len(steps) <= 3:
+            return steps
+
         first = steps[0]
         recent = steps[-2:]
         middle = steps[1:-2]
 
-        # Build a compressed summary of middle steps
         summary_parts = []
         for s in middle:
             stype = s.get("type", "?")
@@ -495,11 +645,13 @@ class RolloutGenerator:
                 thought = s.get("thought", "")[:100]
                 summary_parts.append(f"[reasoning: {thought}]")
             elif stype == "answer":
-                summary_parts.append(f"[answer attempt: {s.get('answer', '')[:100]}]")
+                summary_parts.append(
+                    f"[answer attempt: {s.get('answer', '')[:100]}]"
+                )
 
-        compressed = {
+        compressed: Dict[str, Any] = {
             "step": "compressed",
-            "type": "compressed_summary",
+            "type": "compression",
             "original_steps": len(middle),
             "summary": " | ".join(summary_parts),
         }
