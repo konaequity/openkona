@@ -427,6 +427,7 @@ class LocalModelEngine:
             labels = labels.unsqueeze(0)
 
         ref_state = getattr(self, "_ref_lora_state", None)
+        was_training = self.model.training
 
         if use_reference and ref_state is not None:
             # Swap in reference LoRA weights (πref = previous iteration)
@@ -438,6 +439,11 @@ class LocalModelEngine:
         elif use_reference:
             # No snapshot yet — disable LoRA (πref = base model)
             self.model.disable_adapter_layers()
+
+        # Eval mode for reference: disables dropout so log-probs are
+        # deterministic (LoRA dropout would corrupt the KL term).
+        if use_reference:
+            self.model.eval()
 
         try:
             ctx = torch.no_grad() if use_reference else torch.enable_grad()
@@ -465,6 +471,9 @@ class LocalModelEngine:
                         param.data.copy_(current_state[name])
             elif use_reference:
                 self.model.enable_adapter_layers()
+            # Restore train/eval mode
+            if use_reference and was_training:
+                self.model.train()
 
     # ------------------------------------------------------------------
     # Rollout tokenization (for OAPL training)

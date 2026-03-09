@@ -349,6 +349,13 @@ class OAPLTrainer:
                 input_ids, labels, use_reference=True,
             )
 
+        # Align tool_mask with shifted log-probs (seq_len - 1).
+        # compute_log_probs shifts for next-token prediction: position i
+        # predicts token i+1.  Tool mask position i+1 tells us whether the
+        # TARGET token is tool output, so we take tool_mask[1:].
+        if tool_mask.shape[0] != valid_mask.shape[0]:
+            tool_mask = tool_mask[1:]
+
         # Combine valid-token mask with tool-output mask
         combined_mask = valid_mask & tool_mask
         valid_count = combined_mask.sum()
