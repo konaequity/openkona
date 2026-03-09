@@ -149,6 +149,12 @@ class RolloutGenerator:
         if seed is not None:
             random.seed(seed)
 
+        # Decompose reference answer into nuggets once, reuse for all rollouts
+        # (KARL paper Section 2.3, Appendix D.1 Figure 31)
+        nuggets = None
+        if reference_answer and self.llm_fn is not None:
+            nuggets = self._decompose_nuggets(prompt, reference_answer)
+
         rollouts: List[Rollout] = []
         for i in range(num_rollouts):
             rollout = self.generate_single(
@@ -156,6 +162,7 @@ class RolloutGenerator:
                 reference_answer=reference_answer,
                 rollout_id=i,
                 qa_idx=qa_idx,
+                nuggets=nuggets,
             )
             rollouts.append(rollout)
 
@@ -171,6 +178,7 @@ class RolloutGenerator:
         reference_answer: Optional[str] = None,
         rollout_id: int = 0,
         qa_idx: int = 0,
+        nuggets: Optional[List[str]] = None,
     ) -> Rollout:
         """Generate a single reasoning rollout for a prompt.
 
@@ -260,7 +268,10 @@ class RolloutGenerator:
         # Evaluate pass/fail
         passed = None
         if reference_answer is not None and final_answer is not None:
-            passed = self._evaluate(final_answer, reference_answer)
+            passed = self._evaluate(
+                final_answer, reference_answer,
+                question=prompt, nuggets=nuggets,
+            )
 
         return Rollout(
             steps=steps,
@@ -669,27 +680,180 @@ class RolloutGenerator:
 
         return [first, compressed] + recent
 
-    def _evaluate(self, predicted: str, reference: str) -> bool:
-        """Evaluate answer correctness using nugget-based evaluation.
+    def _evaluate(
+        self,
+        predicted: str,
+        reference: str,
+        question: str = "",
+        nuggets: Optional[List[str]] = None,
+    ) -> bool:
+        """Evaluate answer correctness.
 
-        When a ``nugget_scorer`` is configured (with an LLM judge), uses the
-        KARL paper's nugget-based completion evaluation (Section 2.3,
-        Appendix D.1).  The reference is decomposed into nuggets, each judged
-        as support (1.0) / partial_support (0.5) / not_support (0.0), and the
-        mean score determines pass/fail (threshold >= 0.5).
+        Uses LLM-based nugget evaluation when ``llm_fn`` is available
+        (KARL paper Section 2.3, Appendix D.1 Figure 31).  Each nugget
+        is judged as support (1.0) / partial_support (0.5) /
+        not_support (0.0), and the mean score determines pass/fail.
 
-        Without a nugget scorer, falls back to a multi-tier heuristic:
-        1. Exact match (normalized)
-        2. Containment (reference appears in prediction)
-        3. Key-phrase extraction from the reference
-        4. Token-level F1 fallback (threshold 0.5)
+        Falls back to heuristic token matching when no LLM is available.
         """
-        # --- Nugget-based evaluation (paper-faithful) ---
+        # --- LLM-based nugget evaluation ---
+        if self.llm_fn is not None:
+            return self._llm_evaluate(predicted, reference, question, nuggets)
+
+        # --- Legacy nugget scorer ---
         if self.nugget_scorer is not None:
             result = self.nugget_scorer.score(predicted, reference)
             return result.get("score", 0.0) >= 0.5
 
         # --- Heuristic fallback ---
+        return _heuristic_evaluate(predicted, reference)
+
+    def _decompose_nuggets(
+        self, question: str, reference: str,
+    ) -> List[str]:
+        """Decompose a reference answer into atomic decompositional facts.
+
+        Called once per question in ``generate_group()`` and reused across
+        all rollouts for that question.
+        """
+        messages = [
+            {"role": "system", "content": (
+                "Decompose the reference answer into a list of atomic, "
+                "independently verifiable facts (nuggets). Each nugget should "
+                "be a single specific claim that can be judged as supported or "
+                "not supported by a candidate answer.\n\n"
+                "Return ONLY a Python list of strings, one per fact. "
+                "Do not include any explanation.\n\n"
+                "Example:\n"
+                'Question: "When and where was the first heart transplant?"\n'
+                'Answer: "The first successful human heart transplant was '
+                'performed by Christiaan Barnard on December 3, 1967, at '
+                'Groote Schuur Hospital in Cape Town, South Africa."\n'
+                "Nuggets:\n"
+                '["Christiaan Barnard performed the first heart transplant", '
+                '"The transplant occurred on December 3, 1967", '
+                '"It took place at Groote Schuur Hospital", '
+                '"The hospital is in Cape Town, South Africa"]'
+            )},
+            {"role": "user", "content": (
+                f"Question: {question}\n"
+                f"Answer: {reference}\n"
+                f"Nuggets:"
+            )},
+        ]
+
+        try:
+            response = self.llm_fn(messages, max_new_tokens=512)
+            content = response.get("content", "") if isinstance(response, dict) else str(response)
+            # Strip thinking tags
+            content = _re.sub(r'<think>.*?</think>\s*', '', content, flags=_re.DOTALL)
+            content = _re.sub(r'<think>.*', '', content, flags=_re.DOTALL).strip()
+
+            # Parse as Python list
+            match = _re.search(r'\[.*\]', content, _re.DOTALL)
+            if match:
+                nuggets = _json.loads(match.group())
+                if isinstance(nuggets, list) and all(isinstance(n, str) for n in nuggets):
+                    return [n.strip() for n in nuggets if n.strip()]
+
+            # Fallback: split by newlines / bullets
+            lines = []
+            for line in content.split("\n"):
+                line = _re.sub(r'^[\s\-\*\d\.\)]+', '', line).strip().strip('"')
+                if line and len(line) > 5:
+                    lines.append(line)
+            if lines:
+                return lines
+
+        except Exception:
+            pass
+
+        # If decomposition fails, treat the whole answer as one nugget
+        return [reference]
+
+    def _llm_evaluate(
+        self,
+        predicted: str,
+        reference: str,
+        question: str = "",
+        nuggets: Optional[List[str]] = None,
+    ) -> bool:
+        """LLM-based nugget-completeness evaluation (KARL Figure 31).
+
+        Each nugget is scored:
+        - support (1.0): answer fully captures the fact
+        - partial_support (0.5): answer partially captures it
+        - not_support (0.0): answer does not capture it
+
+        Pass if mean score >= 0.5.
+        """
+        if not nuggets:
+            nuggets = [reference]
+
+        nugget_text = "\n".join(f"  {i+1}. {n}" for i, n in enumerate(nuggets))
+
+        messages = [
+            {"role": "system", "content": (
+                "You will evaluate whether an answer sufficiently supports "
+                "each decompositional fact.\n\n"
+                "Process:\n"
+                f"1. Read the question and the answer.\n"
+                f"2. Read each of the {len(nuggets)} decompositional facts "
+                "carefully one by one.\n"
+                "3. Based on the question and answer, judge whether the answer "
+                "supports, partially supports, or does not support each fact.\n\n"
+                "IMPORTANT: Judge based on MEANING, not exact wording. "
+                "Paraphrases, synonyms, and semantic equivalents count. "
+                'For example: "near Naples" supports "from Pozzuoli" '
+                '(Pozzuoli is near Naples); "1700s" supports "18th century"; '
+                '"volcanic material" partially supports "pozzolana" '
+                "(same substance, different name).\n\n"
+                'Label Definitions:\n'
+                '- "support": The answer captures the essential meaning of '
+                "the fact, even if using different words.\n"
+                '- "partial_support": The answer partially captures the fact '
+                "(e.g., refers to the concept without full specificity).\n"
+                '- "not_support": The answer does not capture or does not '
+                "provide information entailing the fact.\n\n"
+                "Output Format: Return ONLY a Python list of label strings, "
+                "in the same order as the facts. No explanation.\n"
+                'Example: ["support", "not_support", "partial_support"]'
+            )},
+            {"role": "user", "content": (
+                f"Question: {question}\n"
+                f"Answer: {predicted}\n"
+                f"Decompositional Facts:\n{nugget_text}\n"
+                f"Labels:"
+            )},
+        ]
+
+        try:
+            response = self.llm_fn(messages, max_new_tokens=1024)
+            content = response.get("content", "") if isinstance(response, dict) else str(response)
+            content = _re.sub(r'<think>.*?</think>\s*', '', content, flags=_re.DOTALL)
+            content = _re.sub(r'<think>.*', '', content, flags=_re.DOTALL).strip()
+
+            # Parse the label list
+            match = _re.search(r'\[.*\]', content, _re.DOTALL)
+            if match:
+                labels = _json.loads(match.group())
+                if isinstance(labels, list):
+                    score_map = {
+                        "support": 1.0,
+                        "partial_support": 0.5,
+                        "not_support": 0.0,
+                    }
+                    scores = []
+                    for label in labels:
+                        label_str = str(label).lower().strip().replace(" ", "_")
+                        scores.append(score_map.get(label_str, 0.0))
+                    if scores:
+                        return (sum(scores) / len(scores)) >= 0.5
+
+        except Exception:
+            pass
+
+        # If LLM judge fails, fall back to heuristic
         return _heuristic_evaluate(predicted, reference)
 
 
@@ -708,7 +872,6 @@ def _heuristic_evaluate(predicted: str, reference: str) -> bool:
     4. Token-level F1 (threshold 0.5)
     """
     def normalize(text: str) -> str:
-        # Strip punctuation and citation markers before comparing
         text = _re.sub(r'\[Document \d+\]', '', text)
         text = _re.sub(r'\(Document \d+\)', '', text)
         text = _re.sub(r'[^\w\s]', ' ', text)
@@ -722,12 +885,14 @@ def _heuristic_evaluate(predicted: str, reference: str) -> bool:
     if ref_norm in pred_norm:
         return True
 
-    nuggets = _extract_nuggets(reference)
+    # Key-phrase matching
+    nuggets = _extract_key_phrases(reference)
     if nuggets:
         matched = sum(1 for n in nuggets if n.lower() in pred_norm)
         if matched >= len(nuggets) * 0.6:
             return True
 
+    # Token F1
     pred_tokens = set(pred_norm.split())
     ref_tokens = set(ref_norm.split())
     if not ref_tokens:
@@ -743,29 +908,16 @@ def _heuristic_evaluate(predicted: str, reference: str) -> bool:
     return f1 >= 0.5
 
 
-def _extract_nuggets(text: str) -> List[str]:
-    """Extract key phrases ("nuggets") from a reference answer.
-
-    Looks for:
-    - Parenthetical content: (NHEJ), (HDR)
-    - Quoted strings: "proximal policy optimization"
-    - Capitalized multi-word phrases: AlphaFold2, Cas9
-    """
-    nuggets: List[str] = []
-
-    # Parenthetical terms
+def _extract_key_phrases(text: str) -> List[str]:
+    """Extract key phrases from a reference answer for heuristic matching."""
+    phrases: List[str] = []
     for m in _re.finditer(r"\(([^)]+)\)", text):
-        nuggets.append(m.group(1).strip())
-
-    # Quoted strings
+        phrases.append(m.group(1).strip())
     for m in _re.finditer(r'"([^"]+)"', text):
-        nuggets.append(m.group(1).strip())
-
-    # Capitalized phrases (2+ chars, not common words)
+        phrases.append(m.group(1).strip())
     common = {"The", "This", "That", "These", "Those", "Each", "Some", "Any"}
     for m in _re.finditer(r"\b([A-Z][a-zA-Z0-9-]+(?:\s+[A-Z][a-zA-Z0-9-]+)*)\b", text):
         phrase = m.group(1)
         if phrase not in common and len(phrase) > 2:
-            nuggets.append(phrase)
-
-    return nuggets
+            phrases.append(phrase)
+    return phrases
