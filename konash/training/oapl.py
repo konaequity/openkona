@@ -68,11 +68,13 @@ class OAPLTrainer:
             The estimated optimal value V_hat_star.
         """
         rewards = np.asarray(group_rewards, dtype=np.float64)
+        G = len(rewards)
         scaled = rewards / self.beta_value
-        # logsumexp for numerical stability
+        # V̂*(x) = β · ln(1/G · Σ exp(r/β))  [paper eq. 1]
+        #        = β · (logsumexp(r/β) - ln(G))
         max_scaled = np.max(scaled)
         lse = max_scaled + np.log(np.sum(np.exp(scaled - max_scaled)))
-        return float(self.beta_value * lse)
+        return float(self.beta_value * (lse - np.log(G)))
 
     def estimate_optimal_value(self, group_rewards: List[float]) -> float:
         """Estimate V* using logsumexp over group rollout rewards.
