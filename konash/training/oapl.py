@@ -602,6 +602,11 @@ def _estimate_tool_ranges_from_steps(
                 # Mark this step as partially tool output
                 step_text += sub_text
                 tool_step_indices.append(i)
+        elif stype == "compression":
+            # Compression summaries are model-generated text that should
+            # be trained on (KARL Section 3: end-to-end compression).
+            # NOT added to tool_step_indices — these are NOT tool output.
+            step_text = step.get("summary", "")
         else:
             step_text = str(step.get("thought", "")) + str(step.get("answer", ""))
 

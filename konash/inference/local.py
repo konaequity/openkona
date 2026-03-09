@@ -438,6 +438,11 @@ class LocalModelEngine:
 
         The prompt tokens are masked (``labels = -100``) so the OAPL loss is
         computed only on the model's generated reasoning and answer tokens.
+
+        Compression steps are included in the token sequence so that the
+        OAPL loss backpropagates through compression tokens.  This matches
+        the KARL paper's end-to-end compression training (Section 3): the
+        model learns *what* to compress through the task reward signal.
         """
         torch = self._torch
 
@@ -449,6 +454,13 @@ class LocalModelEngine:
                 parts.append(step["thought"])
             elif stype == "answer" and step.get("answer"):
                 parts.append(step["answer"])
+            elif stype == "compression" and step.get("summary"):
+                # Include compression summary with markers so that:
+                # 1. OAPL loss flows to compression tokens (RL training)
+                # 2. RolloutSegmenter can split at compression boundaries
+                parts.append(
+                    f"<|compression|>\n{step['summary']}\n<|/compression|>"
+                )
 
         response = "\n".join(parts) if parts else "I don't know."
         user_msg = {"role": "user", "content": prompt}
