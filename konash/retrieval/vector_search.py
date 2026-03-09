@@ -9,6 +9,13 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+try:
+    import faiss
+
+    _FAISS_AVAILABLE = True
+except ImportError:
+    _FAISS_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -178,11 +185,15 @@ def resolve_embedding_model_name(name: str) -> str:
 
 
 class VectorSearchTool:
-    """Numpy-based vector search tool for retrieval-augmented agent rollouts.
+    """Embedded vector search tool for retrieval-augmented agent rollouts.
 
-    The tool maintains an in-memory matrix of document embeddings and
-    performs cosine-similarity search entirely with numpy -- no torch or
-    external vector-DB dependency.
+    Uses FAISS (if installed) for high-throughput inner-product search, with
+    automatic fallback to a pure-numpy implementation.  All search is
+    in-process — no client-server network I/O — matching the KARL paper's
+    design for >500 QPS per host.
+
+    Each worker process can instantiate its own index from shared storage
+    via :meth:`from_cache`.
 
     Class Attributes
     ----------------
@@ -199,6 +210,7 @@ class VectorSearchTool:
         model_name: Optional[str] = None,
         cache_dir: Optional[str] = None,
         device: Optional[str] = None,
+        use_faiss: Optional[bool] = None,
     ) -> None:
         """
         Parameters
@@ -217,6 +229,9 @@ class VectorSearchTool:
             Directory where serialised indexes can be stored / loaded.
         device:
             Device for the embedding model (``"cuda"``, ``"cpu"``, ``"auto"``).
+        use_faiss:
+            Force FAISS on/off.  ``None`` (default) auto-detects: uses FAISS
+            when the library is installed, falls back to numpy otherwise.
         """
         if embed_fn is not None:
             self.embed_fn = embed_fn
@@ -227,8 +242,20 @@ class VectorSearchTool:
             self.embed_fn = None
         self.cache_dir = cache_dir
 
+        # FAISS or numpy backend
+        if use_faiss is None:
+            self._use_faiss = _FAISS_AVAILABLE
+        else:
+            if use_faiss and not _FAISS_AVAILABLE:
+                raise ImportError(
+                    "use_faiss=True but faiss is not installed. "
+                    "Install with: pip install faiss-cpu"
+                )
+            self._use_faiss = use_faiss
+
         # Internal state
         self._vectors: Optional[np.ndarray] = None  # (N, dim) normalised
+        self._faiss_index: Optional[Any] = None      # faiss.IndexFlatIP
         self._documents: List[Dict[str, Any]] = []   # parallel metadata list
         self._index_id: Optional[str] = None
 
@@ -271,6 +298,18 @@ class VectorSearchTool:
         self._vectors = _normalize(vecs)
         self._documents = list(documents)
 
+        # Build FAISS index if available
+        if self._use_faiss:
+            dim = self._vectors.shape[1]
+            self._faiss_index = faiss.IndexFlatIP(dim)
+            # FAISS expects contiguous float32
+            vecs_c = np.ascontiguousarray(self._vectors, dtype=np.float32)
+            self._faiss_index.add(vecs_c)
+            logger.info(
+                "Built FAISS IndexFlatIP: %d vectors, dim=%d",
+                self._faiss_index.ntotal, dim,
+            )
+
         # Compute a stable ID for cache keying
         content_hash = hashlib.sha256(
             json.dumps([d.get(text_key, "") for d in documents], sort_keys=True).encode()
@@ -307,6 +346,23 @@ class VectorSearchTool:
             return []
 
         query_vec = self._encode_query(query)
+
+        # FAISS path: single-query inner-product search
+        if self._use_faiss and self._faiss_index is not None:
+            k = min(top_k, self._faiss_index.ntotal)
+            query_mat = query_vec.reshape(1, -1).astype(np.float32)
+            scores_arr, indices_arr = self._faiss_index.search(query_mat, k)
+            results: List[Dict[str, Any]] = []
+            for j in range(k):
+                idx = int(indices_arr[0, j])
+                if idx < 0:
+                    continue
+                result = dict(self._documents[idx])
+                result["score"] = float(scores_arr[0, j])
+                results.append(result)
+            return results
+
+        # NumPy fallback
         scores = self._vectors @ query_vec  # cosine similarity (vectors are normalised)
 
         k = min(top_k, len(scores))
@@ -318,7 +374,7 @@ class VectorSearchTool:
         # Sort the top-k by descending score
         top_indices = top_indices[np.argsort(-scores[top_indices])]
 
-        results: List[Dict[str, Any]] = []
+        results = []
         for idx in top_indices:
             result = dict(self._documents[idx])
             result["score"] = float(scores[idx])
@@ -349,12 +405,32 @@ class VectorSearchTool:
 
         # Encode all queries into a matrix (Q, dim)
         query_vecs = np.stack([self._encode_query(q) for q in queries])  # (Q, dim)
-        # Compute all similarities in one matmul: (Q, N)
-        all_scores = query_vecs @ self._vectors.T
 
-        results: List[List[Dict[str, Any]]] = []
+        # FAISS path: batch inner-product search
+        if self._use_faiss and self._faiss_index is not None:
+            k = min(top_k, self._faiss_index.ntotal)
+            query_mat = np.ascontiguousarray(query_vecs, dtype=np.float32)
+            all_scores, all_indices = self._faiss_index.search(query_mat, k)
+
+            results: List[List[Dict[str, Any]]] = []
+            for q_idx in range(len(queries)):
+                query_results: List[Dict[str, Any]] = []
+                for j in range(k):
+                    idx = int(all_indices[q_idx, j])
+                    if idx < 0:
+                        continue
+                    result = dict(self._documents[idx])
+                    result["score"] = float(all_scores[q_idx, j])
+                    query_results.append(result)
+                results.append(query_results)
+            return results
+
+        # NumPy fallback
+        all_scores_np = query_vecs @ self._vectors.T
+
+        results = []
         for q_idx in range(len(queries)):
-            scores = all_scores[q_idx]
+            scores = all_scores_np[q_idx]
             k = min(top_k, len(scores))
             if k < len(scores):
                 top_indices = np.argpartition(scores, -k)[-k:]
@@ -362,7 +438,7 @@ class VectorSearchTool:
                 top_indices = np.arange(len(scores))
             top_indices = top_indices[np.argsort(-scores[top_indices])]
 
-            query_results: List[Dict[str, Any]] = []
+            query_results = []
             for idx in top_indices:
                 result = dict(self._documents[idx])
                 result["score"] = float(scores[idx])
@@ -380,34 +456,72 @@ class VectorSearchTool:
     ) -> bool:
         """Attempt to load a previously saved index from disk.
 
+        Tries FAISS format first (``*.faiss`` + ``*.meta.npz``), then falls
+        back to the legacy numpy-only format (``*.npz``).
+
         Parameters
         ----------
         index_id:
             Identifier for the cached index.  Used to construct the
             filename inside ``self.cache_dir``.
         path:
-            Explicit path to an ``.npz`` file.  Overrides *index_id*.
+            Explicit path to an index file.  Overrides *index_id*.
 
         Returns
         -------
         ``True`` if the index was loaded successfully, ``False`` otherwise.
         """
+        # Resolve base path (without extension) for multi-file FAISS cache
         if path is not None:
-            target = Path(path)
+            base = Path(path).with_suffix("")
         elif index_id is not None and self.cache_dir is not None:
-            target = Path(self.cache_dir) / f"{index_id}.npz"
+            base = Path(self.cache_dir) / index_id
         else:
             return False
 
-        if not target.exists():
+        # Try FAISS format first
+        faiss_path = base.with_suffix(".faiss")
+        meta_path = base.with_suffix(".meta.npz")
+        if self._use_faiss and faiss_path.exists() and meta_path.exists():
+            try:
+                self._faiss_index = faiss.read_index(str(faiss_path))
+                meta = np.load(str(meta_path), allow_pickle=True)
+                self._documents = meta["documents"].tolist()
+                self._vectors = meta.get("vectors")
+                if self._vectors is not None:
+                    self._vectors = self._vectors.astype(np.float32)
+                self._index_id = index_id or base.stem
+                self.embedded_index = self._vectors
+                logger.info(
+                    "Loaded FAISS index from cache: %d vectors",
+                    self._faiss_index.ntotal,
+                )
+                return True
+            except Exception as exc:
+                logger.debug("FAISS cache load failed: %s", exc)
+
+        # Fall back to legacy numpy format
+        npz_path = base.with_suffix(".npz")
+        if path is not None:
+            npz_path = Path(path)
+
+        if not npz_path.exists():
             return False
 
         try:
-            data = np.load(str(target), allow_pickle=True)
+            data = np.load(str(npz_path), allow_pickle=True)
             self._vectors = data["vectors"].astype(np.float32)
             self._documents = data["documents"].tolist()
-            self._index_id = index_id or target.stem
+            self._index_id = index_id or npz_path.stem
             self.embedded_index = self._vectors
+
+            # Rebuild FAISS index from loaded vectors
+            if self._use_faiss:
+                dim = self._vectors.shape[1]
+                self._faiss_index = faiss.IndexFlatIP(dim)
+                vecs_c = np.ascontiguousarray(self._vectors, dtype=np.float32)
+                self._faiss_index.add(vecs_c)
+
             return True
         except Exception:
             return False
@@ -415,25 +529,92 @@ class VectorSearchTool:
     def save_index(self, path: Optional[str] = None) -> Optional[str]:
         """Persist the current index to disk.
 
+        When FAISS is active, saves the FAISS index (``*.faiss``) and
+        document metadata (``*.meta.npz``) separately.  Also saves the
+        legacy ``*.npz`` format for numpy-only environments.
+
         Returns the path written, or ``None`` if there is nothing to save.
         """
         if self._vectors is None:
             return None
 
         if path is not None:
-            target = Path(path)
+            base = Path(path).with_suffix("")
         elif self.cache_dir is not None and self._index_id is not None:
-            target = Path(self.cache_dir) / f"{self._index_id}.npz"
+            base = Path(self.cache_dir) / self._index_id
         else:
             return None
 
-        target.parent.mkdir(parents=True, exist_ok=True)
+        base.parent.mkdir(parents=True, exist_ok=True)
+
+        # Save FAISS index + metadata
+        if self._use_faiss and self._faiss_index is not None:
+            faiss_path = base.with_suffix(".faiss")
+            meta_path = base.with_suffix(".meta.npz")
+            faiss.write_index(self._faiss_index, str(faiss_path))
+            np.savez(
+                str(meta_path),
+                documents=np.array(self._documents, dtype=object),
+                vectors=self._vectors,
+            )
+            logger.info("Saved FAISS index to %s", faiss_path)
+
+        # Always save legacy numpy format for compatibility
+        npz_path = base.with_suffix(".npz")
         np.savez(
-            str(target),
+            str(npz_path),
             vectors=self._vectors,
             documents=np.array(self._documents, dtype=object),
         )
-        return str(target)
+        return str(npz_path)
+
+    @classmethod
+    def from_cache(
+        cls,
+        path: str,
+        embed_fn: Optional[Callable[[List[str]], np.ndarray]] = None,
+        model_name: Optional[str] = None,
+        device: Optional[str] = None,
+        use_faiss: Optional[bool] = None,
+    ) -> "VectorSearchTool":
+        """Instantiate a search tool from a previously cached index.
+
+        This is the intended entry point for per-worker instantiation:
+        the corpus is processed offline, indexed, and cached to shared
+        storage.  Each worker then calls ``from_cache()`` to load its
+        own in-process copy — no network I/O required.
+
+        Parameters
+        ----------
+        path:
+            Path to the cached index (FAISS or npz file).
+        embed_fn:
+            Embedding function for runtime queries.
+        model_name:
+            HuggingFace model name (resolved if ``embed_fn`` is None).
+        device:
+            Device for the embedding model.
+        use_faiss:
+            Force FAISS on/off.
+
+        Raises
+        ------
+        FileNotFoundError
+            If no cached index is found at *path*.
+        """
+        tool = cls(
+            embed_fn=embed_fn,
+            model_name=model_name,
+            device=device,
+            cache_dir=str(Path(path).parent),
+            use_faiss=use_faiss,
+        )
+        if not tool.load_cached_index(path=path):
+            raise FileNotFoundError(
+                f"No cached index found at {path}. "
+                "Run indexing first and save with save_index()."
+            )
+        return tool
 
     # -- internal helpers -----------------------------------------------------
 

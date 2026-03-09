@@ -20,6 +20,9 @@ train = [
     "accelerate>=0.25",
     "bitsandbytes>=0.46.1",
 ]
+search = [
+    "faiss-cpu>=1.7",
+]
 quant = [
     "bitsandbytes>=0.41",
 ]
@@ -29,6 +32,7 @@ all = [
     "peft>=0.7",
     "accelerate>=0.25",
     "bitsandbytes>=0.41",
+    "faiss-cpu>=1.7",
 ]
 
 [project.scripts]
