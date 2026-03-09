@@ -49,7 +49,7 @@ KONASH is an open-source RL framework that improves agent reliability by trainin
 
 | Agent Task | Example Notebook | Description | Comparative Performance |
 |---|---|---|---|
-| **Trivia Night** | [Train agent](notebooks/trivia_night.ipynb) | Qwen 3 4B learns to answer multi-constraint trivia by searching Wikipedia | [Link coming soon] |
+| **Trivia Night** | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/konaequity/openkona/blob/main/notebooks/trivia_night.ipynb) | Qwen 3 4B learns to answer multi-constraint trivia by searching Wikipedia | [Link coming soon] |
 | **20 Questions** | [Train agent](#) | Qwen 3.5 7B learns to identify a mystery entity in 20 yes/no searches | [Link coming soon] |
 | **GeoGuessr** | [Train agent](#) | Qwen 3.5 7B learns to pinpoint locations from landmark and terrain descriptions | [Link coming soon] |
 
@@ -147,6 +147,7 @@ This repository's source code is available under the [Apache-2.0 License](LICENS
 
 KONASH builds directly on the research and open-source work of:
 
+- [KARL: Knowledge Agent trained via Reinforcement Learning](https://www.databricks.com/blog/karl) — Databricks, 2026. The architecture, training pipeline, and evaluation methodology that KONASH implements. KARL introduced agentic data synthesis, off-policy RL for knowledge agents, end-to-end compression training, and the KARLBench evaluation suite.
 - [OAPL](https://arxiv.org/abs/2503.01735) — Ritter et al., 2026 (the RL algorithm)
 - [Unsloth](https://github.com/unslothai/unsloth) — Parameter-efficient training backend
 - [vLLM](https://github.com/vllm-project/vllm) — High-throughput inference engine
