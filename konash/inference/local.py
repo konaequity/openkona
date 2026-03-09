@@ -370,6 +370,29 @@ class LocalModelEngine:
     # Per-token log-prob computation (for OAPL)
     # ------------------------------------------------------------------
 
+    def snapshot_reference(self) -> None:
+        """Snapshot current LoRA weights as the reference policy πref.
+
+        After each training iteration, call this so that the next
+        iteration's KL term ``ln(π/πref)`` is relative to the previous
+        iteration's policy rather than the base model (KARL Section 4.2:
+        iterative training replaces πref with the latest policy).
+
+        If never called, ``compute_log_probs(use_reference=True)`` falls
+        back to disabling LoRA (i.e., πref = base model), which is
+        correct for iteration 1.
+        """
+        torch = self._torch
+        self._ref_lora_state = {
+            name: param.detach().clone()
+            for name, param in self.model.named_parameters()
+            if param.requires_grad  # only LoRA params
+        }
+        logger.info(
+            "Snapshotted %d LoRA parameters as reference policy",
+            len(self._ref_lora_state),
+        )
+
     def compute_log_probs(
         self,
         input_ids: "torch.Tensor",
@@ -385,7 +408,10 @@ class LocalModelEngine:
         labels : Tensor
             Same shape.  Use ``-100`` for positions to ignore.
         use_reference : bool
-            If *True*, disable LoRA to get reference (base) policy log-probs.
+            If *True*, use the reference policy πref for log-probs.
+            If ``snapshot_reference()`` was called, swaps in the
+            snapshotted LoRA weights. Otherwise disables LoRA entirely
+            (πref = base model, correct for iteration 1).
 
         Returns
         -------
@@ -400,7 +426,17 @@ class LocalModelEngine:
         if labels.dim() == 1:
             labels = labels.unsqueeze(0)
 
-        if use_reference:
+        ref_state = getattr(self, "_ref_lora_state", None)
+
+        if use_reference and ref_state is not None:
+            # Swap in reference LoRA weights (πref = previous iteration)
+            current_state = {}
+            for name, param in self.model.named_parameters():
+                if name in ref_state:
+                    current_state[name] = param.detach().clone()
+                    param.data.copy_(ref_state[name])
+        elif use_reference:
+            # No snapshot yet — disable LoRA (πref = base model)
             self.model.disable_adapter_layers()
 
         try:
@@ -422,7 +458,12 @@ class LocalModelEngine:
 
             return tok_lp.squeeze(0), mask.squeeze(0)
         finally:
-            if use_reference:
+            if use_reference and ref_state is not None:
+                # Restore current training weights
+                for name, param in self.model.named_parameters():
+                    if name in current_state:
+                        param.data.copy_(current_state[name])
+            elif use_reference:
                 self.model.enable_adapter_layers()
 
     # ------------------------------------------------------------------

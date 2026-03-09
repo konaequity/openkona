@@ -454,6 +454,13 @@ class Agent:
 
             self._iteration = iteration + 1
 
+            # Snapshot current LoRA as πref for the next iteration
+            # (KARL Section 4.2: replace πref with the latest policy)
+            if self._model_engine is not None and iteration < iterations - 1:
+                engine.snapshot_reference()
+                if verbose:
+                    print("  Snapshotted LoRA as πref for next iteration.")
+
         # Step 6: Save checkpoint
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         meta_path = os.path.join(self.checkpoint_dir, "training_meta.json")
