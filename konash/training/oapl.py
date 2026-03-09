@@ -188,6 +188,14 @@ class OAPLTrainer:
         the policy gradient because the model receives credit/blame for
         text it didn't produce.
 
+        **Rollout segmentation** (KARL paper Section 4.2): Long rollouts
+        with compression steps are split into segments at compression
+        boundaries.  Each segment is trained independently with the same
+        rollout reward and V̂*.  Additionally, a compression-as-target
+        pair is created where x=pre-compression history and y=the
+        compression summary, so the model learns *what* to compress
+        through the task reward signal.
+
         Parameters
         ----------
         dataset :
@@ -206,7 +214,8 @@ class OAPLTrainer:
         -------
         dict
             Training statistics: ``mean_loss``, ``num_groups``,
-            ``num_rollouts``, ``masked_token_pct``, ``learning_rate``.
+            ``num_rollouts``, ``masked_token_pct``, ``num_segments``,
+            ``learning_rate``.
         """
         import torch
 
@@ -217,6 +226,7 @@ class OAPLTrainer:
         total_loss = 0.0
         num_groups = 0
         num_rollouts = 0
+        num_segments = 0
         total_tokens = 0
         masked_tokens = 0
 
@@ -226,93 +236,52 @@ class OAPLTrainer:
             rollouts = dataset.group_rollouts[group_idx]
             group_rewards = dataset.rewards[group_idx]
             v_star = self.estimate_optimal_value(group_rewards)
-            n_rollouts = len(rollouts)
 
             optimizer.zero_grad()
             group_loss_val = 0.0
+            group_segment_count = 0
 
             for local_idx, rollout in enumerate(rollouts):
                 reward = group_rewards[local_idx]
 
-                # Tokenize
-                tokens = model_engine.tokenize_rollout(prompt, rollout)
-                input_ids = tokens["input_ids"]
-                labels = tokens["labels"]
+                # --- Rollout segmentation (KARL Section 4.2) ---
+                # Split long rollouts at compression boundaries.  Each
+                # segment becomes a separate (prompt, steps) pair trained
+                # with the same reward and V̂*.
+                training_pairs = _segment_rollout_for_training(
+                    prompt, rollout
+                )
 
-                # --- Tool-output token masking (KARL Section 5) ---
-                # Build a mask that is True for model-generated tokens,
-                # False for tool-output tokens (search results, etc.)
-                tool_output_ranges = tokens.get("tool_output_ranges", None)
-                if tool_output_ranges is None:
-                    tool_output_ranges = self._extract_tool_output_ranges(
-                        rollout, tokens
+                for seg_prompt, seg_steps in training_pairs:
+                    loss_item = self._train_single_segment(
+                        seg_prompt, seg_steps, reward, v_star,
+                        model_engine, torch,
                     )
+                    if loss_item is None:
+                        continue
 
-                seq_len = (
-                    input_ids.shape[-1]
-                    if hasattr(input_ids, "shape")
-                    else len(input_ids)
-                )
-                tool_mask_np = self.mask_non_model_tokens(
-                    list(range(seq_len)),
-                    tool_output_ranges=tool_output_ranges,
-                )
-                tool_mask = torch.tensor(
-                    tool_mask_np, dtype=torch.bool,
-                    device=input_ids.device if hasattr(input_ids, "device") else "cpu",
-                )
+                    loss_val, tok_total, tok_masked = loss_item
+                    total_tokens += tok_total
+                    masked_tokens += tok_masked
+                    group_segment_count += 1
+                    num_segments += 1
 
-                # Current policy log-probs (with gradient)
-                log_probs, valid_mask = model_engine.compute_log_probs(
-                    input_ids, labels, use_reference=False,
-                )
+                    # Scale by 1/(segments in group) for gradient accumulation
+                    # (deferred until we know the count — accumulate loss_val)
+                    group_loss_val += loss_val
 
-                # Reference policy log-probs (no gradient, LoRA disabled)
-                with torch.no_grad():
-                    ref_log_probs, _ = model_engine.compute_log_probs(
-                        input_ids, labels, use_reference=True,
-                    )
-
-                # Combine valid-token mask with tool-output mask.
-                # Only compute loss on tokens that are both:
-                #   (a) valid (non-padding), AND
-                #   (b) model-generated (not tool output)
-                combined_mask = valid_mask & tool_mask
-                valid_count = combined_mask.sum()
-
-                # Track masking statistics
-                total_tokens += int(valid_mask.sum().item())
-                masked_tokens += int(
-                    (valid_mask & ~tool_mask).sum().item()
-                )
-
-                if valid_count == 0:
-                    continue
-
-                # Apply mask: zero out tool-output token log-ratios
-                log_ratio = (log_probs - ref_log_probs) * combined_mask.float()
-                mean_log_ratio = log_ratio.sum() / valid_count
-
-                # OAPL squared-advantage loss
-                advantage = reward - v_star
-                kl_term = self.beta_kl * mean_log_ratio
-                loss_i = (kl_term - advantage) ** 2
-
-                # Scale by 1/n_rollouts for gradient accumulation
-                (loss_i / n_rollouts).backward()
-
-                group_loss_val += loss_i.item()
                 num_rollouts += 1
+
+            if group_segment_count > 0:
+                # Average loss across segments and backprop
+                avg_loss = group_loss_val / group_segment_count
+                total_loss += avg_loss
 
             # Clip gradients and step
             torch.nn.utils.clip_grad_norm_(
                 model_engine.trainable_params, max_norm=max_grad_norm,
             )
             optimizer.step()
-
-            if n_rollouts > 0:
-                group_loss_val /= n_rollouts
-            total_loss += group_loss_val
             num_groups += 1
 
         model_engine.model.eval()
@@ -325,9 +294,83 @@ class OAPLTrainer:
             "mean_loss": float(mean_loss),
             "num_groups": num_groups,
             "num_rollouts": num_rollouts,
+            "num_segments": num_segments,
             "masked_token_pct": float(masked_pct),
             "learning_rate": learning_rate,
         }
+
+    def _train_single_segment(
+        self,
+        prompt: str,
+        rollout_steps: list,
+        reward: float,
+        v_star: float,
+        model_engine: Any,
+        torch: Any,
+    ) -> Optional[tuple]:
+        """Compute OAPL loss for a single rollout segment.
+
+        Returns (loss_value, total_tokens, masked_tokens) or None if
+        no valid tokens.
+        """
+        tokens = model_engine.tokenize_rollout(prompt, rollout_steps)
+        input_ids = tokens["input_ids"]
+        labels = tokens["labels"]
+
+        # --- Tool-output token masking (KARL Section 5) ---
+        tool_output_ranges = tokens.get("tool_output_ranges", None)
+        if tool_output_ranges is None:
+            tool_output_ranges = self._extract_tool_output_ranges(
+                rollout_steps, tokens
+            )
+
+        seq_len = (
+            input_ids.shape[-1]
+            if hasattr(input_ids, "shape")
+            else len(input_ids)
+        )
+        tool_mask_np = self.mask_non_model_tokens(
+            list(range(seq_len)),
+            tool_output_ranges=tool_output_ranges,
+        )
+        tool_mask = torch.tensor(
+            tool_mask_np, dtype=torch.bool,
+            device=input_ids.device if hasattr(input_ids, "device") else "cpu",
+        )
+
+        # Current policy log-probs (with gradient)
+        log_probs, valid_mask = model_engine.compute_log_probs(
+            input_ids, labels, use_reference=False,
+        )
+
+        # Reference policy log-probs (no gradient, LoRA disabled)
+        with torch.no_grad():
+            ref_log_probs, _ = model_engine.compute_log_probs(
+                input_ids, labels, use_reference=True,
+            )
+
+        # Combine valid-token mask with tool-output mask
+        combined_mask = valid_mask & tool_mask
+        valid_count = combined_mask.sum()
+
+        tok_total = int(valid_mask.sum().item())
+        tok_masked = int((valid_mask & ~tool_mask).sum().item())
+
+        if valid_count == 0:
+            return None
+
+        # Apply mask: zero out tool-output token log-ratios
+        log_ratio = (log_probs - ref_log_probs) * combined_mask.float()
+        mean_log_ratio = log_ratio.sum() / valid_count
+
+        # OAPL squared-advantage loss
+        advantage = reward - v_star
+        kl_term = self.beta_kl * mean_log_ratio
+        loss_i = (kl_term - advantage) ** 2
+
+        loss_i.backward()
+
+        return (loss_i.item(), tok_total, tok_masked)
 
     # ------------------------------------------------------------------
     # Tool-output range detection
@@ -543,6 +586,88 @@ class OAPLTrainer:
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+
+def _segment_rollout_for_training(
+    prompt: str,
+    rollout_steps: list,
+) -> List[tuple]:
+    """Split a rollout at compression boundaries into training segments.
+
+    Implements the KARL paper Section 4.2 segmentation strategy:
+
+    1. If no compression steps, return [(prompt, rollout_steps)] as-is.
+    2. At each compression step, split into segments:
+       - **Continuation segment**: x = compressed summary (as prompt context),
+         y = steps after the compression until the next compression or end.
+       - **Compression-as-target segment**: x = pre-compression history (as
+         prompt), y = [the compression step itself].  This trains the model
+         to produce good compressions through task reward.
+    3. Each segment receives the same rollout reward and V̂* (assigned by
+       the caller).
+
+    Parameters
+    ----------
+    prompt : str
+        The original question / prompt for this rollout.
+    rollout_steps : list
+        List of step dicts from the rollout generator.
+
+    Returns
+    -------
+    list of (segment_prompt, segment_steps)
+        Each tuple is a training pair where segment_prompt is the input
+        context and segment_steps is the list of steps to train on.
+    """
+    if not isinstance(rollout_steps, (list, tuple)) or not rollout_steps:
+        return [(prompt, rollout_steps)]
+
+    # Find compression step indices
+    compression_indices = [
+        i for i, step in enumerate(rollout_steps)
+        if isinstance(step, dict) and step.get("type") == "compression"
+    ]
+
+    if not compression_indices:
+        # No compression — train on the full rollout as a single segment
+        return [(prompt, rollout_steps)]
+
+    pairs: List[tuple] = []
+
+    # Build segments at each compression boundary
+    prev_end = 0
+    current_prompt = prompt
+
+    for comp_idx in compression_indices:
+        # Steps before this compression (pre-compression history)
+        pre_steps = rollout_steps[prev_end:comp_idx]
+        comp_step = rollout_steps[comp_idx]
+        summary = comp_step.get("summary", "")
+
+        # --- Compression-as-target segment ---
+        # x = current prompt + pre-compression steps (as context)
+        # y = the compression summary itself
+        # This teaches the model to produce good summaries via task reward
+        if summary and pre_steps:
+            pairs.append((current_prompt, pre_steps + [comp_step]))
+
+        # Update prompt for the next segment: compressed summary becomes
+        # the new context (the whole point of compression)
+        if summary:
+            current_prompt = (
+                f"{prompt}\n\n[Compressed context]\n{summary}"
+            )
+
+        prev_end = comp_idx + 1
+
+    # --- Continuation segment ---
+    # Steps after the last compression until the end of the rollout
+    remaining_steps = rollout_steps[prev_end:]
+    if remaining_steps:
+        pairs.append((current_prompt, remaining_steps))
+
+    # If segmentation produced nothing (edge case), fall back to full rollout
+    return pairs if pairs else [(prompt, rollout_steps)]
 
 
 def _estimate_tool_ranges_from_steps(
