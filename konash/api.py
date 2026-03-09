@@ -251,6 +251,7 @@ class Agent:
         iterations: int = 2,
         rollouts_per_example: int = 8,
         max_examples: Optional[int] = None,
+        few_shot_examples: Optional[List[SyntheticExample]] = None,
         learning_rate: float = 1e-5,
         beta_kl: float = 0.1,
         beta_value: float = 0.05,
@@ -274,6 +275,9 @@ class Agent:
             Number of rollouts per training example (default 8).
         max_examples : int | None
             Cap on synthesized training examples per iteration.
+        few_shot_examples : list[SyntheticExample] | None
+            Representative QA pairs that guide the synthesizer toward the
+            expected question format and difficulty (KARL Section 4.1).
         learning_rate : float
             Learning rate for OAPL training.
         beta_kl : float
@@ -330,6 +334,7 @@ class Agent:
         synthesizer = QuestionAnswerSynthesizer(
             vector_search_tool=self.corpus.vector_search,
             llm_fn=_synthesis_fn,
+            few_shot_examples=few_shot_examples,
         )
 
         # Progress callback for rollouts — _current_examples is mutated
