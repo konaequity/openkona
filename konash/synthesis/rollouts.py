@@ -520,11 +520,15 @@ class RolloutGenerator:
         list[dict]
             Compressed trajectory with a ``compression`` step marker.
         """
+        if self.llm_fn is not None:
+            # LLM compression can handle any number of steps
+            if len(steps) <= 1:
+                return steps
+            return self._llm_compress(steps, prompt)
+
+        # Mechanical fallback needs at least 4 steps (first + middle + last 2)
         if len(steps) <= 3:
             return steps
-
-        if self.llm_fn is not None:
-            return self._llm_compress(steps, prompt)
         return self._mechanical_compress(steps)
 
     def _llm_compress(
