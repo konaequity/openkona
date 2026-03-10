@@ -11,6 +11,17 @@ ZHIPU_API_BASE = "https://api.z.ai/api/paas/v4"
 DEFAULT_MODEL = "glm-4.5-air"
 
 
+def _dependency_error(exc: ModuleNotFoundError) -> None:
+    missing = exc.name or "a required package"
+    print(f"Error: Missing runtime dependency '{missing}'.")
+    print("Install the package first with:")
+    print("  pip install konash")
+    print()
+    print("For local development from this checkout, use:")
+    print("  pip install -e .")
+    sys.exit(1)
+
+
 def _resolve_api_config(args: argparse.Namespace) -> tuple:
     """Resolve API base URL and key from args, env vars, or defaults.
 
@@ -22,7 +33,10 @@ def _resolve_api_config(args: argparse.Namespace) -> tuple:
 
 
 def cmd_train(args: argparse.Namespace) -> None:
-    from konash.api import Agent
+    try:
+        from konash.api import Agent
+    except ModuleNotFoundError as exc:
+        _dependency_error(exc)
 
     api_base, api_key = _resolve_api_config(args)
     if api_key is None:
@@ -52,7 +66,10 @@ def cmd_train(args: argparse.Namespace) -> None:
 
 
 def cmd_solve(args: argparse.Namespace) -> None:
-    from konash.api import Agent
+    try:
+        from konash.api import Agent
+    except ModuleNotFoundError as exc:
+        _dependency_error(exc)
 
     api_base, api_key = _resolve_api_config(args)
     if api_key is None:
@@ -75,7 +92,10 @@ def cmd_solve(args: argparse.Namespace) -> None:
 
 
 def cmd_search(args: argparse.Namespace) -> None:
-    from konash.corpus import Corpus
+    try:
+        from konash.corpus import Corpus
+    except ModuleNotFoundError as exc:
+        _dependency_error(exc)
 
     corpus = Corpus(args.corpus, chunk_size=args.chunk_size)
     corpus.ingest()
@@ -92,7 +112,10 @@ def cmd_search(args: argparse.Namespace) -> None:
 
 
 def cmd_ingest(args: argparse.Namespace) -> None:
-    from konash.corpus import Corpus
+    try:
+        from konash.corpus import Corpus
+    except ModuleNotFoundError as exc:
+        _dependency_error(exc)
 
     corpus = Corpus(args.corpus, chunk_size=args.chunk_size)
     corpus.ingest()
