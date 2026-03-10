@@ -78,8 +78,7 @@ Make sure you're on a machine with at least one A100-80GB or H100 GPU. Lower-end
 Once set up, you can run one of the example notebooks:
 
 ```bash
-cd examples/trivia_night
-jupyter notebook trivia_night.ipynb
+jupyter notebook notebooks/trivia_night.ipynb
 ```
 
 You can monitor training progress with Weights & Biases.

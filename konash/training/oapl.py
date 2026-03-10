@@ -241,21 +241,33 @@ class OAPLTrainer:
             group_loss_val = 0.0
             group_segment_count = 0
 
+            # First pass: count total segments in this group so we can
+            # scale each segment's gradient contribution equally.
+            all_training_pairs = []
             for local_idx, rollout in enumerate(rollouts):
-                reward = group_rewards[local_idx]
+                pairs = _segment_rollout_for_training(prompt, rollout)
+                all_training_pairs.append((local_idx, pairs))
 
-                # --- Rollout segmentation (KARL Section 4.2) ---
-                # Split long rollouts at compression boundaries.  Each
-                # segment becomes a separate (prompt, steps) pair trained
-                # with the same reward and V̂*.
-                training_pairs = _segment_rollout_for_training(
-                    prompt, rollout
-                )
+            total_segments_in_group = sum(
+                len(pairs) for _, pairs in all_training_pairs
+            )
+            # Weight each segment so the group gradient is averaged,
+            # not summed — prevents rollouts with more compression
+            # boundaries from exerting disproportionate gradient force.
+            seg_weight = (
+                1.0 / total_segments_in_group
+                if total_segments_in_group > 0
+                else 1.0
+            )
+
+            for local_idx, training_pairs in all_training_pairs:
+                reward = group_rewards[local_idx]
 
                 for seg_prompt, seg_steps in training_pairs:
                     loss_item = self._train_single_segment(
                         seg_prompt, seg_steps, reward, v_star,
                         model_engine, torch,
+                        weight=seg_weight,
                     )
                     if loss_item is None:
                         continue
@@ -265,17 +277,12 @@ class OAPLTrainer:
                     masked_tokens += tok_masked
                     group_segment_count += 1
                     num_segments += 1
-
-                    # Scale by 1/(segments in group) for gradient accumulation
-                    # (deferred until we know the count — accumulate loss_val)
                     group_loss_val += loss_val
 
                 num_rollouts += 1
 
             if group_segment_count > 0:
-                # Average loss across segments and backprop
-                avg_loss = group_loss_val / group_segment_count
-                total_loss += avg_loss
+                total_loss += group_loss_val
 
             # Clip gradients and step
             torch.nn.utils.clip_grad_norm_(
@@ -307,6 +314,7 @@ class OAPLTrainer:
         v_star: float,
         model_engine: Any,
         torch: Any,
+        weight: float = 1.0,
     ) -> Optional[tuple]:
         """Compute OAPL loss for a single rollout segment.
 
@@ -370,10 +378,11 @@ class OAPLTrainer:
         log_ratio = (log_probs - ref_log_probs) * combined_mask.float()
         mean_log_ratio = log_ratio.sum() / valid_count
 
-        # OAPL squared-advantage loss
+        # OAPL squared-advantage loss, scaled by segment weight so
+        # gradients are averaged (not summed) across segments in a group.
         advantage = reward - v_star
         kl_term = self.beta_kl * mean_log_ratio
-        loss_i = (kl_term - advantage) ** 2
+        loss_i = ((kl_term - advantage) ** 2) * weight
 
         loss_i.backward()
 

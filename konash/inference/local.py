@@ -24,7 +24,7 @@ class LocalModelEngine:
     - Reference policy log-probs (LoRA disabled)
     - LoRA adapter save/load (for checkpointing)
 
-    Requirements: ``pip install openkona[train]`` (torch, transformers, peft)
+    Requirements: ``pip install konash[train]`` (torch, transformers, peft)
 
     Parameters
     ----------
@@ -71,7 +71,7 @@ class LocalModelEngine:
             from transformers import AutoModelForCausalLM, AutoTokenizer
         except ImportError as e:
             raise ImportError(
-                "Local model requires: pip install openkona[train]\n"
+                "Local model requires: pip install konash[train]\n"
                 "  (torch, transformers, peft, accelerate)\n"
                 "For 4-bit quantization also: pip install bitsandbytes"
             ) from e

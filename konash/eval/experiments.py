@@ -1,45 +1,39 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Optional
 
+
+@dataclass
 class MainResultsRow:
-    model_name = None
-    browsecomp_plus = None
-    trec_biogen = None
-    freshstack = None
-    financebench = None
-    qampari = None
-    pmbench = None
-    in_distribution = None
-    out_of_distribution = None
-    total = None
-
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+    model_name: Optional[str] = None
+    browsecomp_plus: Optional[float] = None
+    trec_biogen: Optional[float] = None
+    freshstack: Optional[float] = None
+    financebench: Optional[float] = None
+    qampari: Optional[float] = None
+    pmbench: Optional[float] = None
+    in_distribution: Optional[float] = None
+    out_of_distribution: Optional[float] = None
+    total: Optional[float] = None
 
 
+@dataclass
 class DistillationComparison:
-    model_name = None
-    in_distribution = None
-    out_of_distribution = None
-    total = None
-    parallel_thinking_budget = None
-
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+    model_name: Optional[str] = None
+    in_distribution: Optional[float] = None
+    out_of_distribution: Optional[float] = None
+    total: Optional[float] = None
+    parallel_thinking_budget: Optional[int] = None
 
 
+@dataclass
 class IterationProgression:
-    task_name = None
-    base = None
-    iteration_1 = None
-    iteration_2 = None
-    iteration_3 = None
-
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+    task_name: Optional[str] = None
+    base: Optional[float] = None
+    iteration_1: Optional[float] = None
+    iteration_2: Optional[float] = None
+    iteration_3: Optional[float] = None
 
 
 class ExperimentRegistry:

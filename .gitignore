@@ -7,3 +7,4 @@ dist/
 build/
 *.egg
 .konash/
+stage2_training_data.json

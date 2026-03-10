@@ -90,9 +90,10 @@ class _OpenAILLMClient:
                     result = json.loads(resp.read())
                 break
             except urllib.error.HTTPError as e:
-                if e.code == 429 and attempt < 3:
-                    retry_after = int(e.headers.get("Retry-After", 10))
-                    time.sleep(retry_after)
+                if e.code in {429, 500, 502, 503, 504} and attempt < 3:
+                    retry_after = int(e.headers.get("Retry-After", 0))
+                    backoff = max(retry_after, 2 ** attempt)
+                    time.sleep(backoff)
                     continue
                 raise
 
@@ -308,7 +309,7 @@ class Agent:
                 if verbose:
                     print(f"  Note: Could not load model locally ({e}).")
                     print("  Using lightweight mode (no gradient updates).")
-                    print("  Install: pip install openkona[train]")
+                    print("  Install: pip install konash[train]")
 
         # Step 2: Ingest corpus
         if not self.corpus.indexed:
