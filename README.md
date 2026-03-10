@@ -147,7 +147,7 @@ This repository's source code is available under the [Apache-2.0 License](LICENS
 
 KONASH builds directly on the research and open-source work of:
 
-- [KARL: Knowledge Agent trained via Reinforcement Learning](https://www.databricks.com/blog/karl) — Databricks, 2026. The architecture, training pipeline, and evaluation methodology that KONASH implements. KARL introduced agentic data synthesis, off-policy RL for knowledge agents, end-to-end compression training, and the KARLBench evaluation suite.
+- [KARL: Knowledge Agent trained via Reinforcement Learning](https://www.databricks.com/sites/default/files/2026-03/karl.pdf) — Databricks, 2026. The architecture, training pipeline, and evaluation methodology that KONASH implements. KARL introduced agentic data synthesis, off-policy RL for knowledge agents, end-to-end compression training, and the KARLBench evaluation suite.
 - [OAPL](https://arxiv.org/abs/2503.01735) — Ritter et al., 2026 (the RL algorithm)
 - [Unsloth](https://github.com/unslothai/unsloth) — Parameter-efficient training backend
 - [vLLM](https://github.com/vllm-project/vllm) — High-throughput inference engine
