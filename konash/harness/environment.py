@@ -10,8 +10,8 @@ class Environment:
     The environment owns:
     * ``tool_executor`` -- callable that executes a tool call and returns an
       observation dict ``{"role": "tool", "content": ...}``.
-    * ``reward_functions`` -- list of callables ``(history, reference) -> float``
-      whose outputs are summed to produce a scalar reward.
+    * ``reward_functions`` -- list of callables that score the agent's
+      ``final_answer`` against a reference answer.
     * ``plugins`` -- list of ``LifecyclePlugin`` instances whose hooks fire
       around every step.
     * ``conversation_history`` -- the running message list for the current
@@ -62,6 +62,8 @@ class Environment:
 
         # Notify plugins
         for plugin in self.plugins:
+            if hasattr(plugin, "reset"):
+                plugin.reset()
             if hasattr(plugin, "on_reset"):
                 plugin.on_reset(self)
 
@@ -101,6 +103,8 @@ class Environment:
                         "done": True,
                         "step_index": self._step_count,
                     }
+                if isinstance(override, dict) and override.get("history") is not None:
+                    self.conversation_history = list(override["history"])
 
         # --- Agent generates a step ---
         response = agent.generate_step(
@@ -117,7 +121,7 @@ class Environment:
 
         # --- Tool execution ---
         tool_results: List[Dict[str, Any]] = []
-        tool_calls = response.get("tool_calls", [])
+        tool_calls = self._filter_tool_calls(response.get("tool_calls", []), tool_results)
         for tool_call in tool_calls:
             # Let plugins rewrite the tool call
             rewritten = tool_call
@@ -269,8 +273,8 @@ class Environment:
     ) -> float | None:
         """Evaluate the episode outcome by composing all registered reward functions.
 
-        Each reward function is called with the conversation history and any
-        reference/answer information.  Their outputs are summed.
+        Each reward function is called with the extracted final answer plus
+        any reference/answer information. Their outputs are summed.
         """
         if not self.reward_functions:
             return None
@@ -278,8 +282,8 @@ class Environment:
         total_reward = 0.0
         for reward_fn in self.reward_functions:
             score = reward_fn(
-                self.conversation_history,
-                reference_answer=reference_answer,
+                final_answer or "",
+                reference=reference_answer,
                 final_answer=final_answer,
                 **kwargs,
             )
@@ -304,3 +308,48 @@ class Environment:
             return True
 
         return False
+
+    def _filter_tool_calls(
+        self,
+        tool_calls: Any,
+        tool_results: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Apply any plugin-level tool gating before executing tool calls."""
+        if not isinstance(tool_calls, list):
+            return []
+
+        filtered = list(tool_calls)
+        for plugin in self.plugins:
+            if not hasattr(plugin, "is_tool_allowed"):
+                continue
+
+            allowed: List[Dict[str, Any]] = []
+            denied_names: List[str] = []
+            for call in filtered:
+                name = self._tool_name(call)
+                if plugin.is_tool_allowed(name):
+                    allowed.append(call)
+                else:
+                    denied_names.append(name or "<unknown>")
+
+            filtered = allowed
+            if denied_names and getattr(plugin, "on_deny", "error") == "error":
+                tool_results.append({
+                    "role": "tool",
+                    "name": "tool_gate",
+                    "content": (
+                        "Tool(s) not permitted by policy: "
+                        + ", ".join(denied_names)
+                    ),
+                })
+
+        return filtered
+
+    @staticmethod
+    def _tool_name(tool_call: Any) -> str:
+        if not isinstance(tool_call, dict):
+            return ""
+        function = tool_call.get("function")
+        if isinstance(function, dict):
+            return str(function.get("name", ""))
+        return str(tool_call.get("tool_name", ""))

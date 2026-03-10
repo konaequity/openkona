@@ -104,6 +104,10 @@ class QuestionAnswerSynthesizer:
         ``(messages, **kwargs) -> {"role": "assistant", "content": "..."}``.
     """
 
+    few_shot_examples = None
+    task_prompt = None
+    vector_search_tool = None
+
     def __init__(
         self,
         few_shot_examples: Optional[List[SyntheticExample]] = None,
