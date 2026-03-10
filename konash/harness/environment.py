@@ -123,7 +123,15 @@ class Environment:
             rewritten = tool_call
             for plugin in self.plugins:
                 if hasattr(plugin, "rewrite_tool_call"):
-                    result = plugin.rewrite_tool_call(rewritten, self)
+                    t_name = (
+                        rewritten.get("function", {}).get("name", "")
+                        if isinstance(rewritten, dict) else ""
+                    )
+                    result = plugin.rewrite_tool_call(
+                        tool_name=t_name,
+                        tool_input=rewritten,
+                        environment=self,
+                    )
                     if result is not None:
                         rewritten = result
 
@@ -170,14 +178,21 @@ class Environment:
         # Let plugins override termination
         for plugin in self.plugins:
             if hasattr(plugin, "override_termination"):
-                override = plugin.override_termination(done, self)
+                override = plugin.override_termination(
+                    should_terminate=done,
+                    history=self.conversation_history,
+                    environment=self,
+                )
                 if override is not None:
                     done = bool(override)
 
         # Let plugins reshape history (e.g. compression)
         for plugin in self.plugins:
             if hasattr(plugin, "reshape_history"):
-                reshaped = plugin.reshape_history(self.conversation_history, self)
+                reshaped = plugin.reshape_history(
+                    history=self.conversation_history,
+                    environment=self,
+                )
                 if reshaped is not None:
                     self.conversation_history = reshaped
 

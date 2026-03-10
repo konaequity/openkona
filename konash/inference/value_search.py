@@ -153,7 +153,7 @@ class ValueGuidedSearchEngine:
         for i in range(k):
             if self.agent is not None:
                 step = self.agent.generate_step(
-                    state,
+                    history,
                     candidate_index=i,
                     context=expanded_context,
                 )

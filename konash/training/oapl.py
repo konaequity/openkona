@@ -374,14 +374,17 @@ class OAPLTrainer:
         if valid_count == 0:
             return None
 
-        # Apply mask: zero out tool-output token log-ratios
+        # Apply mask: zero out tool-output token log-ratios.
+        # Use the sequence-level sum (not per-token average) because
+        # ln(π(y|x)/π_ref(y|x)) = Σ_t ln(π(y_t|...)/π_ref(y_t|...))
+        # and the OAPL advantage (r - V̂*) is sequence-level (paper eq. 1).
         log_ratio = (log_probs - ref_log_probs) * combined_mask.float()
-        mean_log_ratio = log_ratio.sum() / valid_count
+        seq_log_ratio = log_ratio.sum()
 
         # OAPL squared-advantage loss, scaled by segment weight so
         # gradients are averaged (not summed) across segments in a group.
         advantage = reward - v_star
-        kl_term = self.beta_kl * mean_log_ratio
+        kl_term = self.beta_kl * seq_log_ratio
         loss_i = ((kl_term - advantage) ** 2) * weight
 
         loss_i.backward()
