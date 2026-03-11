@@ -49,7 +49,7 @@ KONASH is an open-source RL framework that improves agent reliability by trainin
 
 | Agent Task | Example Notebook | Description | Comparative Performance |
 |---|---|---|---|
-| **Trivia Night** | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/konaequity/openkona/blob/main/notebooks/trivia_night.ipynb) | Qwen 3 4B learns to answer multi-constraint trivia by searching Wikipedia | [Link coming soon] |
+| **Trivia Night** | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/konaequity/konash/blob/main/notebooks/trivia_night.ipynb) | Qwen 3 4B learns to answer multi-constraint trivia by searching Wikipedia | [Link coming soon] |
 | **20 Questions** | [Train agent](#) | Qwen 3.5 7B learns to identify a mystery entity in 20 yes/no searches | [Link coming soon] |
 | **GeoGuessr** | [Train agent](#) | Qwen 3.5 7B learns to pinpoint locations from landmark and terrain descriptions | [Link coming soon] |
 
@@ -112,7 +112,7 @@ KONASH uses **large-batch iterative off-policy RL** — unlike online RL framewo
 
 ## Supported Models
 
-KONASH should work with most vLLM/HuggingFace-transformers compatible causal language models, or at least the ones supported by [Unsloth](https://docs.unsloth.ai/get-started/all-our-models). If any model isn't working for you, please let us know on [Discord](#) or open an issue on [GitHub](https://github.com/konaequity/openkona/issues)!
+KONASH should work with most vLLM/HuggingFace-transformers compatible causal language models, or at least the ones supported by [Unsloth](https://docs.unsloth.ai/get-started/all-our-models). If any model isn't working for you, please let us know on [Discord](#) or open an issue on [GitHub](https://github.com/konaequity/konash/issues)!
 
 ---
 
@@ -131,7 +131,7 @@ KONASH is in active development and contributions are welcome! Please see [CONTR
   year = {2026},
   publisher = {GitHub},
   journal = {GitHub repository},
-  howpublished = {\url{https://github.com/konaequity/openkona}}
+  howpublished = {\url{https://github.com/konaequity/konash}}
 }
 ```
 

@@ -3,8 +3,8 @@
 Clone the repository:
 
 ```bash
-git clone https://github.com/konaequity/openkona.git
-cd openkona
+git clone https://github.com/konaequity/konash.git
+cd konash
 ```
 
 Install the dependencies:
@@ -42,12 +42,12 @@ These checks are automatically run in CI for all pull requests.
 To create a new release:
 
 1. **Review merged PRs since the last release**:
-   - Go to the [pull requests page](https://github.com/konaequity/openkona/pulls?q=is%3Apr+is%3Amerged+sort%3Aupdated-desc)
+   - Go to the [pull requests page](https://github.com/konaequity/konash/pulls?q=is%3Apr+is%3Amerged+sort%3Aupdated-desc)
    - Review PRs merged since the last release to understand what changed
    - Note any breaking changes, new features, or important bug fixes
 
 2. **Create a draft release**:
-   - Go to [Actions](https://github.com/konaequity/openkona/actions)
+   - Go to [Actions](https://github.com/konaequity/konash/actions)
    - Click "Run workflow"
    - Select the version bump type:
      - `patch`: Bug fixes and minor changes (0.1.0 → 0.1.1)
@@ -55,7 +55,7 @@ To create a new release:
      - `major`: Breaking changes (0.1.0 → 1.0.0)
 
 3. **Edit the draft release notes**:
-   - Go to the [releases page](https://github.com/konaequity/openkona/releases)
+   - Go to the [releases page](https://github.com/konaequity/konash/releases)
    - Click "Edit" on the draft release
    - Add release highlights, breaking changes, and curated changelog
 

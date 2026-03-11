@@ -40,13 +40,13 @@ pip install --quiet --upgrade pip
 pip install --quiet unsloth
 
 # KONASH
-if [ -d "/mnt/shared/openkona" ]; then
-    echo "  Using repo from shared storage: /mnt/shared/openkona"
-    cd /mnt/shared/openkona
+if [ -d "/mnt/shared/konash" ]; then
+    echo "  Using repo from shared storage: /mnt/shared/konash"
+    cd /mnt/shared/konash
 else
     echo "  Cloning repo..."
-    git clone https://github.com/your-org/openkona.git /mnt/shared/openkona
-    cd /mnt/shared/openkona
+    git clone https://github.com/your-org/konash.git /mnt/shared/konash
+    cd /mnt/shared/konash
 fi
 
 pip install --quiet -e ".[train]"

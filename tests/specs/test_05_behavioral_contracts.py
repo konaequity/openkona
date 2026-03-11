@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def test_repo_documents_karls_six_capabilities_in_verification_matrix():
-    matrix = Path("/Users/joeyroth/Desktop/openkona/docs/verification-matrix.md")
+    matrix = Path("/Users/joeyroth/Desktop/konash/docs/verification-matrix.md")
     text = matrix.read_text()
     for phrase in [
         "Architecture",
@@ -17,6 +17,6 @@ def test_repo_documents_karls_six_capabilities_in_verification_matrix():
 
 
 def test_repo_contains_spec_first_tests_before_implementation():
-    specs_dir = Path("/Users/joeyroth/Desktop/openkona/tests/specs")
+    specs_dir = Path("/Users/joeyroth/Desktop/konash/tests/specs")
     test_files = sorted(specs_dir.glob("test_*.py"))
     assert len(test_files) >= 5, "Expected a substantial spec-first suite before implementation begins"
