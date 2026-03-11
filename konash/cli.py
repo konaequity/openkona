@@ -13,6 +13,75 @@ from rich.console import Console
 from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
 from rich.table import Table
 
+
+def _arrow_select(console: Console, options: list[dict]) -> int:
+    """Arrow-key selector. Returns the chosen index.
+
+    Each option is ``{"label": str, "hint": str}``.
+    """
+    import tty
+    import termios
+
+    selected = 0
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+
+    def _render() -> None:
+        for i, opt in enumerate(options):
+            marker = "[bold]>[/]" if i == selected else " "
+            style = "bold" if i == selected else "dim"
+            console.print(f"    {marker}  [{style}]{opt['label']}[/]")
+            if i == selected:
+                console.print(f"       [dim]{opt['hint']}[/]")
+
+    def _clear(n: int) -> None:
+        for _ in range(n):
+            sys.stdout.write("\033[A\033[2K")
+        sys.stdout.flush()
+
+    def _display_lines() -> int:
+        """Count how many lines the current render uses."""
+        total = 0
+        for i, opt in enumerate(options):
+            total += 1  # label line
+            if i == selected:
+                total += 1  # hint line
+        return total
+
+    try:
+        tty.setraw(fd)
+        # Initial render — switch to normal mode briefly
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        _render()
+        prev_lines = _display_lines()
+        tty.setraw(fd)
+
+        while True:
+            ch = sys.stdin.read(1)
+            if ch == "\r" or ch == "\n":
+                break
+            if ch == "\x03":  # Ctrl-C
+                raise KeyboardInterrupt
+            if ch == "\x1b":
+                ch2 = sys.stdin.read(1)
+                if ch2 == "[":
+                    ch3 = sys.stdin.read(1)
+                    if ch3 == "A":  # up
+                        selected = (selected - 1) % len(options)
+                    elif ch3 == "B":  # down
+                        selected = (selected + 1) % len(options)
+
+            # Re-render
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            _clear(prev_lines)
+            _render()
+            prev_lines = _display_lines()
+            tty.setraw(fd)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    return selected
+
 from konash.auth import (
     TOGETHER_KEYS_PAGE,
     HF_TOKENS_PAGE,
@@ -110,16 +179,7 @@ def _mask(key: str) -> str:
 
 def cmd_default() -> None:
     console.print()
-
-    # Header — name left, version right
-    header = Table.grid(expand=True)
-    header.add_column(ratio=1)
-    header.add_column(justify="right")
-    header.add_row(
-        "[bold]KONASH[/]",
-        f"[dim]{_get_version()}[/]",
-    )
-    console.print(header)
+    console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]")
     console.print(
         "[dim]Train knowledge agents that search, retrieve, and reason.[/]"
     )
@@ -155,13 +215,7 @@ def _get_version() -> str:
 
 def cmd_setup(args: argparse.Namespace) -> None:
     console.print()
-
-    # Header
-    header = Table.grid(expand=True)
-    header.add_column(ratio=1)
-    header.add_column(justify="right")
-    header.add_row("[bold]KONASH[/]  Setup", f"[dim]{_get_version()}[/]")
-    console.print(header)
+    console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Setup")
     console.print()
     console.rule(style="dim")
     console.print()
@@ -385,11 +439,7 @@ def cmd_download(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     console.print()
-    header = Table.grid(expand=True)
-    header.add_column(ratio=1)
-    header.add_column(justify="right")
-    header.add_row("[bold]KONASH[/]  Download", f"[dim]{corpus_name}[/]")
-    console.print(header)
+    console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Download  [dim]{corpus_name}[/]")
     console.print()
     console.rule(style="dim")
     console.print()
@@ -423,12 +473,7 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     # ── Interactive wizard ───────────────────────────────────────────
     console.print()
-
-    header = Table.grid(expand=True)
-    header.add_column(ratio=1)
-    header.add_column(justify="right")
-    header.add_row("[bold]KONASH[/]  Train", f"[dim]{_get_version()}[/]")
-    console.print(header)
+    console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Train")
     console.print("[dim]Press Enter to accept defaults.[/]")
     console.print()
     console.rule(style="dim")
@@ -440,33 +485,24 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     corpus = args.corpus
     if not corpus:
-        # Show numbered dataset options
-        for i, ds in enumerate(DATASETS, 1):
-            console.print(f"    [bold]{i}[/]  {ds['name']}")
-            console.print(f"       [dim]{ds['desc']}[/]")
-        console.print(f"    [bold]{len(DATASETS) + 1}[/]  Local folder")
-        console.print(f"       [dim]Point to your own documents directory[/]")
-        console.print()
-
-        choice = Prompt.ask(
-            "    Select",
-            default="1",
+        options = [
+            {"label": ds["name"], "hint": ds["desc"]}
+            for ds in DATASETS
+        ]
+        options.append(
+            {"label": "Local folder", "hint": "Point to your own documents directory"}
         )
 
-        # Parse choice
-        try:
-            idx = int(choice)
-        except ValueError:
-            idx = 0
+        console.print("    [dim]Use arrow keys, press Enter to select[/]")
+        console.print()
+        idx = _arrow_select(console, options)
+        console.print()
 
-        if 1 <= idx <= len(DATASETS):
-            ds = DATASETS[idx - 1]
+        if idx < len(DATASETS):
+            ds = DATASETS[idx]
             corpus = _download_dataset(ds["key"])
-        elif idx == len(DATASETS) + 1:
-            corpus = Prompt.ask("    Path to documents")
         else:
-            console.print(f"    [red]Invalid choice:[/] {choice}")
-            sys.exit(1)
+            corpus = Prompt.ask("    Path to documents")
 
     if not corpus or not os.path.exists(corpus):
         console.print(f"    [red]Path not found:[/] {corpus}")
@@ -654,12 +690,7 @@ def cmd_search(args: argparse.Namespace) -> None:
 
 def cmd_status(args: argparse.Namespace) -> None:
     console.print()
-
-    header = Table.grid(expand=True)
-    header.add_column(ratio=1)
-    header.add_column(justify="right")
-    header.add_row("[bold]KONASH[/]  Status", f"[dim]{_get_version()}[/]")
-    console.print(header)
+    console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Status")
     console.print()
     console.rule(style="dim")
     console.print()
