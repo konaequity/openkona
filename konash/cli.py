@@ -1,4 +1,7 @@
-"""KONASH command-line interface."""
+"""KONASH command-line interface.
+
+Polished with ``rich`` — panels, spinners, progress, styled output.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +11,27 @@ import os
 import sys
 import webbrowser
 
-# Together AI defaults (matching the KARL paper with GLM 4.5 Air)
+from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Confirm, Prompt
+from rich.table import Table
+
+from konash.auth import (
+    TOGETHER_KEYS_PAGE,
+    HF_TOKENS_PAGE,
+    detect_hf_token,
+    hf_device_flow,
+    validate_hf_token,
+    validate_together_key,
+)
+
+# ---------------------------------------------------------------------------
+# Globals
+# ---------------------------------------------------------------------------
+
+console = Console()
+
 TOGETHER_API_BASE = "https://api.together.xyz/v1"
 DEFAULT_MODEL = "zai-org/GLM-4.5-Air-FP8"
 CONFIG_DIR = os.path.expanduser("~/.konash")
@@ -32,22 +55,66 @@ def _save_config(config: dict) -> None:
         json.dump(config, f, indent=2)
 
 
-def _get_key(name: str, env_vars: list[str], config_key: str) -> str | None:
-    """Resolve a key from env vars or saved config."""
+def _get_key(env_vars: list[str], config_key: str) -> str | None:
     for var in env_vars:
         val = os.environ.get(var)
         if val:
             return val
-    config = _load_config()
-    return config.get(config_key)
+    return _load_config().get(config_key)
 
 
 def _get_together_key() -> str | None:
-    return _get_key("Together AI", ["TOGETHER_API_KEY"], "together_api_key")
+    return _get_key(["TOGETHER_API_KEY"], "together_api_key")
 
 
 def _get_hf_token() -> str | None:
-    return _get_key("HuggingFace", ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"], "hf_token")
+    token = _get_key(["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"], "hf_token")
+    if token:
+        return token
+    return detect_hf_token()
+
+
+def _mask(key: str) -> str:
+    if len(key) <= 12:
+        return key[:4] + "..." + key[-2:]
+    return key[:8] + "..." + key[-4:]
+
+
+# ---------------------------------------------------------------------------
+# konash  (no args)
+# ---------------------------------------------------------------------------
+
+def cmd_default() -> None:
+    console.print()
+    console.print(Panel(
+        "[bold cyan]KONASH[/]  v" + _get_version() + "\n\n"
+        "Train knowledge agents that search, retrieve, and reason\n"
+        "over your documents using reinforcement learning.",
+        border_style="cyan",
+        padding=(1, 4),
+    ))
+
+    grid = Table.grid(padding=(0, 4))
+    grid.add_column(style="bold cyan", min_width=36)
+    grid.add_column(style="dim")
+    grid.add_row("konash setup", "Set up API keys")
+    grid.add_row("konash train ./my_docs", "Train on your documents")
+    grid.add_row('konash ask --corpus ./docs "Q"', "Ask a question")
+    grid.add_row("konash search --corpus ./docs Q", "Search documents")
+    grid.add_row("konash status", "Check your setup")
+
+    console.print(Panel(
+        grid, title="[bold]Commands", border_style="dim", padding=(1, 2),
+    ))
+    console.print()
+
+
+def _get_version() -> str:
+    try:
+        from konash import __version__
+        return __version__
+    except Exception:
+        return "?"
 
 
 # ---------------------------------------------------------------------------
@@ -55,123 +122,195 @@ def _get_hf_token() -> str | None:
 # ---------------------------------------------------------------------------
 
 def cmd_setup(args: argparse.Namespace) -> None:
-    """Interactive setup wizard — get API keys, validate, save."""
-    print()
-    print("  Welcome to KONASH")
-    print("  " + "=" * 40)
-    print()
-    print("  KONASH trains knowledge agents that search, retrieve,")
-    print("  and reason over your documents using reinforcement learning.")
-    print()
-    print("  You'll need two free API keys:")
-    print("    1. Together AI  — runs the AI model")
-    print("    2. HuggingFace  — stores your trained model")
-    print()
+    console.print()
+    console.print(Panel(
+        "[bold cyan]KONASH Setup[/]\n\n"
+        "We'll configure your API keys. Takes about 2 minutes.\n\n"
+        "[dim]Together AI  — runs the AI model  (free tier)[/]\n"
+        "[dim]HuggingFace  — stores your trained model  (free)[/]",
+        border_style="cyan",
+        padding=(1, 4),
+    ))
 
     config = _load_config()
 
-    # --- Together AI ---
+    # ── Step 1: Together AI ──────────────────────────────────────────
+    console.print()
+    console.rule("[bold cyan]Step 1 of 2  ·  Together AI")
+    console.print()
+
     together_key = _get_together_key()
+
     if together_key:
-        masked = together_key[:8] + "..." + together_key[-4:]
-        print(f"  Together AI key found: {masked}")
-        resp = input("  Keep this key? [Y/n] ").strip().lower()
-        if resp in ("n", "no"):
+        console.print(f"    Key found: [dim]{_mask(together_key)}[/]")
+        with console.status("    [cyan]Validating...", spinner="dots"):
+            valid = validate_together_key(together_key)
+        if valid:
+            console.print("    [bold green]✓[/] Valid")
+            if not Confirm.ask("    Keep this key?", default=True):
+                together_key = None
+        else:
+            console.print("    [bold red]✗[/] Key no longer works")
             together_key = None
 
     if not together_key:
-        print()
-        print("  Step 1: Get your Together AI API key")
-        print("  " + "-" * 40)
-        print("  1. Go to: https://api.together.xyz/settings/api-keys")
-        print("  2. Sign up (free) or log in")
-        print("  3. Click 'Create API Key'")
-        print("  4. Copy the key")
-        print()
+        console.print("    [bold]To get your free API key:[/]")
+        console.print("    1. Go to Together AI → Settings → API Keys")
+        console.print("    2. Sign up or log in")
+        console.print("    3. Click [bold]Create API Key[/]")
+        console.print("    4. Copy the key")
+        console.print()
 
-        if input("  Open the page in your browser? [Y/n] ").strip().lower() != "n":
-            webbrowser.open("https://api.together.xyz/settings/api-keys")
+        if Confirm.ask("    Open Together AI in your browser?", default=True):
+            webbrowser.open(TOGETHER_KEYS_PAGE)
 
-        together_key = input("\n  Paste your Together AI key: ").strip()
+        console.print()
+        together_key = Prompt.ask("    Paste your API key", password=True)
 
-        if not together_key:
-            print("  Skipped. You can set TOGETHER_API_KEY later.")
-        else:
-            # Validate
-            print("  Validating...", end=" ", flush=True)
-            if _validate_together_key(together_key):
-                print("OK")
+        if together_key:
+            with console.status("    [cyan]Validating...", spinner="dots"):
+                valid = validate_together_key(together_key)
+            if valid:
+                console.print("    [bold green]✓[/] Key is valid")
                 config["together_api_key"] = together_key
             else:
-                print("FAILED")
-                print("  Key didn't work. Check it and try again.")
+                console.print("    [bold red]✗[/] Invalid key — check and try again")
                 return
-
+        else:
+            console.print("    [dim]Skipped. Set TOGETHER_API_KEY env var later.[/]")
     else:
         config["together_api_key"] = together_key
 
-    # --- HuggingFace ---
-    print()
+    # ── Step 2: HuggingFace ──────────────────────────────────────────
+    console.print()
+    console.rule("[bold cyan]Step 2 of 2  ·  HuggingFace")
+    console.print()
+
     hf_token = _get_hf_token()
+
     if hf_token:
-        masked = hf_token[:8] + "..." + hf_token[-4:]
-        print(f"  HuggingFace token found: {masked}")
-        resp = input("  Keep this token? [Y/n] ").strip().lower()
-        if resp in ("n", "no"):
+        console.print(f"    Token found: [dim]{_mask(hf_token)}[/]")
+        with console.status("    [cyan]Validating...", spinner="dots"):
+            username = validate_hf_token(hf_token)
+        if username:
+            console.print(f"    [bold green]✓[/] Logged in as [bold]{username}[/]")
+            if not Confirm.ask("    Keep this token?", default=True):
+                hf_token = None
+        else:
+            console.print("    [bold red]✗[/] Token no longer works")
             hf_token = None
 
     if not hf_token:
-        print()
-        print("  Step 2: Get your HuggingFace token")
-        print("  " + "-" * 40)
-        print("  1. Go to: https://huggingface.co/settings/tokens")
-        print("  2. Sign up (free) or log in")
-        print("  3. Click 'Create new token' (select 'Write' access)")
-        print("  4. Copy the token")
-        print()
+        # Try OAuth device flow first (no manual copy needed)
+        hf_token = hf_device_flow(console)
 
-        if input("  Open the page in your browser? [Y/n] ").strip().lower() != "n":
-            webbrowser.open("https://huggingface.co/settings/tokens")
-
-        hf_token = input("\n  Paste your HuggingFace token: ").strip()
-
-        if not hf_token:
-            print("  Skipped. You can set HF_TOKEN later.")
-            print("  (Only needed if you want to deploy your trained model.)")
+        if hf_token:
+            console.print("    [bold green]✓[/] Authorized via OAuth")
         else:
+            # Manual fallback
+            console.print("    [bold]To get your free token:[/]")
+            console.print("    1. Go to HuggingFace → Settings → Access Tokens")
+            console.print("    2. Sign up or log in")
+            console.print("    3. Create a token with [bold]Write[/] access")
+            console.print("    4. Copy the token")
+            console.print()
+
+            if Confirm.ask("    Open HuggingFace in your browser?", default=True):
+                webbrowser.open(HF_TOKENS_PAGE)
+
+            console.print()
+            hf_token = Prompt.ask("    Paste your token", password=True)
+
+        if hf_token:
             config["hf_token"] = hf_token
+        else:
+            console.print(
+                "    [dim]Skipped. Only needed to deploy trained models.[/]"
+            )
     else:
         config["hf_token"] = hf_token
 
-    # Save
+    # ── Save & Summary ───────────────────────────────────────────────
     _save_config(config)
-    print()
-    print("  " + "=" * 40)
-    print(f"  Config saved to {CONFIG_FILE}")
-    print()
-    print("  You're ready! Next steps:")
-    print()
-    print("    # Train on your documents:")
-    print("    konash train ./my_docs")
-    print()
-    print("    # Ask questions:")
-    print('    konash ask --corpus ./my_docs "What is X?"')
-    print()
 
+    summary = Table.grid(padding=(0, 2))
+    summary.add_column(style="bold", justify="right", min_width=14)
+    summary.add_column()
 
-def _validate_together_key(key: str) -> bool:
-    """Make a test API call to validate the key."""
-    try:
-        import urllib.request
-        import urllib.error
-        req = urllib.request.Request(
-            "https://api.together.xyz/v1/models",
-            headers={"Authorization": f"Bearer {key}"},
+    if config.get("together_api_key"):
+        summary.add_row(
+            "Together AI",
+            f"[green]✓[/]  {_mask(config['together_api_key'])}",
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
+    else:
+        summary.add_row("Together AI", "[red]✗  not set[/]")
+
+    if config.get("hf_token"):
+        summary.add_row(
+            "HuggingFace",
+            f"[green]✓[/]  {_mask(config['hf_token'])}",
+        )
+    else:
+        summary.add_row("HuggingFace", "[yellow]–  skipped[/]")
+
+    summary.add_row("Config", f"[dim]{CONFIG_FILE}[/]")
+
+    console.print()
+    console.print(Panel(
+        summary,
+        title="[bold green]Setup Complete",
+        border_style="green",
+        padding=(1, 2),
+    ))
+
+    console.print()
+    console.print("    [bold]Next steps:[/]")
+    console.print()
+    console.print("    [cyan]konash train ./my_docs[/]")
+    console.print('    [cyan]konash ask --corpus ./my_docs "What is X?"[/]')
+    console.print()
+
+
+# ---------------------------------------------------------------------------
+# konash setup --check
+# ---------------------------------------------------------------------------
+
+def cmd_setup_check() -> None:
+    """Non-interactive validation of all keys."""
+    together_key = _get_together_key()
+    hf_token = _get_hf_token()
+    all_ok = True
+
+    console.print()
+
+    if together_key:
+        with console.status("[cyan]Checking Together AI...", spinner="dots"):
+            valid = validate_together_key(together_key)
+        if valid:
+            console.print("[green]✓[/] Together AI key valid")
+        else:
+            console.print("[red]✗[/] Together AI key invalid")
+            all_ok = False
+    else:
+        console.print("[red]✗[/] Together AI key not found")
+        all_ok = False
+
+    if hf_token:
+        with console.status("[cyan]Checking HuggingFace...", spinner="dots"):
+            username = validate_hf_token(hf_token)
+        if username:
+            console.print(f"[green]✓[/] HuggingFace token valid ({username})")
+        else:
+            console.print("[red]✗[/] HuggingFace token invalid")
+            all_ok = False
+    else:
+        console.print("[yellow]–[/] HuggingFace token not found (optional)")
+
+    console.print()
+    if not all_ok:
+        console.print("Run [cyan]konash setup[/] to fix.")
+        console.print()
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -186,16 +325,32 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     api_key = _get_together_key() or args.api_key
     if not api_key:
-        print("  No API key found. Run 'konash setup' first.")
+        console.print(
+            "\n[red]No API key found.[/] Run [cyan]konash setup[/] first.\n"
+        )
         sys.exit(1)
 
-    print()
-    print("  KONASH Training")
-    print("  " + "=" * 40)
-    print(f"  Corpus:     {args.corpus}")
-    print(f"  Model:      {args.model}")
-    print(f"  Iterations: {args.iterations}")
-    print()
+    # Pre-training config summary
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", justify="right", min_width=18)
+    grid.add_column()
+    grid.add_row("Corpus", args.corpus)
+    grid.add_row("Model", args.model)
+    grid.add_row("Iterations", str(args.iterations))
+    grid.add_row("Rollouts / example", str(args.rollouts))
+    grid.add_row("Chunk size", f"{args.chunk_size} words")
+    grid.add_row("Learning rate", f"{args.lr:.0e}")
+    if args.max_examples:
+        grid.add_row("Max examples", str(args.max_examples))
+
+    console.print()
+    console.print(Panel(
+        grid,
+        title="[bold cyan]KONASH Training",
+        border_style="cyan",
+        padding=(1, 2),
+    ))
+    console.print()
 
     agent = Agent(
         base_model=args.model,
@@ -213,6 +368,14 @@ def cmd_train(args: argparse.Namespace) -> None:
         verbose=True,
     )
 
+    console.print()
+    console.print(Panel(
+        "[bold green]Training complete![/]",
+        border_style="green",
+        padding=(0, 2),
+    ))
+    console.print()
+
 
 # ---------------------------------------------------------------------------
 # konash ask
@@ -226,7 +389,9 @@ def cmd_ask(args: argparse.Namespace) -> None:
 
     api_key = _get_together_key() or args.api_key
     if not api_key:
-        print("  No API key found. Run 'konash setup' first.")
+        console.print(
+            "\n[red]No API key found.[/] Run [cyan]konash setup[/] first.\n"
+        )
         sys.exit(1)
 
     agent = Agent(
@@ -236,14 +401,22 @@ def cmd_ask(args: argparse.Namespace) -> None:
         api_base=TOGETHER_API_BASE,
         api_key=api_key,
     )
-    answer = agent.solve(
-        args.query,
-        parallel_rollouts=args.parallel,
-        top_k=args.top_k,
-    )
-    print()
-    print(answer)
-    print()
+
+    with console.status("[cyan]Thinking...", spinner="dots"):
+        answer = agent.solve(
+            args.query,
+            parallel_rollouts=args.parallel,
+            top_k=args.top_k,
+        )
+
+    console.print()
+    console.print(Panel(
+        answer,
+        title="[bold green]Answer",
+        border_style="green",
+        padding=(1, 2),
+    ))
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -256,18 +429,33 @@ def cmd_search(args: argparse.Namespace) -> None:
     except ModuleNotFoundError as exc:
         _dependency_error(exc)
 
-    corpus = Corpus(args.corpus, chunk_size=args.chunk_size)
-    corpus.ingest()
-    print(f"  Indexed {corpus.num_documents} chunks from {args.corpus}\n")
+    with console.status("[cyan]Indexing corpus...", spinner="dots"):
+        corpus = Corpus(args.corpus, chunk_size=args.chunk_size)
+        corpus.ingest()
 
-    results = corpus.search(args.query, top_k=args.top_k)
+    console.print(f"[dim]Indexed {corpus.num_documents} chunks[/]\n")
+
+    with console.status("[cyan]Searching...", spinner="dots"):
+        results = corpus.search(args.query, top_k=args.top_k)
+
+    table = Table(
+        title=f'Results for "{args.query}"',
+        box=box.SIMPLE_HEAVY,
+        expand=True,
+    )
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Score", justify="right", width=8)
+    table.add_column("Source", style="cyan", max_width=30)
+    table.add_column("Text")
+
     for i, r in enumerate(results, 1):
         score = r.get("score", 0)
         source = r.get("source", "?")
-        text = r.get("text", "")[:200]
-        print(f"  [{i}] (score: {score:.3f}) {source}")
-        print(f"      {text}...")
-        print()
+        text = r.get("text", "")[:150]
+        table.add_row(str(i), f"{score:.3f}", source, text + "...")
+
+    console.print(table)
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -275,50 +463,60 @@ def cmd_search(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_status(args: argparse.Namespace) -> None:
-    """Show current configuration and key status."""
-    config = _load_config()
-
-    print()
-    print("  KONASH Status")
-    print("  " + "=" * 40)
+    table = Table(
+        box=box.SIMPLE_HEAVY,
+        show_header=False,
+        padding=(0, 2),
+    )
+    table.add_column("Key", style="bold", min_width=14)
+    table.add_column("Status")
 
     # Together key
     together_key = _get_together_key()
     if together_key:
-        masked = together_key[:8] + "..." + together_key[-4:]
-        print(f"  Together AI:  {masked}")
+        table.add_row("Together AI", f"[green]✓[/]  {_mask(together_key)}")
     else:
-        print("  Together AI:  NOT SET")
+        table.add_row("Together AI", "[red]✗  NOT SET[/]")
 
     # HF token
     hf_token = _get_hf_token()
     if hf_token:
-        masked = hf_token[:8] + "..." + hf_token[-4:]
-        print(f"  HuggingFace:  {masked}")
+        table.add_row("HuggingFace", f"[green]✓[/]  {_mask(hf_token)}")
     else:
-        print("  HuggingFace:  NOT SET")
+        table.add_row("HuggingFace", "[yellow]–  not set[/]")
 
-    # Config file
-    print(f"  Config:       {CONFIG_FILE}")
+    # Config
+    table.add_row("Config", f"[dim]{CONFIG_FILE}[/]")
 
-    # Check for trained models
+    # Training status
     project_dir = os.path.join(".konash", "default", "checkpoints")
     if os.path.exists(project_dir):
         meta_path = os.path.join(project_dir, "training_meta.json")
         if os.path.exists(meta_path):
             with open(meta_path) as f:
                 meta = json.load(f)
-            print(f"  Trained:      {meta.get('base_model', '?')} "
-                  f"({meta.get('iterations', 0)} iterations)")
+            model = meta.get("base_model", "?")
+            iters = meta.get("iterations", 0)
+            table.add_row(
+                "Trained",
+                f"[green]✓[/]  {model} ({iters} iters)",
+            )
         else:
-            print("  Trained:      checkpoint dir exists, no meta")
+            table.add_row("Trained", "[yellow]checkpoint exists, no meta[/]")
     else:
-        print("  Trained:      no")
+        table.add_row("Trained", "[dim]no[/]")
 
-    print()
+    console.print()
+    console.print(Panel(
+        table,
+        title="[bold cyan]KONASH Status",
+        border_style="cyan",
+        padding=(1, 2),
+    ))
+    console.print()
+
     if not together_key:
-        print("  Run 'konash setup' to configure.")
-        print()
+        console.print("    Run [cyan]konash setup[/] to configure.\n")
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +525,8 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 def _dependency_error(exc: ModuleNotFoundError) -> None:
     missing = exc.name or "a required package"
-    print(f"  Error: Missing dependency '{missing}'.")
-    print("  Install with: pip install konash")
+    console.print(f"\n[red]Missing dependency:[/] [bold]{missing}[/]")
+    console.print("Install with: [cyan]pip install konash[/]\n")
     sys.exit(1)
 
 
@@ -344,74 +542,78 @@ def main(argv: list[str] | None = None) -> None:
     subparsers = parser.add_subparsers(dest="command")
 
     # --- setup ---
-    p_setup = subparsers.add_parser(
-        "setup",
-        help="Set up API keys (interactive wizard).",
+    p_setup = subparsers.add_parser("setup", help="Set up API keys.")
+    p_setup.add_argument(
+        "--check", action="store_true",
+        help="Validate existing keys (non-interactive).",
     )
     p_setup.set_defaults(func=cmd_setup)
 
     # --- train ---
-    p_train = subparsers.add_parser(
-        "train",
-        help="Train a knowledge agent on your documents.",
-    )
+    p_train = subparsers.add_parser("train", help="Train a knowledge agent.")
     p_train.add_argument("corpus", help="Path to your documents folder.")
     p_train.add_argument("--model", default=DEFAULT_MODEL, help="Model ID.")
     p_train.add_argument("--project", default="default", help="Project name.")
-    p_train.add_argument("--iterations", type=int, default=2, help="Training iterations.")
-    p_train.add_argument("--rollouts", type=int, default=8, help="Rollouts per example.")
-    p_train.add_argument("--max-examples", type=int, default=None, help="Max training examples.")
+    p_train.add_argument(
+        "--iterations", type=int, default=2, help="Training iterations."
+    )
+    p_train.add_argument(
+        "--rollouts", type=int, default=8, help="Rollouts per example."
+    )
+    p_train.add_argument(
+        "--max-examples", type=int, default=None, help="Max training examples."
+    )
     p_train.add_argument("--lr", type=float, default=1e-5, help="Learning rate.")
-    p_train.add_argument("--chunk-size", type=int, default=512, help="Chunk size in words.")
-    p_train.add_argument("--api-key", default=None, help="Together AI key (or run konash setup).")
+    p_train.add_argument(
+        "--chunk-size", type=int, default=512, help="Chunk size in words."
+    )
+    p_train.add_argument(
+        "--api-key", default=None, help="Together AI key (or run konash setup)."
+    )
     p_train.set_defaults(func=cmd_train)
 
     # --- ask ---
-    p_ask = subparsers.add_parser(
-        "ask",
-        help="Ask a question using your knowledge agent.",
-    )
+    p_ask = subparsers.add_parser("ask", help="Ask your knowledge agent.")
     p_ask.add_argument("query", help="Your question.")
     p_ask.add_argument("--corpus", required=True, help="Path to documents folder.")
     p_ask.add_argument("--model", default=DEFAULT_MODEL, help="Model ID.")
     p_ask.add_argument("--project", default="default", help="Project name.")
-    p_ask.add_argument("--parallel", type=int, default=1, help="Parallel rollouts.")
-    p_ask.add_argument("--top-k", type=int, default=10, help="Documents per search.")
+    p_ask.add_argument(
+        "--parallel", type=int, default=1, help="Parallel rollouts."
+    )
+    p_ask.add_argument(
+        "--top-k", type=int, default=10, help="Documents per search."
+    )
     p_ask.add_argument("--api-key", default=None, help="Together AI key.")
     p_ask.set_defaults(func=cmd_ask)
 
     # --- search ---
-    p_search = subparsers.add_parser(
-        "search",
-        help="Search your documents directly (no AI).",
-    )
+    p_search = subparsers.add_parser("search", help="Search your documents.")
     p_search.add_argument("query", help="Search query.")
-    p_search.add_argument("--corpus", required=True, help="Path to documents folder.")
-    p_search.add_argument("--top-k", type=int, default=5, help="Number of results.")
-    p_search.add_argument("--chunk-size", type=int, default=512, help="Chunk size.")
+    p_search.add_argument(
+        "--corpus", required=True, help="Path to documents folder."
+    )
+    p_search.add_argument(
+        "--top-k", type=int, default=5, help="Number of results."
+    )
+    p_search.add_argument(
+        "--chunk-size", type=int, default=512, help="Chunk size."
+    )
     p_search.set_defaults(func=cmd_search)
 
     # --- status ---
-    p_status = subparsers.add_parser(
-        "status",
-        help="Show current setup and key status.",
-    )
+    p_status = subparsers.add_parser("status", help="Show setup status.")
     p_status.set_defaults(func=cmd_status)
 
     args = parser.parse_args(argv)
 
     if args.command is None:
-        # No command — show help with a friendly message
-        print()
-        print("  KONASH — Train knowledge agents on your documents")
-        print()
-        print("  Get started:")
-        print("    konash setup              Set up API keys")
-        print("    konash train ./my_docs    Train on your documents")
-        print('    konash ask --corpus ./my_docs "What is X?"')
-        print("    konash status             Check your setup")
-        print()
-        parser.print_help()
+        cmd_default()
+        return
+
+    # Handle setup --check
+    if args.command == "setup" and args.check:
+        cmd_setup_check()
         return
 
     args.func(args)
