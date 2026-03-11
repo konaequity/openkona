@@ -137,13 +137,22 @@ class Corpus:
     # Public API
     # ------------------------------------------------------------------
 
-    def ingest(self) -> "Corpus":
+    def ingest(
+        self,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> "Corpus":
         """Read, chunk, embed, and index all documents under ``self.path``.
+
+        Parameters
+        ----------
+        progress_callback : callable | None
+            Called with ``(phase, current, total)`` to report progress.
+            Phases: ``"reading"``, ``"chunking"``, ``"embedding"``.
 
         Returns *self* for chaining.
         """
-        raw_docs = self._read_all()
-        self.documents = self._chunk_all(raw_docs)
+        raw_docs = self._read_all(progress_callback)
+        self.documents = self._chunk_all(raw_docs, progress_callback)
 
         if not self.documents:
             raise ValueError(
@@ -151,7 +160,11 @@ class Corpus:
                 f"Supported extensions: {sorted(self.extensions)}"
             )
 
+        if progress_callback:
+            progress_callback("embedding", 0, len(self.documents))
         self.vector_search.index(self.documents, text_key="text")
+        if progress_callback:
+            progress_callback("embedding", len(self.documents), len(self.documents))
         self._indexed = True
         return self
 
@@ -189,7 +202,10 @@ class Corpus:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _read_all(self) -> List[Dict[str, str]]:
+    def _read_all(
+        self,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> List[Dict[str, str]]:
         """Read all matching files under ``self.path``."""
         docs: List[Dict[str, str]] = []
         if self.path.is_file():
@@ -198,22 +214,37 @@ class Corpus:
                 docs.append({"text": text, "source": str(self.path)})
             return docs
 
+        # Count matching files first for progress reporting
+        all_files: List[Path] = []
         for root, _dirs, files in os.walk(self.path):
             for fname in sorted(files):
                 fpath = Path(root) / fname
-                if fpath.suffix.lower() not in self.extensions:
-                    continue
-                text = _read_file(fpath)
-                if text.strip():
-                    docs.append({"text": text, "source": str(fpath)})
+                if fpath.suffix.lower() in self.extensions:
+                    all_files.append(fpath)
+
+        total = len(all_files)
+        for i, fpath in enumerate(all_files):
+            if progress_callback:
+                progress_callback("reading", i, total)
+            text = _read_file(fpath)
+            if text.strip():
+                docs.append({"text": text, "source": str(fpath)})
+
+        if progress_callback:
+            progress_callback("reading", total, total)
         return docs
 
     def _chunk_all(
-        self, raw_docs: List[Dict[str, str]]
+        self,
+        raw_docs: List[Dict[str, str]],
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
     ) -> List[Dict[str, Any]]:
         """Chunk all documents."""
+        total = len(raw_docs)
         chunked: List[Dict[str, Any]] = []
-        for doc in raw_docs:
+        for i, doc in enumerate(raw_docs):
+            if progress_callback:
+                progress_callback("chunking", i, total)
             chunks = _chunk_text(
                 doc["text"],
                 max_tokens=self.chunk_size,
@@ -225,6 +256,8 @@ class Corpus:
                     "source": doc["source"],
                     "chunk_index": idx,
                 })
+        if progress_callback:
+            progress_callback("chunking", total, total)
         return chunked
 
     def __repr__(self) -> str:

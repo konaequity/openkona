@@ -239,11 +239,17 @@ class Agent:
         self._use_unsloth = use_unsloth
         self._load_in_fp8 = load_in_fp8
 
-        # Corpus
+        # Corpus — use real embeddings (Qwen3-Embedding-0.6B per KARL paper) when available
         if isinstance(corpus, Corpus):
             self.corpus = corpus
         else:
-            self.corpus = Corpus(corpus, chunk_size=chunk_size)
+            embed_fn = None
+            try:
+                from konash.retrieval.vector_search import load_embedding_model
+                embed_fn = load_embedding_model()  # default: Qwen/Qwen3-Embedding-0.6B
+            except Exception:
+                pass  # falls back to trigram hash
+            self.corpus = Corpus(corpus, chunk_size=chunk_size, embed_fn=embed_fn)
 
         # LLM connection
         self.api_base = api_base or os.environ.get("KONASH_API_BASE")
@@ -410,7 +416,29 @@ class Agent:
         if not self.corpus.indexed:
             if verbose:
                 print(f"Ingesting corpus from {self.corpus.path} ...")
-            self.corpus.ingest()
+
+                _last_phase = [None]
+
+                def _progress(phase: str, current: int, total: int) -> None:
+                    labels = {
+                        "reading": "Reading files",
+                        "chunking": "Chunking docs",
+                        "embedding": "Embedding",
+                    }
+                    label = labels.get(phase, phase)
+                    if current >= total:
+                        print(f"\r  {label}  {total:,} done" + " " * 20)
+                        _last_phase[0] = phase
+                    else:
+                        pct = current * 100 // total if total else 0
+                        print(
+                            f"\r  {label}  {current:,}/{total:,}  ({pct}%)",
+                            end="", flush=True,
+                        )
+
+                self.corpus.ingest(progress_callback=_progress)
+            else:
+                self.corpus.ingest()
             if verbose:
                 print(f"  Indexed {self.corpus.num_documents} chunks.")
 

@@ -747,9 +747,22 @@ def cmd_search(args: argparse.Namespace) -> None:
     except ModuleNotFoundError as exc:
         _dependency_error(exc)
 
-    with console.status("[cyan]Indexing corpus...", spinner="dots"):
-        corpus = Corpus(args.corpus, chunk_size=args.chunk_size)
-        corpus.ingest()
+    corpus = Corpus(args.corpus, chunk_size=args.chunk_size)
+
+    _status_msg = console.status("[cyan]Indexing corpus...", spinner="dots")
+    _status_msg.start()
+
+    def _search_progress(phase: str, current: int, total: int) -> None:
+        labels = {"reading": "Reading", "chunking": "Chunking", "embedding": "Embedding"}
+        label = labels.get(phase, phase)
+        if current < total:
+            pct = current * 100 // total if total else 0
+            _status_msg.update(f"[cyan]{label}  {current:,}/{total:,}  ({pct}%)")
+        else:
+            _status_msg.update(f"[cyan]{label}  {total:,} done")
+
+    corpus.ingest(progress_callback=_search_progress)
+    _status_msg.stop()
 
     console.print(f"[dim]Indexed {corpus.num_documents} chunks[/]\n")
 
