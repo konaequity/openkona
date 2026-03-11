@@ -768,6 +768,37 @@ def cmd_train(args: argparse.Namespace) -> None:
     console.print()
     console.print("    [green]✓[/]  Training complete")
     console.print()
+    console.print("    [bold]What's next?[/]")
+    console.print()
+
+    next_options = [
+        {"label": "Ask a question", "hint": "Test your trained agent on the corpus"},
+        {"label": "Exit", "hint": "Come back later with `konash ask`"},
+    ]
+    next_idx = _arrow_select(console, next_options)
+    console.print()
+
+    if next_idx == 0:
+        # Interactive ask loop
+        console.print("    [dim]Type a question and press Enter. Ctrl+C to exit.[/]")
+        console.print()
+        while True:
+            try:
+                question = Prompt.ask("    [bold]Q[/]")
+            except (KeyboardInterrupt, EOFError):
+                console.print()
+                break
+            if not question.strip():
+                continue
+            with console.status("[cyan]Thinking...", spinner="dots"):
+                answer = agent.solve(question, parallel_rollouts=1)
+            console.print(f"    [bold]A[/]  {answer}")
+            console.print()
+    else:
+        project_name = args.project or "default"
+        console.print(f"    [dim]Run [cyan]konash ask --project {project_name} "
+                       f"--corpus {corpus} \"your question\"[/] to query later.[/]")
+        console.print()
 
 
 # ---------------------------------------------------------------------------

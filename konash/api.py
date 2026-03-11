@@ -396,50 +396,75 @@ class Agent:
         # Step 1: Load model locally (for real OAPL training)
         # In split mode (inference_api_base set), still load the local model
         # because OAPL gradient updates require local weights.
+        if verbose:
+            from rich.console import Console as _Console
+            _con = _Console()
+
         engine = None
         if self.api_base is None or self.inference_api_base is not None:
             try:
                 engine = self._get_model_engine()
                 if verbose:
-                    print(f"Model loaded: {self.base_model}")
+                    _con.print(f"  [green]✓[/]  Model loaded: [bold]{self.base_model}[/]")
                     if self.inference_api_base:
-                        print(f"Inference via: {self.inference_model or self.base_model} "
-                              f"@ {self.inference_api_base}")
+                        _con.print(
+                            f"    [dim]Inference via {self.inference_model or self.base_model} "
+                            f"@ {self.inference_api_base}[/]"
+                        )
             except (ImportError, OSError, ValueError, RuntimeError) as e:
                 if verbose:
-                    print(f"  Note: Could not load model locally ({e}).")
-                    print("  Using lightweight mode (no gradient updates).")
-                    print("  Install: pip install konash[train]")
+                    _con.print(f"  [yellow]–[/]  Could not load model locally [dim]({e})[/]")
+                    _con.print("    [dim]Lightweight mode (no gradient updates)[/]")
+                    _con.print("    [dim]Install: pip install konash[train][/]")
 
         # Step 2: Ingest corpus
         if not self.corpus.indexed:
             if verbose:
-                print(f"Ingesting corpus from {self.corpus.path} ...")
+                from rich.live import Live as _Live
+                from rich.text import Text as _Text
 
-                _last_phase = [None]
+                _ingest_phase = ["reading"]
+                _ingest_cur = [0]
+                _ingest_total = [0]
 
-                def _progress(phase: str, current: int, total: int) -> None:
+                def _build_ingest_display() -> _Text:
                     labels = {
                         "reading": "Reading files",
                         "chunking": "Chunking docs",
                         "embedding": "Embedding",
                     }
-                    label = labels.get(phase, phase)
-                    if current >= total:
-                        print(f"\r  {label}  {total:,} done" + " " * 20)
-                        _last_phase[0] = phase
-                    else:
-                        pct = current * 100 // total if total else 0
-                        print(
-                            f"\r  {label}  {current:,}/{total:,}  ({pct}%)",
-                            end="", flush=True,
+                    label = labels.get(_ingest_phase[0], _ingest_phase[0])
+                    cur, tot = _ingest_cur[0], _ingest_total[0]
+                    if tot > 0:
+                        pct = cur * 100 // tot
+                        bar_w = 24
+                        filled = bar_w * cur // tot
+                        bar = f"[cyan]{'━' * filled}[/][dim]{'─' * (bar_w - filled)}[/]"
+                        return _Text.from_markup(
+                            f"  {label}  {bar}  "
+                            f"[dim]{cur:,}/{tot:,}[/]  [dim]{pct}%[/]"
                         )
+                    return _Text.from_markup(f"  {label}  [dim]starting...[/]")
 
-                self.corpus.ingest(progress_callback=_progress)
+                _ingest_live = _Live(
+                    _build_ingest_display(),
+                    console=_con, refresh_per_second=4, transient=True,
+                )
+
+                def _progress(phase: str, current: int, total: int) -> None:
+                    _ingest_phase[0] = phase
+                    _ingest_cur[0] = current
+                    _ingest_total[0] = total
+                    _ingest_live.update(_build_ingest_display())
+
+                with _ingest_live:
+                    self.corpus.ingest(progress_callback=_progress)
             else:
                 self.corpus.ingest()
             if verbose:
-                print(f"  Indexed {self.corpus.num_documents} chunks.")
+                _con.print(
+                    f"  [green]✓[/]  Indexed [bold]{self.corpus.num_documents:,}[/] chunks"
+                )
 
         # Set up synthesis components (LLM-backed via inference API or local model)
         generate_fn = self._get_generate_fn()
@@ -465,11 +490,7 @@ class Agent:
         _current_examples: List[Any] = []
 
         def _on_step(qa_idx, rollout_idx, step_idx, step_record):
-            if verbose and step_idx == 0 and rollout_idx == 0:
-                q_text = ""
-                if qa_idx < len(_current_examples):
-                    q_text = (_current_examples[qa_idx].question or "")[:80]
-                print(f"    [{qa_idx + 1}] {q_text}")
+            pass  # Progress shown by Rich status spinner
 
         rollout_gen = RolloutGenerator(
             search_tool=self.corpus.vector_search,
@@ -492,9 +513,11 @@ class Agent:
 
         for iteration in range(iterations):
             if verbose:
-                print(f"\n{'='*60}")
-                print(f"Iteration {iteration + 1}/{iterations}")
-                print(f"{'='*60}")
+                _con.print()
+                _con.rule(
+                    f"[bold]Iteration {iteration + 1}/{iterations}[/]",
+                    style="dim",
+                )
 
             # Step 3: Synthesize QA pairs
             # Free transient GPU memory before generation
@@ -506,63 +529,150 @@ class Agent:
             # Multi-call synthesis: KARL makes ~1,735 independent calls,
             # each generating ~8 QA pairs with fresh random seed docs.
             # This volume + dedup is how diversity is achieved.
-            if verbose:
-                print(f"  Synthesizing QA pairs ({synthesis_calls} calls × ~8 each) ...")
             all_raw_examples: List[SyntheticExample] = []
-            for call_idx in range(synthesis_calls):
-                try:
-                    batch = synthesizer.synthesize(
-                        documents=None,
-                        num_examples=8,
+
+            if verbose:
+                from rich.live import Live
+                from rich.table import Table as _Table
+                from rich.text import Text
+
+                def _build_synth_display(
+                    call_idx: int, total_calls: int,
+                    qa_count: int, latest_q: str, latest_a: str,
+                ) -> _Table:
+                    outer = _Table(
+                        box=None, show_header=False, pad_edge=False,
+                        expand=True, padding=(0, 0),
                     )
-                    all_raw_examples.extend(batch)
-                    if verbose and (call_idx + 1) % 50 == 0:
-                        print(f"    Call {call_idx + 1}/{synthesis_calls}: "
-                              f"{len(all_raw_examples)} raw QA pairs so far")
-                except (ValueError, RuntimeError) as e:
-                    if verbose and (call_idx + 1) % 100 == 0:
-                        print(f"    Call {call_idx + 1} failed: {e}")
-                    continue
+
+                    # Phase + progress
+                    done = call_idx + 1
+                    pct = done * 100 // total_calls if total_calls else 0
+                    bar_w = 32
+                    filled = bar_w * done // total_calls if total_calls else 0
+                    bar = f"[cyan]{'━' * filled}[/][dim]{'─' * (bar_w - filled)}[/]"
+
+                    outer.add_row(
+                        Text("  Synthesizing QA pairs", style="bold"),
+                    )
+                    outer.add_row(Text(""))
+                    outer.add_row(
+                        Text.from_markup(
+                            f"    {bar}  [dim]{done}/{total_calls}[/]  "
+                            f"[bold]{qa_count}[/] pairs  [dim]{pct}%[/]"
+                        ),
+                    )
+
+                    # Latest QA pair
+                    if latest_q:
+                        outer.add_row(Text(""))
+                        outer.add_row(
+                            Text.from_markup(
+                                f"    [dim]Q:[/]  {latest_q[:90]}"
+                                + ("[dim]...[/]" if len(latest_q) > 90 else "")
+                            ),
+                        )
+                    if latest_a:
+                        outer.add_row(
+                            Text.from_markup(
+                                f"    [dim]A:[/]  {latest_a[:90]}"
+                                + ("[dim]...[/]" if len(latest_a) > 90 else "")
+                            ),
+                        )
+
+                    return outer
+
+                with Live(
+                    _build_synth_display(0, synthesis_calls, 0, "", ""),
+                    console=_con, refresh_per_second=4, transient=True,
+                ) as live:
+                    for call_idx in range(synthesis_calls):
+                        try:
+                            batch = synthesizer.synthesize(
+                                documents=None,
+                                num_examples=8,
+                            )
+                            all_raw_examples.extend(batch)
+                            latest_q = batch[-1].question or "" if batch else ""
+                            latest_a = batch[-1].answer or "" if batch else ""
+                        except (ValueError, RuntimeError):
+                            latest_q, latest_a = "", ""
+                            continue
+                        live.update(
+                            _build_synth_display(
+                                call_idx, synthesis_calls,
+                                len(all_raw_examples), latest_q, latest_a,
+                            )
+                        )
+
+                _con.print(
+                    f"  [green]✓[/]  {len(all_raw_examples)} QA pairs synthesized"
+                )
+            else:
+                for call_idx in range(synthesis_calls):
+                    try:
+                        batch = synthesizer.synthesize(
+                            documents=None,
+                            num_examples=8,
+                        )
+                        all_raw_examples.extend(batch)
+                    except (ValueError, RuntimeError):
+                        continue
 
             if not all_raw_examples:
                 if verbose:
-                    print("  No QA pairs synthesized — skipping iteration.")
+                    _con.print("  [yellow]–[/]  No QA pairs synthesized — skipping.")
                 continue
 
-            # Deduplicate the full batch
+            # Deduplicate
             if verbose:
-                print(f"  Raw: {len(all_raw_examples)} QA pairs, deduplicating...")
-            examples = pipeline.deduplicate(all_raw_examples)
+                with _con.status(
+                    f"  [cyan]Deduplicating {len(all_raw_examples)} pairs...",
+                    spinner="dots",
+                ):
+                    examples = pipeline.deduplicate(all_raw_examples)
+            else:
+                examples = pipeline.deduplicate(all_raw_examples)
 
             if max_examples and len(examples) > max_examples:
                 examples = examples[:max_examples]
 
             if verbose:
-                print(f"  After dedup: {len(examples)} examples")
-                for i, ex in enumerate(examples[:10]):
-                    print(f"    [{i+1}] {(ex.question or '')[:80]}")
-                if len(examples) > 10:
-                    print(f"    ... and {len(examples) - 10} more")
+                _con.print(f"  [green]✓[/]  {len(examples)} unique examples")
+                for i, ex in enumerate(examples[:3]):
+                    _con.print(f"    [dim]{i+1}.[/] {(ex.question or '')[:80]}")
+                if len(examples) > 3:
+                    _con.print(f"    [dim]... and {len(examples) - 3} more[/]")
 
             # Step 4: Generate rollouts + filter
             if verbose:
-                print("  Generating rollouts ...")
-            _current_examples[:] = examples
-            final_examples = pipeline.run_stage_two(
-                examples=examples,
-                num_rollouts=rollouts_per_example,
-            )
-            if verbose:
-                print(f"  {len(final_examples)} examples after filtering.")
+                with _con.status(
+                    f"  [cyan]Generating rollouts  "
+                    f"({len(examples)} × {rollouts_per_example})...",
+                    spinner="dots",
+                ):
+                    _current_examples[:] = examples
+                    final_examples = pipeline.run_stage_two(
+                        examples=examples,
+                        num_rollouts=rollouts_per_example,
+                    )
+                _con.print(
+                    f"  [green]✓[/]  {len(final_examples)} examples after "
+                    f"pass-rate filtering"
+                )
+            else:
+                _current_examples[:] = examples
+                final_examples = pipeline.run_stage_two(
+                    examples=examples,
+                    num_rollouts=rollouts_per_example,
+                )
 
             if not final_examples or not pipeline.filtered_groups:
                 if verbose:
-                    print("  No training data — skipping training step.")
+                    _con.print("  [yellow]–[/]  No training data — skipping.")
                 continue
 
             # Step 5: Build dataset and train with OAPL
-            if verbose:
-                print("  Training with OAPL ...")
             rollout_dicts = []
             for group in pipeline.filtered_groups:
                 for rollout in group.rollouts:
@@ -575,15 +685,31 @@ class Agent:
                 dataset = OfflineRolloutDataset.from_rollouts(rollout_dicts)
 
                 # Use real PyTorch training when model is loaded locally
-                if self._model_engine is not None:
-                    epoch_stats = trainer.train_epoch_torch(
-                        dataset, engine,
-                        learning_rate=learning_rate,
-                    )
+                if verbose:
+                    with _con.status(
+                        f"  [cyan]Training OAPL  "
+                        f"[dim]({len(rollout_dicts)} rollouts)[/]...",
+                        spinner="dots",
+                    ):
+                        if self._model_engine is not None:
+                            epoch_stats = trainer.train_epoch_torch(
+                                dataset, engine,
+                                learning_rate=learning_rate,
+                            )
+                        else:
+                            epoch_stats = trainer.train_epoch(
+                                dataset, learning_rate=learning_rate,
+                            )
                 else:
-                    epoch_stats = trainer.train_epoch(
-                        dataset, learning_rate=learning_rate,
-                    )
+                    if self._model_engine is not None:
+                        epoch_stats = trainer.train_epoch_torch(
+                            dataset, engine,
+                            learning_rate=learning_rate,
+                        )
+                    else:
+                        epoch_stats = trainer.train_epoch(
+                            dataset, learning_rate=learning_rate,
+                        )
 
                 stats.append({
                     "iteration": iteration + 1,
@@ -592,9 +718,11 @@ class Agent:
                     **epoch_stats,
                 })
                 if verbose:
-                    print(f"  Loss: {epoch_stats['mean_loss']:.4f}  "
-                          f"Groups: {epoch_stats['num_groups']}  "
-                          f"Rollouts: {epoch_stats['num_rollouts']}")
+                    _con.print(
+                        f"  [green]✓[/]  Loss [bold]{epoch_stats['mean_loss']:.4f}[/]  "
+                        f"[dim]{epoch_stats['num_groups']} groups  "
+                        f"{epoch_stats['num_rollouts']} rollouts[/]"
+                    )
 
             self._iteration = iteration + 1
 
@@ -603,7 +731,7 @@ class Agent:
             if self._model_engine is not None and iteration < iterations - 1:
                 engine.snapshot_reference()
                 if verbose:
-                    print("  Snapshotted LoRA as πref for next iteration.")
+                    _con.print("  [dim]Snapshotted LoRA as πref for next iteration[/]")
 
         # Step 6: Save checkpoint
         os.makedirs(self.checkpoint_dir, exist_ok=True)
@@ -624,7 +752,11 @@ class Agent:
 
         self._trained = True
         if verbose:
-            print(f"\nTraining complete. Checkpoint saved to {self.checkpoint_dir}")
+            _con.print()
+            _con.print(
+                f"  [bold green]Training complete.[/]  "
+                f"Checkpoint saved to [dim]{self.checkpoint_dir}[/]"
+            )
 
         return {"iterations": self._iteration, "stats": stats}
 
