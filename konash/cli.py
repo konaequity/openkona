@@ -141,7 +141,7 @@ MODELS = [
 SCALE_PRESETS = [
     {
         "name": "Quick test",
-        "hint": "~24 QA pairs  ·  4 rollouts  ·  ~5 min  ·  ~$0.50",
+        "hint": "~24 QA pairs  ·  4 rollouts  ·  ~5 min",
         "qa_pairs": 24,
         "rollouts": 4,
         "rollout_steps": 10,
@@ -149,7 +149,7 @@ SCALE_PRESETS = [
     },
     {
         "name": "Small run",
-        "hint": "~400 QA pairs  ·  8 rollouts  ·  ~30 min  ·  ~$15",
+        "hint": "~400 QA pairs  ·  8 rollouts  ·  ~1 hr",
         "qa_pairs": 400,
         "rollouts": 8,
         "rollout_steps": 30,
@@ -157,7 +157,7 @@ SCALE_PRESETS = [
     },
     {
         "name": "KARL scale",
-        "hint": "~12K QA pairs  ·  8 rollouts  ·  ~8 hrs  ·  ~$400",
+        "hint": "~12K QA pairs  ·  8 rollouts  ·  2 iterations",
         "qa_pairs": 12000,
         "rollouts": 8,
         "rollout_steps": 50,
@@ -165,7 +165,7 @@ SCALE_PRESETS = [
     },
     {
         "name": "KARL full",
-        "hint": "~14K QA pairs  ·  8 rollouts  ·  200 steps  ·  ~$600",
+        "hint": "~14K QA pairs  ·  8 rollouts  ·  200 steps  ·  2 iterations",
         "qa_pairs": 13880,
         "rollouts": 8,
         "rollout_steps": 200,
@@ -579,96 +579,96 @@ def cmd_train(args: argparse.Namespace) -> None:
         console.print(f"    [red]Path not found:[/] {corpus}")
         sys.exit(1)
 
-    # Model
-    console.print()
-    console.rule("[bold]Model[/]", style="dim")
-    console.print()
-
-    model_options = [
-        {"label": m["name"], "hint": m["hint"]} for m in MODELS
-    ]
-    model_options.append(
-        {"label": "Custom", "hint": "Enter a model ID manually"}
-    )
-
-    console.print("    [dim]Use arrow keys, press Enter to select[/]")
-    console.print()
-    model_idx = _arrow_select(console, model_options)
-    console.print()
-
-    if model_idx < len(MODELS):
-        model = MODELS[model_idx]["id"]
-    else:
-        model = Prompt.ask("    Model ID")
-
-    # Scale
-    console.print()
-    console.rule("[bold]Scale[/]", style="dim")
-    console.print()
-
-    scale_options = [
-        {"label": p["name"], "hint": p["hint"]} for p in SCALE_PRESETS
-    ]
-    scale_options.append(
-        {"label": "Custom", "hint": "Set each parameter manually"}
-    )
-
-    console.print("    [dim]Use arrow keys, press Enter to select[/]")
-    console.print()
-    scale_idx = _arrow_select(console, scale_options)
-    console.print()
-
-    if scale_idx < len(SCALE_PRESETS):
-        preset = SCALE_PRESETS[scale_idx]
-        qa_pairs = preset["qa_pairs"]
-        rollouts = preset["rollouts"]
-        rollout_steps = preset["rollout_steps"]
-        iterations = preset["iterations"]
-    else:
-        qa_pairs = IntPrompt.ask(
-            "    QA pairs to synthesize", default=args.qa_pairs,
-        )
-        rollouts = IntPrompt.ask(
-            "    Rollouts per example", default=args.rollouts,
-        )
-        rollout_steps = IntPrompt.ask(
-            "    Max steps per rollout", default=args.rollout_steps,
-        )
-        iterations = IntPrompt.ask(
-            "    Training iterations", default=args.iterations,
-        )
-
+    # ── Model + Scale (with ability to go back) ────────────────────
+    model = args.model or DEFAULT_MODEL
+    qa_pairs = args.qa_pairs if hasattr(args, "qa_pairs") else 12000
+    rollouts = args.rollouts
+    rollout_steps = args.rollout_steps
+    iterations = args.iterations
     lr = args.lr
     chunk_size = args.chunk_size
 
-    # Convert QA pairs → synthesis calls (each call produces ~8 pairs)
-    synthesis_calls = max(1, qa_pairs // 8)
+    def _pick_model() -> str:
+        console.print()
+        console.rule("[bold]Model[/]", style="dim")
+        console.print()
+        opts = [{"label": m["name"], "hint": m["hint"]} for m in MODELS]
+        opts.append({"label": "Custom", "hint": "Enter a model ID manually"})
+        console.print("    [dim]Use arrow keys, press Enter to select[/]")
+        console.print()
+        idx = _arrow_select(console, opts)
+        console.print()
+        if idx < len(MODELS):
+            return MODELS[idx]["id"]
+        return Prompt.ask("    Model ID")
 
-    # ── Summary + confirm ────────────────────────────────────────────
-    est_synth = synthesis_calls * iterations
-    est_roll = qa_pairs * rollouts
-    est_cost = est_synth * 0.05 + est_roll * 0.02
+    def _pick_scale() -> tuple:
+        console.print()
+        console.rule("[bold]Scale[/]", style="dim")
+        console.print()
+        opts = [{"label": p["name"], "hint": p["hint"]} for p in SCALE_PRESETS]
+        opts.append({"label": "Custom", "hint": "Set each parameter manually"})
+        console.print("    [dim]Use arrow keys, press Enter to select[/]")
+        console.print()
+        idx = _arrow_select(console, opts)
+        console.print()
+        if idx < len(SCALE_PRESETS):
+            p = SCALE_PRESETS[idx]
+            return p["qa_pairs"], p["rollouts"], p["rollout_steps"], p["iterations"]
+        qp = IntPrompt.ask("    QA pairs to synthesize", default=12000)
+        ro = IntPrompt.ask("    Rollouts per example", default=8)
+        rs = IntPrompt.ask("    Max steps per rollout", default=50)
+        it = IntPrompt.ask("    Training iterations", default=2)
+        return qp, ro, rs, it
 
-    console.print()
-    console.rule(style="dim")
-    console.print()
+    model = _pick_model()
+    qa_pairs, rollouts, rollout_steps, iterations = _pick_scale()
 
-    grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="bold", justify="right", min_width=22)
-    grid.add_column()
-    grid.add_row("Corpus", corpus)
-    grid.add_row("Model", model)
-    grid.add_row("QA pairs", f"~{qa_pairs:,} / iteration")
-    grid.add_row("Rollouts / example", str(rollouts))
-    grid.add_row("Rollout steps", str(rollout_steps))
-    grid.add_row("Iterations", str(iterations))
-    grid.add_row("Est. cost", f"~${est_cost:,.0f}")
-    console.print(grid)
-    console.print()
+    # ── Summary + confirm (with go-back loop) ────────────────────────
+    while True:
+        synthesis_calls = max(1, qa_pairs // 8)
 
-    if not Confirm.ask("    Start training?", default=True):
-        console.print("    [dim]Aborted.[/]\n")
-        return
+        # Cost estimate: ~2K tokens per synthesis call, ~500 tokens per
+        # rollout step. Together AI GLM 4.5 Air ≈ $0.10/M tokens.
+        synth_tokens = synthesis_calls * iterations * 2000
+        rollout_tokens = qa_pairs * rollouts * rollout_steps * 500
+        est_cost = (synth_tokens + rollout_tokens) / 1_000_000 * 0.10
+
+        console.print()
+        console.rule(style="dim")
+        console.print()
+
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="bold", justify="right", min_width=22)
+        grid.add_column()
+        grid.add_row("Corpus", corpus)
+        grid.add_row("Model", model)
+        grid.add_row("QA pairs", f"~{qa_pairs:,} / iteration")
+        grid.add_row("Rollouts / example", str(rollouts))
+        grid.add_row("Rollout steps", str(rollout_steps))
+        grid.add_row("Iterations", str(iterations))
+        grid.add_row("Est. cost", f"~${est_cost:,.0f}" if est_cost >= 1 else f"~${est_cost:,.2f}")
+        console.print(grid)
+        console.print()
+
+        confirm_options = [
+            {"label": "Start training", "hint": "Begin with these settings"},
+            {"label": "Change model", "hint": f"Currently: {model}"},
+            {"label": "Change scale", "hint": f"Currently: ~{qa_pairs:,} QA pairs"},
+            {"label": "Cancel", "hint": "Exit without training"},
+        ]
+        confirm_idx = _arrow_select(console, confirm_options)
+        console.print()
+
+        if confirm_idx == 0:
+            break
+        elif confirm_idx == 1:
+            model = _pick_model()
+        elif confirm_idx == 2:
+            qa_pairs, rollouts, rollout_steps, iterations = _pick_scale()
+        else:
+            console.print("    [dim]Cancelled.[/]\n")
+            return
 
     # ── Train ────────────────────────────────────────────────────────
     console.print()
