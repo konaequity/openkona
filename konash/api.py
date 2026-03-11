@@ -222,6 +222,7 @@ class Agent:
         hf_token: Optional[str] = None,
         checkpoint_dir: Optional[str] = None,
         chunk_size: int = 512,
+        embedding_provider: str = "gemini",
         temperature: float = 0.7,
         # LoRA / model config
         lora_r: int = 16,
@@ -245,11 +246,12 @@ class Agent:
         self.api_base = api_base or os.environ.get("KONASH_API_BASE")
         self.api_key = api_key or os.environ.get("KONASH_API_KEY", "no-key")
 
-        # Corpus — use Qwen3-Embedding-8B via HuggingFace Inference API
+        # Corpus — choose embedding provider
+        self.embedding_provider = embedding_provider
         if isinstance(corpus, Corpus):
             self.corpus = corpus
         else:
-            embed_fn = self._make_hf_embed_fn()
+            embed_fn = self._make_embed_fn()
             self.corpus = Corpus(corpus, chunk_size=chunk_size, embed_fn=embed_fn)
 
         # Inference API (split mode: fast API for inference, local model for training)
@@ -900,6 +902,35 @@ class Agent:
                 temperature=self.temperature,
             )
         return self._llm_client
+
+    def _make_embed_fn(self):
+        """Return an embed_fn based on ``self.embedding_provider``.
+
+        Providers:
+        - ``"gemini"`` — Gemini Embedding API (fast, free tier, default)
+        - ``"hf"`` — Qwen3-Embedding-8B via HuggingFace Inference API
+        - ``"local"`` — Qwen3-Embedding-0.6B via sentence-transformers (CPU)
+        """
+        if self.embedding_provider == "gemini":
+            return self._make_gemini_embed_fn()
+        elif self.embedding_provider == "hf":
+            return self._make_hf_embed_fn()
+        elif self.embedding_provider == "local":
+            from konash.retrieval.vector_search import load_embedding_model
+            return load_embedding_model("Qwen/Qwen3-Embedding-0.6B")
+        else:
+            raise ValueError(
+                f"Unknown embedding_provider={self.embedding_provider!r}. "
+                "Use 'gemini', 'hf', or 'local'."
+            )
+
+    def _make_gemini_embed_fn(self):
+        """Return an embed_fn using Gemini Embedding API."""
+        from konash.retrieval.vector_search import load_gemini_embedding_model
+        return load_gemini_embedding_model(
+            model_name="gemini-embedding-001",
+            output_dimensionality=768,
+        )
 
     def _make_hf_embed_fn(self):
         """Return an embed_fn using Qwen3-Embedding-8B via HuggingFace Inference API."""

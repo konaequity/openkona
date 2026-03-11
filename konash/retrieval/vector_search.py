@@ -192,12 +192,127 @@ EMBEDDING_MODELS = {
     "Qwen3-8B-Embedding": "Qwen/Qwen3-Embedding-8B",
     "GTE-large": "thenlper/gte-large",
     "BGE-large": "BAAI/bge-large-en-v1.5",
+    "gemini-embedding-001": "gemini-embedding-001",
+    "gemini-embedding-2": "gemini-embedding-2-preview",
 }
 
 
 def resolve_embedding_model_name(name: str) -> str:
     """Resolve short alias to full HuggingFace model ID."""
     return EMBEDDING_MODELS.get(name, name)
+
+
+# ---------------------------------------------------------------------------
+# Gemini Embedding via Google GenAI API
+# ---------------------------------------------------------------------------
+
+def load_gemini_embedding_model(
+    model_name: str = "gemini-embedding-001",
+    api_key: Optional[str] = None,
+    output_dimensionality: int = 768,
+    batch_size: int = 100,
+    max_workers: int = 20,
+) -> Callable[[List[str]], np.ndarray]:
+    """Load a Gemini embedding model and return a callable.
+
+    Parameters
+    ----------
+    model_name : str
+        ``"gemini-embedding-001"`` (text-only) or
+        ``"gemini-embedding-2-preview"`` (multimodal).
+    api_key : str or None
+        Google API key.  Falls back to ``GOOGLE_API_KEY`` env var.
+    output_dimensionality : int
+        Embedding vector size.  Recommended: 768, 1536, or 3072.
+        Smaller = faster downstream search, minimal quality loss (MRL).
+    batch_size : int
+        Max texts per API call (default 100).
+    max_workers : int
+        Concurrent API requests (default 20).  Gemini free tier allows
+        1,500 RPM; 20 workers keeps us well under that.
+
+    Returns
+    -------
+    callable
+        ``(texts: list[str]) -> np.ndarray`` of shape ``(len(texts), dim)``.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from google import genai
+    from google.genai import types
+
+    key = api_key or os.environ.get("GOOGLE_API_KEY")
+    if not key:
+        raise ValueError(
+            "No Google API key found. Set GOOGLE_API_KEY env var or pass api_key=."
+        )
+
+    client = genai.Client(api_key=key)
+    resolved = resolve_embedding_model_name(model_name)
+    logger.info(
+        "Gemini embedding: model=%s, dim=%d, batch=%d, workers=%d",
+        resolved, output_dimensionality, batch_size, max_workers,
+    )
+
+    def _embed_batch(batch: List[str]) -> np.ndarray:
+        import time as _time
+
+        for attempt in range(8):
+            try:
+                result = client.models.embed_content(
+                    model=resolved,
+                    contents=batch,
+                    config=types.EmbedContentConfig(
+                        task_type="RETRIEVAL_DOCUMENT",
+                        output_dimensionality=output_dimensionality,
+                    ),
+                )
+                vecs = np.array(
+                    [e.values for e in result.embeddings], dtype=np.float32
+                )
+                norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+                norms = np.where(norms == 0, 1.0, norms)
+                return vecs / norms
+            except Exception as exc:
+                if attempt < 7:
+                    wait = min(2 ** attempt, 30)
+                    logger.debug(
+                        "Gemini embed attempt %d failed (%s), retry in %ds",
+                        attempt + 1, type(exc).__name__, wait,
+                    )
+                    _time.sleep(wait)
+                else:
+                    raise
+
+    def embed_fn(texts: List[str]) -> np.ndarray:
+        import time as _time
+
+        # Split into batches
+        batches = [
+            (i, texts[i : i + batch_size])
+            for i in range(0, len(texts), batch_size)
+        ]
+
+        if len(batches) == 1:
+            return _embed_batch(batches[0][1])
+
+        # Parallel API calls with rate-limit-aware concurrency
+        results: Dict[int, np.ndarray] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {}
+            for idx, batch in batches:
+                futures[pool.submit(_embed_batch, batch)] = idx
+                # Small stagger to avoid burst-hitting the rate limit
+                _time.sleep(0.05)
+            for future in as_completed(futures):
+                idx = futures[future]
+                results[idx] = future.result()
+
+        # Reassemble in original order
+        ordered = [results[i] for i, _ in batches]
+        return np.vstack(ordered)
+
+    return embed_fn
 
 
 class VectorSearchTool:
