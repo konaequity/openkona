@@ -265,8 +265,8 @@ def download_qampari(
 
     os.makedirs(docs_dir, exist_ok=True)
 
-    _print(console, "    Downloading from HuggingFace (samsam3232/qampari)...")
-    ds = load_dataset("samsam3232/qampari", split="train")
+    _print(console, "    Downloading from HuggingFace (iohadrubin/qampari)...")
+    ds = load_dataset("iohadrubin/qampari", split="train")
     _print(console, f"    Loaded {len(ds)} records")
 
     seen: set = set()
