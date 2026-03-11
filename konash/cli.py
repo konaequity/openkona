@@ -33,6 +33,34 @@ DEFAULT_MODEL = "zai-org/GLM-4.5-Air-FP8"
 CONFIG_DIR = os.path.expanduser("~/.konash")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
+# Available datasets for the corpus picker
+DATASETS = [
+    {
+        "name": "BrowseComp-Plus",
+        "key": "browsecomp-plus",
+        "desc": "Web retrieval benchmark  ·  40K docs  ·  encrypted",
+        "source": "Tevatron/browsecomp-plus",
+    },
+    {
+        "name": "FinanceBench",
+        "key": "financebench",
+        "desc": "Financial QA  ·  SEC filings  ·  150 questions",
+        "source": "PatronusAI/financebench",
+    },
+    {
+        "name": "QAMPARI",
+        "key": "qampari",
+        "desc": "Multi-answer QA  ·  Wikipedia  ·  entity-rich",
+        "source": "samsam3232/qampari",
+    },
+    {
+        "name": "FreshStack",
+        "key": "freshstack",
+        "desc": "Multi-domain retrieval  ·  5 domains  ·  recent docs",
+        "source": "freshstack",
+    },
+]
+
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -116,7 +144,7 @@ def cmd_default() -> None:
 def _get_version() -> str:
     try:
         from konash import __version__
-        return __version__
+        return f"v{__version__}"
     except Exception:
         return "?"
 
@@ -251,35 +279,53 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     console.print(f"    [dim]Config saved to {CONFIG_FILE}[/]")
 
-    # ── Flow into training ───────────────────────────────────────────
-    console.print()
-    console.rule(style="dim")
-    console.print()
-
+    # ── Flow directly into training ─────────────────────────────────
     if config.get("together_api_key"):
-        if Confirm.ask("    Continue to training?", default=True):
-            console.print()
-            # Build a minimal args namespace for cmd_train
-            train_args = argparse.Namespace(
-                corpus=None,
-                model=DEFAULT_MODEL,
-                project="default",
-                iterations=2,
-                synthesis_calls=1500,
-                rollouts=8,
-                rollout_steps=50,
-                max_examples=None,
-                lr=1e-5,
-                chunk_size=512,
-                api_key=None,
-            )
-            cmd_train(train_args)
-        else:
-            console.print("    [dim]Run [bold]konash train[/dim] when ready.[/]")
-            console.print()
+        console.print()
+        train_args = argparse.Namespace(
+            corpus=None,
+            model=DEFAULT_MODEL,
+            project="default",
+            iterations=2,
+            synthesis_calls=1500,
+            rollouts=8,
+            rollout_steps=50,
+            max_examples=None,
+            lr=1e-5,
+            chunk_size=512,
+            api_key=None,
+        )
+        cmd_train(train_args)
     else:
+        console.print()
         console.print("    Run [bold]konash setup[/] again to add your API key.")
         console.print()
+
+
+def _download_dataset(key: str) -> str:
+    """Download a dataset by key and return the documents path."""
+    from konash.download import (
+        download_browsecomp_plus,
+        download_financebench,
+        download_freshstack,
+        download_qampari,
+    )
+
+    downloaders = {
+        "browsecomp-plus": download_browsecomp_plus,
+        "financebench": download_financebench,
+        "qampari": download_qampari,
+        "freshstack": download_freshstack,
+    }
+
+    fn = downloaders.get(key)
+    if not fn:
+        console.print(f"    [red]Unknown dataset:[/] {key}")
+        sys.exit(1)
+
+    console.print()
+    output_dir = fn(console=console)
+    return os.path.join(output_dir, "documents")
 
 
 # ---------------------------------------------------------------------------
@@ -330,35 +376,32 @@ def cmd_setup_check() -> None:
 
 def cmd_download(args: argparse.Namespace) -> None:
     corpus_name = args.corpus_name.lower().replace("_", "-")
+    valid_keys = {ds["key"] for ds in DATASETS}
 
-    if corpus_name == "browsecomp-plus":
-        from konash.download import download_browsecomp_plus
-
-        console.print()
-        header = Table.grid(expand=True)
-        header.add_column(ratio=1)
-        header.add_column(justify="right")
-        header.add_row("[bold]KONASH[/]  Download", "[dim]browsecomp-plus[/]")
-        console.print(header)
-        console.print()
-        console.rule(style="dim")
-        console.print()
-
-        with console.status(
-            "    Downloading and decrypting...", spinner="dots"
-        ):
-            output_dir = download_browsecomp_plus(console=console)
-
-        console.print()
-        console.rule(style="dim")
-        console.print()
-        console.print(f"    [green]✓[/]  Saved to {output_dir}")
-        console.print(f"    [dim]Train with:[/]  konash train {output_dir}/documents")
-        console.print()
-    else:
+    if corpus_name not in valid_keys:
         console.print(f"\n[red]Unknown corpus:[/] {corpus_name}")
-        console.print("Available: [cyan]browsecomp-plus[/]\n")
+        console.print("Available: " + ", ".join(f"[bold]{k}[/]" for k in valid_keys))
+        console.print()
         sys.exit(1)
+
+    console.print()
+    header = Table.grid(expand=True)
+    header.add_column(ratio=1)
+    header.add_column(justify="right")
+    header.add_row("[bold]KONASH[/]  Download", f"[dim]{corpus_name}[/]")
+    console.print(header)
+    console.print()
+    console.rule(style="dim")
+    console.print()
+
+    docs_path = _download_dataset(corpus_name)
+
+    console.print()
+    console.rule(style="dim")
+    console.print()
+    console.print(f"    [green]✓[/]  Saved to {os.path.dirname(docs_path)}")
+    console.print(f"    [dim]Train with:[/]  konash train {docs_path}")
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -397,22 +440,35 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     corpus = args.corpus
     if not corpus:
-        console.print('    Enter a path to your documents folder.')
-        console.print(
-            '    [dim]Type "browsecomp-plus" to download the benchmark.[/]'
-        )
+        # Show numbered dataset options
+        for i, ds in enumerate(DATASETS, 1):
+            console.print(f"    [bold]{i}[/]  {ds['name']}")
+            console.print(f"       [dim]{ds['desc']}[/]")
+        console.print(f"    [bold]{len(DATASETS) + 1}[/]  Local folder")
+        console.print(f"       [dim]Point to your own documents directory[/]")
         console.print()
-        corpus = Prompt.ask("    Path to documents")
 
-        if corpus.lower().replace("_", "-") in ("browsecomp-plus", "bcp"):
-            from konash.download import download_browsecomp_plus
+        choice = Prompt.ask(
+            "    Select",
+            default="1",
+        )
 
-            console.print()
-            output_dir = download_browsecomp_plus(console=console)
-            corpus = os.path.join(output_dir, "documents")
-            console.print()
+        # Parse choice
+        try:
+            idx = int(choice)
+        except ValueError:
+            idx = 0
 
-    if not os.path.exists(corpus):
+        if 1 <= idx <= len(DATASETS):
+            ds = DATASETS[idx - 1]
+            corpus = _download_dataset(ds["key"])
+        elif idx == len(DATASETS) + 1:
+            corpus = Prompt.ask("    Path to documents")
+        else:
+            console.print(f"    [red]Invalid choice:[/] {choice}")
+            sys.exit(1)
+
+    if not corpus or not os.path.exists(corpus):
         console.print(f"    [red]Path not found:[/] {corpus}")
         sys.exit(1)
 
