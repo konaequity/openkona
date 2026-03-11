@@ -211,6 +211,8 @@ def download_financebench(
         answer = rec.get("answer", "")
         doc_name = rec.get("doc_name", "") or rec.get("company", f"doc_{doc_count}")
         context = rec.get("evidence", "") or rec.get("context", "")
+        if isinstance(context, list):
+            context = "\n\n".join(str(c) for c in context)
 
         if context and doc_name not in seen:
             seen.add(doc_name)
