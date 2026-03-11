@@ -102,6 +102,76 @@ DEFAULT_MODEL = "zai-org/GLM-4.5-Air-FP8"
 CONFIG_DIR = os.path.expanduser("~/.konash")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
+# Models available on Together AI
+MODELS = [
+    {
+        "id": "zai-org/GLM-4.5-Air-FP8",
+        "name": "GLM 4.5 Air",
+        "hint": "Frontier MoE  ·  best for KARL  ·  fast + cheap",
+    },
+    {
+        "id": "Qwen/Qwen3-Next-80B-A3B-Instruct",
+        "name": "Qwen3 80B-A3B",
+        "hint": "MoE  ·  3B active params  ·  very cheap",
+    },
+    {
+        "id": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "name": "Llama 3.3 70B Turbo",
+        "hint": "Dense 70B  ·  strong reasoning  ·  moderate cost",
+    },
+    {
+        "id": "Qwen/Qwen2.5-72B-Instruct-Turbo",
+        "name": "Qwen 2.5 72B Turbo",
+        "hint": "Dense 72B  ·  multilingual  ·  moderate cost",
+    },
+    {
+        "id": "mistralai/Mixtral-8x22B-Instruct-v0.1",
+        "name": "Mixtral 8x22B",
+        "hint": "MoE  ·  176B total / 39B active  ·  balanced",
+    },
+    {
+        "id": "deepseek-ai/DeepSeek-R1",
+        "name": "DeepSeek R1",
+        "hint": "Reasoning model  ·  671B MoE  ·  chain-of-thought",
+    },
+]
+
+# Training scale presets
+SCALE_PRESETS = [
+    {
+        "name": "Quick test",
+        "hint": "3 synthesis calls  ·  ~5 min  ·  ~$0.50",
+        "synthesis_calls": 3,
+        "rollouts": 4,
+        "rollout_steps": 10,
+        "iterations": 1,
+    },
+    {
+        "name": "Small run",
+        "hint": "50 synthesis calls  ·  ~30 min  ·  ~$15",
+        "synthesis_calls": 50,
+        "rollouts": 8,
+        "rollout_steps": 30,
+        "iterations": 1,
+    },
+    {
+        "name": "KARL scale",
+        "hint": "1,500 calls  ·  ~8 hrs  ·  ~$400",
+        "synthesis_calls": 1500,
+        "rollouts": 8,
+        "rollout_steps": 50,
+        "iterations": 2,
+    },
+    {
+        "name": "KARL full",
+        "hint": "1,735 calls  ·  200 steps  ·  ~$600",
+        "synthesis_calls": 1735,
+        "rollouts": 8,
+        "rollout_steps": 200,
+        "iterations": 2,
+    },
+]
+
 # Available datasets for the corpus picker
 DATASETS = [
     {
@@ -512,43 +582,63 @@ def cmd_train(args: argparse.Namespace) -> None:
     console.print()
     console.rule("[bold]Model[/]", style="dim")
     console.print()
-    model = Prompt.ask(
-        "    Model ID", default=args.model or DEFAULT_MODEL,
+
+    model_options = [
+        {"label": m["name"], "hint": m["hint"]} for m in MODELS
+    ]
+    model_options.append(
+        {"label": "Custom", "hint": "Enter a model ID manually"}
     )
+
+    console.print("    [dim]Use arrow keys, press Enter to select[/]")
+    console.print()
+    model_idx = _arrow_select(console, model_options)
+    console.print()
+
+    if model_idx < len(MODELS):
+        model = MODELS[model_idx]["id"]
+    else:
+        model = Prompt.ask("    Model ID")
 
     # Scale
     console.print()
     console.rule("[bold]Scale[/]", style="dim")
     console.print()
-    console.print(
-        "    [dim]KARL: 1,735 synthesis calls · 8 rollouts · 200 steps[/]"
-    )
-    console.print()
 
-    synthesis_calls = IntPrompt.ask(
-        "    Synthesis calls / iteration",
-        default=args.synthesis_calls,
-    )
-    rollouts = IntPrompt.ask(
-        "    Rollouts per example",
-        default=args.rollouts,
-    )
-    rollout_steps = IntPrompt.ask(
-        "    Max steps per rollout",
-        default=args.rollout_steps,
-    )
-    iterations = IntPrompt.ask(
-        "    Training iterations",
-        default=args.iterations,
+    scale_options = [
+        {"label": p["name"], "hint": p["hint"]} for p in SCALE_PRESETS
+    ]
+    scale_options.append(
+        {"label": "Custom", "hint": "Set each parameter manually"}
     )
 
-    # Advanced
+    console.print("    [dim]Use arrow keys, press Enter to select[/]")
     console.print()
-    console.rule("[bold]Advanced[/]", style="dim")
+    scale_idx = _arrow_select(console, scale_options)
     console.print()
 
-    lr = FloatPrompt.ask("    Learning rate", default=args.lr)
-    chunk_size = IntPrompt.ask("    Chunk size (words)", default=args.chunk_size)
+    if scale_idx < len(SCALE_PRESETS):
+        preset = SCALE_PRESETS[scale_idx]
+        synthesis_calls = preset["synthesis_calls"]
+        rollouts = preset["rollouts"]
+        rollout_steps = preset["rollout_steps"]
+        iterations = preset["iterations"]
+    else:
+        synthesis_calls = IntPrompt.ask(
+            "    Synthesis calls / iteration", default=args.synthesis_calls,
+        )
+        rollouts = IntPrompt.ask(
+            "    Rollouts per example", default=args.rollouts,
+        )
+        rollout_steps = IntPrompt.ask(
+            "    Max steps per rollout", default=args.rollout_steps,
+        )
+        iterations = IntPrompt.ask(
+            "    Training iterations", default=args.iterations,
+        )
+
+    lr = args.lr
+    chunk_size = args.chunk_size
 
     # ── Summary + confirm ────────────────────────────────────────────
     est_synth = synthesis_calls * iterations
