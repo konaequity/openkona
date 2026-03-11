@@ -38,7 +38,6 @@ _HF_TOKEN_PATHS = [
 # ---------------------------------------------------------------------------
 # Together AI
 # ---------------------------------------------------------------------------
-TOGETHER_API_VALIDATE = "https://api.together.xyz/v1/models"
 TOGETHER_KEYS_PAGE = "https://api.together.xyz/settings/api-keys"
 HF_TOKENS_PAGE = "https://huggingface.co/settings/tokens"
 
@@ -64,14 +63,12 @@ def detect_hf_token() -> Optional[str]:
 
 
 def validate_together_key(key: str) -> bool:
-    """Validate a Together AI API key via test request."""
+    """Validate a Together AI API key using the Together SDK."""
     try:
-        req = urllib.request.Request(
-            TOGETHER_API_VALIDATE,
-            headers={"Authorization": f"Bearer {key}"},
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status == 200
+        from together import Together
+        client = Together(api_key=key)
+        client.models.list()
+        return True
     except Exception:
         return False
 
