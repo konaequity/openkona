@@ -63,12 +63,24 @@ def detect_hf_token() -> Optional[str]:
 
 
 def validate_together_key(key: str) -> bool:
-    """Validate a Together AI API key using the Together SDK."""
+    """Validate a Together AI API key with a 1-token completion."""
     try:
-        from together import Together
-        client = Together(api_key=key)
-        client.models.list()
-        return True
+        payload = json.dumps({
+            "model": "Qwen/Qwen3.5-9B",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+        })
+        req = urllib.request.Request(
+            "https://api.together.xyz/v1/chat/completions",
+            data=payload.encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "User-Agent": "konash",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
     except Exception:
         return False
 
