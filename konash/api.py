@@ -908,14 +908,16 @@ class Agent:
         hf_token = self._hf_token or os.environ.get("HF_TOKEN")
         client = InferenceClient(api_key=hf_token)
         model = "Qwen/Qwen3-Embedding-8B"
+        batch_size = 100
 
         def embed_fn(texts):
             import numpy as _np
-            embs = []
-            for text in texts:
-                r = client.feature_extraction(text, model=model)
-                embs.append(_np.array(r, dtype=_np.float32).flatten())
-            return _np.array(embs, dtype=_np.float32)
+            all_embs = []
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i : i + batch_size]
+                r = client.feature_extraction(batch, model=model)
+                all_embs.append(_np.array(r, dtype=_np.float32))
+            return _np.vstack(all_embs) if len(all_embs) > 1 else all_embs[0]
 
         return embed_fn
 
