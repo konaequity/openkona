@@ -245,11 +245,11 @@ class Agent:
         self.api_base = api_base or os.environ.get("KONASH_API_BASE")
         self.api_key = api_key or os.environ.get("KONASH_API_KEY", "no-key")
 
-        # Corpus — use Qwen3-Embedding-0.6B locally (KARL paper default)
+        # Corpus — use Qwen3-Embedding-8B via HuggingFace Inference API
         if isinstance(corpus, Corpus):
             self.corpus = corpus
         else:
-            embed_fn = self._make_local_embed_fn()
+            embed_fn = self._make_hf_embed_fn()
             self.corpus = Corpus(corpus, chunk_size=chunk_size, embed_fn=embed_fn)
 
         # Inference API (split mode: fast API for inference, local model for training)
@@ -901,27 +901,23 @@ class Agent:
             )
         return self._llm_client
 
-    def _make_local_embed_fn(self):
-        """Return an embed_fn using Qwen3-Embedding-0.6B locally."""
-        try:
-            from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer(
-                "Qwen/Qwen3-Embedding-0.6B",
-                device="cpu",
-                trust_remote_code=True,
-            )
+    def _make_hf_embed_fn(self):
+        """Return an embed_fn using Qwen3-Embedding-8B via HuggingFace Inference API."""
+        from huggingface_hub import InferenceClient
 
-            def embed_fn(texts):
-                return model.encode(
-                    texts,
-                    normalize_embeddings=True,
-                    show_progress_bar=False,
-                    batch_size=64,
-                )
+        hf_token = self._hf_token or os.environ.get("HF_TOKEN")
+        client = InferenceClient(api_key=hf_token)
+        model = "Qwen/Qwen3-Embedding-8B"
 
-            return embed_fn
-        except ImportError:
-            return None  # Corpus falls back to trigram hash
+        def embed_fn(texts):
+            import numpy as _np
+            embs = []
+            for text in texts:
+                r = client.feature_extraction(text, model=model)
+                embs.append(_np.array(r, dtype=_np.float32).flatten())
+            return _np.array(embs, dtype=_np.float32)
+
+        return embed_fn
 
     def _get_generate_fn(self):
         """Return a callable that generates text from messages.
