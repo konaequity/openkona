@@ -160,11 +160,30 @@ class Corpus:
                 f"Supported extensions: {sorted(self.extensions)}"
             )
 
+        # Embed in batches for progress reporting and memory efficiency
+        embed_batch_size = 512
+        total = len(self.documents)
         if progress_callback:
-            progress_callback("embedding", 0, len(self.documents))
-        self.vector_search.index(self.documents, text_key="text")
-        if progress_callback:
-            progress_callback("embedding", len(self.documents), len(self.documents))
+            progress_callback("embedding", 0, total)
+
+        if self.embed_fn is not None and total > embed_batch_size:
+            texts = [doc["text"] for doc in self.documents]
+            all_vecs = []
+            for i in range(0, total, embed_batch_size):
+                batch = texts[i : i + embed_batch_size]
+                vecs = np.array(self.embed_fn(batch), dtype=np.float32)
+                all_vecs.append(vecs)
+                if progress_callback:
+                    progress_callback("embedding", min(i + embed_batch_size, total), total)
+            embeddings = np.vstack(all_vecs)
+            self.vector_search.index(
+                self.documents, embeddings=embeddings, text_key="text"
+            )
+        else:
+            self.vector_search.index(self.documents, text_key="text")
+            if progress_callback:
+                progress_callback("embedding", total, total)
+
         self._indexed = True
         return self
 
