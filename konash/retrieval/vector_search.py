@@ -92,6 +92,12 @@ def _try_load_sentence_transformers(
     except ImportError:
         return None
 
+    # Qwen3 bf16 crashes on MPS — force CPU on Mac when device is unset
+    if device is None:
+        import platform
+        if platform.system() == "Darwin":
+            device = "cpu"
+
     try:
         model = SentenceTransformer(model_name, device=device, trust_remote_code=True)
         logger.info("Loaded embedding model via sentence-transformers: %s", model_name)

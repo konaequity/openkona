@@ -219,6 +219,7 @@ class Agent:
         inference_api_base: Optional[str] = None,
         inference_api_key: Optional[str] = None,
         inference_model: Optional[str] = None,
+        hf_token: Optional[str] = None,
         checkpoint_dir: Optional[str] = None,
         chunk_size: int = 512,
         temperature: float = 0.7,
@@ -238,22 +239,18 @@ class Agent:
         self.temperature = temperature
         self._use_unsloth = use_unsloth
         self._load_in_fp8 = load_in_fp8
-
-        # Corpus — use real embeddings (Qwen3-Embedding-0.6B per KARL paper) when available
-        if isinstance(corpus, Corpus):
-            self.corpus = corpus
-        else:
-            embed_fn = None
-            try:
-                from konash.retrieval.vector_search import load_embedding_model
-                embed_fn = load_embedding_model()  # default: Qwen/Qwen3-Embedding-0.6B
-            except Exception:
-                pass  # falls back to trigram hash
-            self.corpus = Corpus(corpus, chunk_size=chunk_size, embed_fn=embed_fn)
+        self._hf_token = hf_token or os.environ.get("HF_TOKEN")
 
         # LLM connection
         self.api_base = api_base or os.environ.get("KONASH_API_BASE")
         self.api_key = api_key or os.environ.get("KONASH_API_KEY", "no-key")
+
+        # Corpus — use Qwen3-Embedding-8B via HuggingFace Inference API
+        if isinstance(corpus, Corpus):
+            self.corpus = corpus
+        else:
+            embed_fn = self._make_hf_embed_fn()
+            self.corpus = Corpus(corpus, chunk_size=chunk_size, embed_fn=embed_fn)
 
         # Inference API (split mode: fast API for inference, local model for training)
         self.inference_api_base = inference_api_base or os.environ.get("KONASH_INFERENCE_API_BASE")
@@ -903,6 +900,29 @@ class Agent:
                 temperature=self.temperature,
             )
         return self._llm_client
+
+    def _make_hf_embed_fn(self):
+        """Return an embed_fn that calls HuggingFace Inference API with Qwen3-Embedding."""
+        from huggingface_hub import InferenceClient
+
+        hf_token = self._hf_token or os.environ.get("HF_TOKEN")
+        client = InferenceClient(api_key=hf_token)
+        model = "Qwen/Qwen3-Embedding-8B"
+        batch_size = 32
+
+        def embed_fn(texts):
+            import numpy as _np
+            all_embeddings = []
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i : i + batch_size]
+                for text in batch:
+                    result = client.feature_extraction(text, model=model)
+                    arr = _np.array(result, dtype=_np.float32)
+                    # Flatten if needed (can be (1, dim) or (dim,))
+                    all_embeddings.append(arr.flatten())
+            return _np.array(all_embeddings, dtype=_np.float32)
+
+        return embed_fn
 
     def _get_generate_fn(self):
         """Return a callable that generates text from messages.

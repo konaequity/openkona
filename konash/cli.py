@@ -679,6 +679,7 @@ def cmd_train(args: argparse.Namespace) -> None:
         project=args.project,
         api_base=TOGETHER_API_BASE,
         api_key=api_key,
+        hf_token=_get_hf_token(),
         chunk_size=chunk_size,
     )
     agent.train(
@@ -721,6 +722,7 @@ def cmd_ask(args: argparse.Namespace) -> None:
         project=args.project,
         api_base=TOGETHER_API_BASE,
         api_key=api_key,
+        hf_token=_get_hf_token(),
     )
 
     with console.status("[cyan]Thinking...", spinner="dots"):
