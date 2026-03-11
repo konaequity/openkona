@@ -28,6 +28,29 @@ from konash.training.iteration import IterativeTrainingPipeline
 
 
 # ---------------------------------------------------------------------------
+# Model presets
+# ---------------------------------------------------------------------------
+
+MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
+    "glm-4.5-air-together": {
+        "base_model": "zai-org/GLM-4.5-Air-FP8",
+        "api_base": "https://api.together.xyz/v1",
+        "api_key_env": "TOGETHER_API_KEY",
+        "temperature": 0.7,
+        "description": "GLM 4.5 Air (106B MoE, 12B active) on Together AI",
+        "pricing": {"input_per_m": 0.20, "output_per_m": 1.10},
+    },
+    "glm-4.5-air-zhipu": {
+        "base_model": "glm-4.5-air",
+        "api_base": "https://api.z.ai/api/paas/v4",
+        "api_key_env": "ZHIPU_API_KEY",
+        "temperature": 0.7,
+        "description": "GLM 4.5 Air on Zhipu (native provider)",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # OpenAI-compatible LLM client wrapper
 # ---------------------------------------------------------------------------
 
@@ -241,6 +264,53 @@ class Agent:
         self._base_agent: Optional[BaseAgent] = None
         self._trained = False
         self._iteration = 0
+
+    # ------------------------------------------------------------------
+    # Presets
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_preset(
+        cls,
+        preset: str,
+        corpus: str | Path | Corpus,
+        **kwargs: Any,
+    ) -> "Agent":
+        """Create an Agent from a named model preset.
+
+        Available presets: ``glm-4.5-air-together``, ``glm-4.5-air-zhipu``.
+
+        Parameters
+        ----------
+        preset : str
+            Preset name (see ``MODEL_PRESETS``).
+        corpus : str | Path | Corpus
+            Path to documents or a ``Corpus`` instance.
+        **kwargs
+            Additional overrides passed to ``Agent.__init__``.
+        """
+        if preset not in MODEL_PRESETS:
+            available = ", ".join(sorted(MODEL_PRESETS))
+            raise ValueError(
+                f"Unknown preset {preset!r}. Available: {available}"
+            )
+        cfg = MODEL_PRESETS[preset]
+        defaults: Dict[str, Any] = {
+            "base_model": cfg["base_model"],
+            "api_base": cfg["api_base"],
+        }
+        if cfg.get("temperature") is not None:
+            defaults["temperature"] = cfg["temperature"]
+
+        # Resolve API key from env if not explicitly provided
+        if "api_key" not in kwargs:
+            env_var = cfg.get("api_key_env", "")
+            key = os.environ.get(env_var, "")
+            if key:
+                defaults["api_key"] = key
+
+        defaults.update(kwargs)
+        return cls(corpus=corpus, **defaults)
 
     # ------------------------------------------------------------------
     # Train
@@ -761,6 +831,10 @@ class Agent:
                     r"<think>.*", "", result["content"],
                     flags=_re.DOTALL,
                 ).strip()
+                # GLM 4.5 Air sometimes emits stray XML-like tags
+                result["content"] = _re.sub(
+                    r"</arg_value>\s*", "", result["content"],
+                )
             return result
 
         # Inference API takes priority (split mode: API for inference, local for training)

@@ -677,6 +677,8 @@ def _clean_thinking_tags(response: Any) -> str:
 
     content = _re.sub(r'<think>.*?</think>\s*', '', content, flags=_re.DOTALL)
     content = _re.sub(r'<think>.*', '', content, flags=_re.DOTALL)
+    # Strip GLM-specific leaked tags
+    content = _re.sub(r'</?(arg_value|think)>', '', content)
     return content.strip()
 
 

@@ -1,0 +1,2259 @@
+{
+  "stage": 2,
+  "model": "zai-org/GLM-4.5-Air-FP8",
+  "synthesis": {
+    "calls": 10,
+    "candidates_per_call": 8,
+    "total_raw": 80,
+    "raw_examples": [
+      {
+        "question": "In 1889, a publication with topics related to modern arts was published by C.H. Shannon in Chelsea, S.W. What was the name of this publication and what was the unique feature of the library's copy number 2?",
+        "answer": "The dial; Library's copy of no. 2 is no. 129 of 200 copies",
+        "citations": []
+      },
+      {
+        "question": "H.P. Lovecraft is known for his contributions to horror fiction despite achieving little success during his lifetime. What specific hardship did he endure to afford postage stamps, and in what year did he die?",
+        "answer": "He went without food so he could afford postage stamps; 1937",
+        "citations": []
+      },
+      {
+        "question": "According to historical records, Pythagoras made a significant discovery about the relationship between musical notes and mathematics. What specific numerical ratios did his followers discover for the octave and the fifth, forming the foundation of Western musical theory?",
+        "answer": "The octave corresponds to a 2:1 ratio, the fifth to a 3:2 ratio",
+        "citations": []
+      },
+      {
+        "question": "The International Vegetarian Union maintains a list of notable vegetarians throughout history, including musicians and philosophers. Which German philosopher from 1788-1860 is listed for his Buddhist-related writings on music and animal rights that had significant influence?",
+        "answer": "Arthur Schopenhauer",
+        "citations": []
+      },
+      {
+        "question": "After Alice Munro's death, a line from which specific story in her 2009 collection \"Too Much Happiness\" began circulating on the internet, and what was the central theme of this particular story?",
+        "answer": "The title story of \"Too Much Happiness\"; the theme of how men and women leave different things behind when they exit a room",
+        "citations": []
+      },
+      {
+        "question": "Nicole Dieker writes a monthly column called \"On the Money\" for Vox. What specific financial topics does she regularly address according to the search results, and how long has she been writing about money?",
+        "answer": "Lifestyle creep, managing credit card debt, combining finances with a partner; over a decade",
+        "citations": []
+      },
+      {
+        "question": "Charles S. Ricketts and Charles H. Shannon were British artists who shared a unique life and collaboration since they first met as students in 1880. What specific art forms was Shannon best known for, and what was Ricketts particularly known for beyond his artistic talents?",
+        "answer": "Painting and lithography; book design and illustration, as well as designing costumes and sets for the theatre",
+        "citations": []
+      },
+      {
+        "question": "Belfort Bax purchased a cultural monthly magazine at the end of 1889 and restarted it in January 1890. What was the name of this magazine, and what two institutions currently hold surviving issues from 1890?",
+        "answer": "Time; Bishopsgate Library and Cambridge University Library",
+        "citations": []
+      },
+      {
+        "question": "What was the name of the first monkey to reach space, which mission launched from White Sands, New Mexico on June 11, 1948, and what tragic fate befell this primate during the flight?",
+        "answer": "Albert I was the first monkey to reach space on a V-2 Blossom mission launched from White Sands, New Mexico on June 11, 1948, but it suffocated during the flight.",
+        "citations": []
+      },
+      {
+        "question": "Which Belgian industrialist and entrepreneur constructed the Baron Empain Palace in Heliopolis, Cairo, in the early 20th century, and what distinctive architectural elements did this palace feature that reflected Hindu design principles?",
+        "answer": "Baron Edouard Empain, a Belgian industrialist and entrepreneur, constructed the Baron Empain Palace in the early 20th century, featuring distinctive elements such as spires, domes, and intricate carvings that reflect Hindu design principles.",
+        "citations": []
+      },
+      {
+        "question": "What was the name of the lawyer who defended EOKA fighters in British colonial courts, later became the first president of the Cypriot House of Representatives and served as President of the Republic of Cyprus for ten years, and with which Turkish Cypriot professor did he meet in 2003 to discuss Cyprus reunification talks?",
+        "answer": "Glafkos Clerides was the lawyer who defended EOKA fighters, later became the first president of the Cypriot House of Representatives and served as President of the Republic of Cyprus for ten years, and met with Turkish Cypriot Professor Niyazi K\u0131z\u0131ly\u00fcrek in 2003 to discuss Cyprus reunification talks.",
+        "citations": []
+      },
+      {
+        "question": "Which war in Africa, lasting from 1967 to 1970, resulted in an estimated one to three million deaths, was characterized by severe famine and blockade conditions that led to widespread starvation, particularly affecting children, and began when the southeastern region of Nigeria, predominantly inhabited by which ethnic group, attempted to secede and establish the independent state of Biafra?",
+        "answer": "The Nigerian Civil War, also known as the Biafran War, lasted from 1967 to 1970 and resulted in an estimated one to three million deaths, was characterized by severe famine and blockade conditions that led to widespread starvation, particularly affecting children, and began when the southeastern region of Nigeria, predominantly inhabited by the Igbo people, attempted to secede and establish the independent state of Biafra.",
+        "citations": []
+      },
+      {
+        "question": "What was the name of the event that occurred in 1994 in Africa, lasting approximately 100 days, resulting in the deaths of approximately 800,000 to one million people primarily from which ethnic group, and what additional form of violence was committed against Tutsi women and girls during this event?",
+        "answer": "The Rwandan Genocide occurred in 1994 and lasted approximately 100 days, resulting in the deaths of approximately 800,000 to one million Tutsi people, and mass sexual violence was committed against Tutsi women and girls.",
+        "citations": []
+      },
+      {
+        "question": "What type of collection maintained by wealthy individuals in ancient Egypt and Mesopotamia as early as 2500 BCE was considered the precursor to modern zoos, and what is the name of the oldest continuously operating zoo founded in 1752 that was originally created as an imperial menagerie for which European monarchy?",
+        "answer": "Menageries were private collections maintained by wealthy individuals in ancient Egypt and Mesopotamia as early as 2500 BCE, and the Tiergarten Sch\u00f6nbrunn in Vienna, Austria, founded in 1752, was originally created as an imperial menagerie for the Habsburg monarchy.",
+        "citations": []
+      },
+      {
+        "question": "Which document published on October 4, 2023, by Pope Francis addresses the climate crisis as a moral and spiritual challenge requiring ecological conversion, and what biblical figure's message about praising God for all creatures does the document reference?",
+        "answer": "Laudate Deum\" is the Apostolic Exhortation published on October 4, 2023, by Pope Francis that addresses the climate crisis as a moral and spiritual challenge requiring ecological conversion, and it references the message of Saint Francis of Assisi about praising God for all creatures.",
+        "citations": []
+      },
+      {
+        "question": "Which war in Africa that began in 1991 when the central government collapsed, leading to clan-based warfare among different Somali clans, and has continued intermittently for decades, was one of the five major conflicts that reshaped the political landscape of the continent during the twentieth century?",
+        "answer": "The Somali Civil War began in 1991 when the central government collapsed, leading to a power vacuum that resulted in clan-based warfare among different Somali clans, and has continued intermittently for decades.",
+        "citations": []
+      },
+      {
+        "question": "What is the name of the learning institution where a 30-year-old student graduating in 2023 with a CS degree felt awful about being the oldest in their university, according to a community dedicated to self-improvement and personal growth?",
+        "answer": "The university is not named in the search results.",
+        "citations": []
+      },
+      {
+        "question": "What was the name of the hotel magnate who started the Hilton empire with a single hotel in Texas in 1919, turning a $5,000 investment into a global brand now worth billions?",
+        "answer": "Conrad Hilton",
+        "citations": []
+      },
+      {
+        "question": "Count Lev Nikolaevich Tolstoy, who was born on September 9, 1828, in Yasnaya Polyana, South of Moscow, Russia, was the fourth of five children in a wealthy family of Russian landed Gentry. After studying languages and law at Kazan University for three years and leaving without a degree, where did he go to educate himself independently?",
+        "answer": "He returned to his estate and educated himself independently.",
+        "citations": []
+      },
+      {
+        "question": "In the 2022 ICC Men's T20 World Cup, India defeated Pakistan by how many wickets in what was described as an \"all-time classic\" and \"incredible match\"?",
+        "answer": "India defeated Pakistan by 4 wickets.",
+        "citations": []
+      },
+      {
+        "question": "Jerry Dennis's book \"Up North in Michigan: A Portrait of Place in Four Seasons\" was published in 2021 by the University of Michigan Press. How many pages does this hardcover book cost $24.95, and who provided the cover and interior illustrations?",
+        "answer": "The book has 186 pages, and the cover and interior illustrations are by Glenn Wolff.",
+        "citations": []
+      },
+      {
+        "question": "According to education attainment statistics from 2023, what percentage of American adults aged 18 and older have achieved bachelor's degree attainment, and what percentage have attained at least a high school diploma among those aged 25 and older?",
+        "answer": "22.2% of American adults aged 18 and older have achieved bachelor's degree attainment, and 91.4% of Americans aged 25 years and older have attained at least a high school diploma.",
+        "citations": []
+      },
+      {
+        "question": "How many people in the United States began college but left without a credential by 2020, representing what percentage of people over the age of 18 according to the National Student Clearinghouse Research Center?",
+        "answer": "39 million people began college but left without a credential by 2020, representing more than one in five people in the United States over the age of 18.",
+        "citations": []
+      },
+      {
+        "question": "In the first half of the twentieth century, what was the name of the hotel in Spokane, Washington that was named after a local person, and what was this person's occupation and name?",
+        "answer": "The Davenport Hotel was named after local restauranter and investor Louis Davenport.",
+        "citations": []
+      },
+      {
+        "question": "According to the search results, what year was described as \"possibly an even more exciting year\" for video games compared to 2019, which had the release of \"Death Stranding\"?",
+        "answer": "2020",
+        "citations": []
+      },
+      {
+        "question": "What are Kabane, which serve as the main antagonists in Kabaneri of the Iron Fortress, and how are they created according to the search results?",
+        "answer": "Kabane are undead creatures and deceased humans infected by an unknown disease, created by Kabaneri biting other humans.",
+        "citations": []
+      },
+      {
+        "question": "According to the search results, what important responsibility does preparing your spouse financially for your death represent, beyond just practical considerations?",
+        "answer": "It is an important part of your stewardship responsibility.",
+        "citations": []
+      },
+      {
+        "question": "What is the name of the nursing conference that will be held in New Orleans with a virtual option from June 9-11, 2025?",
+        "answer": "AACN's National Teaching Institute & Critical Care Exposition (NTI)",
+        "citations": []
+      },
+      {
+        "question": "According to the search results, what was the estimated revenue of the worldwide gaming market in 2024?",
+        "answer": "Almost 455 billion U.S. dollars",
+        "citations": []
+      },
+      {
+        "question": "What was described as the \"largest single expansion in the history of the European Union\" according to the search results?",
+        "answer": "The EU's eastern expansion on 1 May 2004 when ten Central and Eastern European countries joined",
+        "citations": []
+      },
+      {
+        "question": "According to the search results, how many Iron Mask Swords are currently known to exist, and where were they mostly recovered from?",
+        "answer": "About 90 known objects, mostly recovered from illegal diggings in the 1920s in the province of Luristan, Iran",
+        "citations": []
+      },
+      {
+        "question": "According to the search results, what is the scientific name of the \"eastern\" subspecies of common box turtle mentioned in the article about walking in the woods in May?",
+        "answer": "Terrapene carolina",
+        "citations": []
+      },
+      {
+        "question": "Walter Crane, an English artist and book illustrator associated with the Arts and Crafts movement, received a specific medal in 1904 for his contributions to the arts. What was the name of this medal, and in which English cities was he born and died?",
+        "answer": "Albert Medal; born in Liverpool, Lancashire, and died in Horsham, West Sussex.",
+        "citations": []
+      },
+      {
+        "question": "Marie Wilson had a long career as a journalist in Canada's North, where she created the North's first daily television news service in a specific year and later served as CBC North's regional director. In what year did she create this television news service, and what significant commission did she become the lone non-Indigenous member of in 2009?",
+        "answer": "1995; Canada's Truth and Reconciliation Commission (TRC).",
+        "citations": []
+      },
+      {
+        "question": "The 2011 Census for the United Kingdom included analysis of geographical differences in household growth by local authorities. What were the two main aspects of household statistics analyzed in this census, and what decade did Britain recognize the damaging effects of machine-dominated production on social conditions and manufactured goods quality?",
+        "answer": "Number of households and average household size; 1840s.",
+        "citations": []
+      },
+      {
+        "question": "The iPhone 16 Pro and iPhone 16 Pro Max, introduced by Apple in 2024, feature several technological advancements. What is the name of the chip that powers these new models, and what is the name of Apple's artificial intelligence technology that is integrated into these devices?",
+        "answer": "A18 Pro chip; Apple Intelligence.",
+        "citations": []
+      },
+      {
+        "question": "Helen McNicoll, a Canadian Impressionist painter born in Toronto who moved to England with her family as a child, achieved considerable international success despite being deaf from the age of two. What were the primary subjects of her Impressionist artwork, and in which year was she elected to both the Royal Society of British Artists and the Royal Canadian Academy of Arts?",
+        "answer": "Rural landscapes, intimate child subjects, and modern female figures; 1913.",
+        "citations": []
+      },
+      {
+        "question": "The Arts and Crafts movement in Britain emerged as a response to industrialization and emphasized certain values in design and production. What three aspects did the movement emphasize as important, and when was Walter Crane, a key figure associated with this movement, born?",
+        "answer": "Craftsmanship, traditional techniques, and integration of art into everyday objects; 15 August 1845.",
+        "citations": []
+      },
+      {
+        "question": "Marie Wilson later advised the South African Broadcasting Corporation on how to cover a significant national process in South Africa. What was the name of this process, and what was the primary focus of this Truth and Reconciliation Commission in South Africa?",
+        "answer": "Truth and Reconciliation Commission; covering South Africa's Truth and Reconciliation Commission.",
+        "citations": []
+      },
+      {
+        "question": "The Royal Canadian Academy of Arts was established to promote and develop the fine arts in Canada and elects new members annually who have demonstrated excellence. When was this academy established, and what significant honor is election to this academy considered in the Canadian art world?",
+        "answer": "1880; a significant honor.",
+        "citations": []
+      },
+      {
+        "question": "Which two gaming industry innovations offer fully immersive and interactive experiences according to the 37 Gaming Companies article, and what market volume did Statista project for the gaming industry globally by 2027?",
+        "answer": "Virtual reality (VR) and augmented reality (AR) offer fully immersive and interactive experiences, and Statista projected the gaming industry to reach a market volume of $363.2 billion globally by 2027.",
+        "citations": []
+      },
+      {
+        "question": "What four skills does the SPAN 0101 Beginning Spanish I course focus on developing, and what does the course description emphasize about communication for students who have not previously studied Spanish?",
+        "answer": "The SPAN 0101 Beginning Spanish I course focuses on developing comprehension, speaking, reading, and writing skills, and it places emphasis on active communication aimed at the development of oral and comprehension skills for students who have not previously studied Spanish.",
+        "citations": []
+      },
+      {
+        "question": "Which two APA founders were elected to the Billiard Congress of America Hall of Fame for Meritorious Service, and at which championship and on what specific date did their induction ceremony take place?",
+        "answer": "Terry Bell and Larry Hubbart were elected to the Billiard Congress of America Hall of Fame for Meritorious Service, and their induction ceremony took place at the U.S. Open 9-Ball Championship in Chesapeake, Va., on Thursday, Oct. 21.",
+        "citations": []
+      },
+      {
+        "question": "What solutions have emerged to help viewers manage their television time according to the Collider article, and what three specific features does Collider.com offer to help viewers make informed decisions about what to watch?",
+        "answer": "Binge-watching platforms, mobile applications, and websites like Collider.com have emerged to help viewers manage their television time, and Collider.com offers comprehensive show reviews, episode guides, and recommendations to help viewers make informed decisions about what to watch.",
+        "citations": []
+      },
+      {
+        "question": "According to Julian Cribb's article, what alternative food products does cellular agriculture produce without requiring animal slaughter, and what four types of cell cultures does the technology utilize to produce these food products?",
+        "answer": "Cellular agriculture produces cowless meat, chickenless eggs, and fishless seafood without requiring the slaughter of animals, and the technology utilizes cultures of cells from plants, animals, fungi and microbes to produce these food products.",
+        "citations": []
+      },
+      {
+        "question": "According to \"The Book\" article, what is the Hochman Method\u00ae known as, and how does it integrate with existing curricula across different subjects and grade levels?",
+        "answer": "The Hochman Method\u00ae is a clear method of instruction for teaching writing that can be applied across all grade levels and subject areas, and it integrates seamlessly into existing curricula rather than being a separate curriculum.",
+        "citations": []
+      },
+      {
+        "question": "How much did Microsoft pay to acquire Activision Blizzard, and what position did this acquisition move Microsoft to among game publishers worldwide after satisfying regulatory bodies?",
+        "answer": "Microsoft completed its $69 billion acquisition of Activision Blizzard, making them the third largest game publisher in the world after satisfying worldwide regulatory bodies.",
+        "citations": []
+      },
+      {
+        "question": "According to Jessica Clement's research, how much revenue did the video games industry in the United States generate in 2023, and what types of businesses does the industry span from smallest to largest?",
+        "answer": "In 2023, the revenue of the video games industry in the United States amounted to 106 billion U.S. dollars, and the industry spans businesses of various sizes from single-person indie developers to publicly listed, multinational companies that employ thousands of people.",
+        "citations": []
+      },
+      {
+        "question": "According to the Research Evaluation journal article published in July 2021, what specific qualitative change was observed in manuscript peer review during the Covid-19 pandemic, and how many unique COVID-19 related articles had been published in major databases just six months into the pandemic according to the Nature Index report from March 2024?",
+        "answer": "The global Covid-19 pandemic led to a significant acceleration in the peer review process with reviewers prioritizing pandemic-related research, and in just six months, major databases had recorded 23,634 unique published articles related to COVID-19.",
+        "citations": []
+      },
+      {
+        "question": "When Rick Welts was in his Oakland office receiving a call from Golden State Warriors general manager Bob Myers during Game 5 of their 2014 first-round playoff series against the Los Angeles Clippers, what publication source had released voice recordings of Clippers owner Donald Sterling four days earlier, and who was the recipient of these racist statements according to the article by Marc J Spears?",
+        "answer": "TMZ had published voice recordings of then-Clippers owner Donald Sterling making racist statements to his mistress V. Stiviano four days earlier, which created a major controversy in the NBA and was the subject of the conversation between Welts and Myers during the playoff series.",
+        "citations": []
+      },
+      {
+        "question": "According to the official lead-based paint activities program information, what specific measures constitute lead abatement under OSHA requirements, and how does this differ from the Renovation, Repair, and Painting (RRP) Program in terms of focus and scope?",
+        "answer": "Lead abatement includes measures designed to permanently eliminate lead-based paint hazards such as removal of lead-based paint and lead-contaminated dust, permanent containment or encapsulation of lead-based paint, replacement of lead-painted surfaces, and removal of contaminated soil, while the RRP Program focuses specifically on renovation, repair, and painting activities in pre-1978 housing with less intensive hazard control measures.",
+        "citations": []
+      },
+      {
+        "question": "Before Irrfan Khan achieved Bollywood stardom and roles in Hollywood films, what technical training was he undertaking in Jaipur according to his own reminiscences, and what specific house of a famous Bollywood actor did he visit while working as an AC mechanic?",
+        "answer": "Irrfan Khan was doing technical training in Jaipur as part of an AC technician course before his acting career, and he visited Rajesh Khanna's house while working as an AC mechanic, marking the beginning of his journey to Bollywood stardom.",
+        "citations": []
+      },
+      {
+        "question": "What exclusive sponsorship role does Toronto Film School hold at TIFF 2024 according to the article by Garry Murdock, and what specific contest are they offering that could provide a winner with complimentary TIFF access including festival events and screenings?",
+        "answer": "Toronto Film School is the exclusive sponsor of TIFF's Festival Street Art Market at TIFF 2024, and they are holding a contest that could see a winner receive a free TIFF 2024 access pass worth $570, providing them with access to festival events and screenings.",
+        "citations": []
+      },
+      {
+        "question": "According to the study comparing editorial processing times of COVID-19 research articles with human influenza research, what specific differences were observed in time to acceptance and time to publication between these two types of research, and how many retractions and withdrawals were reviewed in this analysis?",
+        "answer": "The study comparing COVID-19 research with human influenza research found differences in editorial processing times, with COVID-19 articles experiencing faster review processes, and the analysis reviewed retractions and withdrawals for both types of research to assess publication integrity during health crises.",
+        "citations": []
+      },
+      {
+        "question": "What are the key differences between accreditation requirements for lead-based paint inspectors versus risk assessors according to official lead-based paint activities information, and what specific federal regulations govern these professions?",
+        "answer": "Lead inspectors must complete training to identify lead-based paint hazards through visual detection and sampling, while risk assessors receive additional training to evaluate the severity of lead hazards and recommend control measures, with both requiring accredited training programs and certification exams, and these professions are governed by federal regulations that banned the manufacture of lead-based house paint in 1978.",
+        "citations": []
+      },
+      {
+        "question": "What specific responsibilities does a general manager like Bob Myers have in relation to team president Rick Welts according to the article by Marc J Spears, and what unique challenges do NBA executives face during playoff series involving controversial situations like the Donald Sterling scandal that affected team operations and public relations?",
+        "answer": "NBA general managers handle player personnel decisions, contract negotiations, and daily basketball operations while working collaboratively with team presidents on organizational strategy, with executives facing unique challenges during high-stakes playoff series involving controversial situations like the Donald Sterling scandal that affected team morale and public perception.",
+        "citations": []
+      },
+      {
+        "question": "Which Midwestern state is bordered by both the Rocky Mountains to the west and the Appalachian Mountains and Ohio River to the east and south, and is home to both the Northwest Territory and part of the Great Plains regions?",
+        "answer": "The Midwestern United States",
+        "citations": []
+      },
+      {
+        "question": "When filing a final income tax return for a deceased person, what specific information must be written across the top of the Form 1040 above where you enter your address?",
+        "answer": "Deceased,\" the spouse's name, and the date of death",
+        "citations": []
+      },
+      {
+        "question": "What three types of hands-on artisanal workshops does Japan Village in New York City offer to visitors who want to learn traditional Japanese arts?",
+        "answer": "Origami, calligraphy, and Ikebana floral arrangements",
+        "citations": []
+      },
+      {
+        "question": "According to Emily Johnson's 2017 guide, what common mistake do most bloggers make when creating post titles, and what is her area of expertise regarding this issue?",
+        "answer": "Most bloggers spend hours writing content and then write their blog post title in seconds as an afterthought; Emily Johnson is an expert in crafting blog post titles that get clicked.",
+        "citations": []
+      },
+      {
+        "question": "What was the specific location of Anne Frank's hiding place in Amsterdam, and what was the Dutch term used to describe it?",
+        "answer": "The achterhuis (back-house, usually translated as \"secret annex\") at the back of her father's Amsterdam company building on the Prinsengracht canal",
+        "citations": []
+      },
+      {
+        "question": "According to IRS Instruction 1040 on page 78, who can be considered a personal representative authorized to file a tax return for a deceased taxpayer, and what is required to be filed if the deceased didn't have to file but had tax withheld?",
+        "answer": "A personal representative can be an executor, administrator, or anyone in charge of the deceased taxpayer's property; a return must be filed if the deceased didn't have to file but had tax withheld to get a refund.",
+        "citations": []
+      },
+      {
+        "question": "According to the information on All About Japan, which five traditional Japanese performing arts are recommended to international tourists as the best-sellers representing Japanese culture?",
+        "answer": "Kabuki, kagura (Shinto music and dance), bunraku, noh, and rakugo (comic storytelling)",
+        "citations": []
+      },
+      {
+        "question": "According to Puranjay Singh's 2025 article, what type of blog content does he consider completely wasteful, and what percentage of online experiences begin with a search engine?",
+        "answer": "500-word me-too blog posts that get read by no one; 93% of online experiences begin with a search engine.",
+        "citations": []
+      },
+      {
+        "question": "Who wrote a book about finding and using copyright-free materials that was first published in January 2001 and later released a new edition in June 2023 with expanded coverage for digital content including websites, apps, music, video, and art?",
+        "answer": "Stephen Fishman",
+        "citations": []
+      },
+      {
+        "question": "Which Catholic priest, when asked about their experience in post-Vatican II ministry, described it as \"awesome\" to minister to people in the name of Jesus and \"humbling\" when invited to be with parishioners at pivotal moments like births and deaths?",
+        "answer": "The priest featured in the \"Why I Am a Catholic\" article from September 2009",
+        "citations": []
+      },
+      {
+        "question": "What is the name of the British actress born on March 26, 1985, in Richmond, South West Greater London, who is the daughter of actor Will Knightley and actress/playwright Sharman Macdonald, has an older brother named Caleb born in 1979, and requested her own agent at the age of three?",
+        "answer": "Keira Christina Knightley",
+        "citations": []
+      },
+      {
+        "question": "What was the alternative name used by Guy Fawkes when he was apprehended on November 5, 1605, for his role in the explosives during the Gunpowder Plot aimed at assassinating King James VI and I?",
+        "answer": "John Johnson",
+        "citations": []
+      },
+      {
+        "question": "According to a 2022 study, which industry is identified as having one of the highest risks of cyber infiltration and is seeing a surge in security incidents within just a few years, leading to questions about preparedness for risks accompanying clinical medical devices?",
+        "answer": "Healthcare",
+        "citations": []
+      },
+      {
+        "question": "What is the name of the first Roman Catholic seminary in the United States, founded in 1791, that follows the Sulpician tradition of priest formation and focuses on preparing men for priesthood in the 21st century?",
+        "answer": "St. Mary's Seminary & University",
+        "citations": []
+      },
+      {
+        "question": "What Amazon device or application allows users to read Kindle books instantly on a smartphone, tablet, or computer without requiring a physical Kindle device, as mentioned in the promotion for Stephen Fishman's book on public domain materials?",
+        "answer": "Kindle app",
+        "citations": []
+      },
+      {
+        "question": "What act passed in 1998 extended copyright terms in the United States from life of the author plus 50 years to life of the author plus 70 years, bringing US law in line with international standards established by the European Union?",
+        "answer": "Copyright Duration Extension Act",
+        "citations": []
+      },
+      {
+        "question": "According to the article on mentally strong people, what is the first specific behavior that mentally strong people avoid, and how does this behavior management approach contribute to their overall success in life?",
+        "answer": "Mentally strong people don't waste time feeling sorry for themselves, and they manage their emotions, thoughts, and behaviors in ways that set them up for success in life.",
+        "citations": []
+      },
+      {
+        "question": "What unique personal circumstance was the widow in when she made the decision to donate her husband's face for transplant, and what relationship does she now have with the recipient of the transplant?",
+        "answer": "The widow made the decision to donate her husband's face for transplant when she was eight months pregnant, and she is in touch with the recipient to show their son the good his father did.",
+        "citations": []
+      },
+      {
+        "question": "According to the research on homeless youth, what is the estimated number of adolescents experiencing homelessness yearly, and what three specific negative outcomes are they at increased risk for as a result?",
+        "answer": "Approximately 1.6 million adolescents experience homelessness on a yearly basis, and they are at increased risk for victimization, substance use, and psychological disorders.",
+        "citations": []
+      },
+      {
+        "question": "What was the total amount stolen from Government Savings Bank ATMs, how many ATMs were affected in the heists, and who was the police official that admitted evidence pointed to Thai involvement after initially claiming only foreigners were responsible?",
+        "answer": "More than 12 million baht was stolen from 21 ATMs of the state-run Government Savings Bank with heists reported in Phuket and other locations, and Pol Gen Panya Mamen, the Royal Thai Police adviser who heads the investigating team, reversed the team's statement to admit evidence pointed to Thai involvement.",
+        "citations": []
+      },
+      {
+        "question": "Based on the RNA-based therapeutics article, what unique advantage do RNA-based therapeutics offer for targeting diseases that were previously considered \"undruggable,\" and what is the current status of how many RNA-based medications have been approved for clinical use?",
+        "answer": "RNA-based therapeutics can selectively function on hitherto \"undruggable\" proteins, transcripts and genes, thus potentially broadening therapeutic targets, and while several RNA-based medications have been approved for clinical use, others are still under investigation.",
+        "citations": []
+      },
+      {
+        "question": "According to the article on British history in the 1910s, what event took up half of that decade for the United Kingdom, and what other significant developments besides this major conflict occurred during this period?",
+        "answer": "World War I took up half of the decade for the United Kingdom, and other significant developments included a new king, the story of an unsinkable ship, and advances for women.",
+        "citations": []
+      },
+      {
+        "question": "According to the article on inventions of the 2000s, what three popular products or services got their start in the aughts that are still widely used today?",
+        "answer": "Bluetooth technology, Facebook, and the iPhone are three popular products or services that got their start in the aughts and are still widely used today.",
+        "citations": []
+      },
+      {
+        "question": "According to the Champions of the Earth award information, what year did this recognition begin, and what focus areas were highlighted for the 2025 award?",
+        "answer": "The Champions of the Earth award began in 2005, and the 2025 award spotlights outstanding climate action focusing on solutions on methane, buildings and construction, sustainable cooling, clean air, and forests.",
+        "citations": []
+      }
+    ],
+    "llm_calls": 198,
+    "total_tokens": 4639499
+  },
+  "dedup": {
+    "input_count": 80,
+    "output_count": 80,
+    "exact_removed": 0,
+    "near_removed": 0,
+    "final_for_rollouts": 8,
+    "final_examples": [
+      {
+        "question": "In 1889, a publication with topics related to modern arts was published by C.H. Shannon in Chelsea, S.W. What was the name of this publication and what was the unique feature of the library's copy number 2?",
+        "answer": "The dial; Library's copy of no. 2 is no. 129 of 200 copies",
+        "citations": []
+      },
+      {
+        "question": "H.P. Lovecraft is known for his contributions to horror fiction despite achieving little success during his lifetime. What specific hardship did he endure to afford postage stamps, and in what year did he die?",
+        "answer": "He went without food so he could afford postage stamps; 1937",
+        "citations": []
+      },
+      {
+        "question": "According to historical records, Pythagoras made a significant discovery about the relationship between musical notes and mathematics. What specific numerical ratios did his followers discover for the octave and the fifth, forming the foundation of Western musical theory?",
+        "answer": "The octave corresponds to a 2:1 ratio, the fifth to a 3:2 ratio",
+        "citations": []
+      },
+      {
+        "question": "The International Vegetarian Union maintains a list of notable vegetarians throughout history, including musicians and philosophers. Which German philosopher from 1788-1860 is listed for his Buddhist-related writings on music and animal rights that had significant influence?",
+        "answer": "Arthur Schopenhauer",
+        "citations": []
+      },
+      {
+        "question": "After Alice Munro's death, a line from which specific story in her 2009 collection \"Too Much Happiness\" began circulating on the internet, and what was the central theme of this particular story?",
+        "answer": "The title story of \"Too Much Happiness\"; the theme of how men and women leave different things behind when they exit a room",
+        "citations": []
+      },
+      {
+        "question": "Nicole Dieker writes a monthly column called \"On the Money\" for Vox. What specific financial topics does she regularly address according to the search results, and how long has she been writing about money?",
+        "answer": "Lifestyle creep, managing credit card debt, combining finances with a partner; over a decade",
+        "citations": []
+      },
+      {
+        "question": "Charles S. Ricketts and Charles H. Shannon were British artists who shared a unique life and collaboration since they first met as students in 1880. What specific art forms was Shannon best known for, and what was Ricketts particularly known for beyond his artistic talents?",
+        "answer": "Painting and lithography; book design and illustration, as well as designing costumes and sets for the theatre",
+        "citations": []
+      },
+      {
+        "question": "Belfort Bax purchased a cultural monthly magazine at the end of 1889 and restarted it in January 1890. What was the name of this magazine, and what two institutions currently hold surviving issues from 1890?",
+        "answer": "Time; Bishopsgate Library and Cambridge University Library",
+        "citations": []
+      }
+    ]
+  },
+  "stats": {
+    "model": "zai-org/GLM-4.5-Air-FP8",
+    "llm_calls": 198,
+    "input_tokens": 4399302,
+    "output_tokens": 240197,
+    "estimated_cost": 1.1440771,
+    "phase_times": {
+      "Stage 2a: Reload Corpus Index": 163.29348301887512,
+      "Stage 2b: Agentic QA Synthesis with GLM 4.5 Air": 1304.6662859916687,
+      "Stage 2c: Global Deduplication": 1.2491252422332764
+    },
+    "errors": [],
+    "response_log": [
+      {
+        "call_idx": 1,
+        "num_messages": 2,
+        "content_length": 57,
+        "has_reasoning_content": false,
+        "input_tokens": 2018,
+        "output_tokens": 347,
+        "latency_s": 6.9802680015563965
+      },
+      {
+        "call_idx": 2,
+        "num_messages": 4,
+        "content_length": 56,
+        "has_reasoning_content": false,
+        "input_tokens": 2812,
+        "output_tokens": 213,
+        "latency_s": 6.089272737503052
+      },
+      {
+        "call_idx": 3,
+        "num_messages": 6,
+        "content_length": 8900,
+        "has_reasoning_content": false,
+        "input_tokens": 3571,
+        "output_tokens": 2048,
+        "latency_s": 11.9529869556427
+      },
+      {
+        "call_idx": 4,
+        "num_messages": 8,
+        "content_length": 0,
+        "has_reasoning_content": false,
+        "input_tokens": 6259,
+        "output_tokens": 2048,
+        "latency_s": 12.486542224884033
+      },
+      {
+        "call_idx": 5,
+        "num_messages": 10,
+        "content_length": 3493,
+        "has_reasoning_content": false,
+        "input_tokens": 6272,
+        "output_tokens": 693,
+        "latency_s": 6.226151943206787
+      },
+      {
+        "call_idx": 6,
+        "num_messages": 12,
+        "content_length": 9054,
+        "has_reasoning_content": false,
+        "input_tokens": 7686,
+        "output_tokens": 2048,
+        "latency_s": 10.26378083229065
+      },
+      {
+        "call_idx": 7,
+        "num_messages": 14,
+        "content_length": 5818,
+        "has_reasoning_content": false,
+        "input_tokens": 10488,
+        "output_tokens": 1252,
+        "latency_s": 8.937025785446167
+      },
+      {
+        "call_idx": 8,
+        "num_messages": 16,
+        "content_length": 65,
+        "has_reasoning_content": false,
+        "input_tokens": 11769,
+        "output_tokens": 142,
+        "latency_s": 1.0209579467773438
+      },
+      {
+        "call_idx": 9,
+        "num_messages": 18,
+        "content_length": 7953,
+        "has_reasoning_content": false,
+        "input_tokens": 12624,
+        "output_tokens": 1691,
+        "latency_s": 9.041093826293945
+      },
+      {
+        "call_idx": 10,
+        "num_messages": 20,
+        "content_length": 3421,
+        "has_reasoning_content": false,
+        "input_tokens": 14345,
+        "output_tokens": 954,
+        "latency_s": 3.910593032836914
+      },
+      {
+        "call_idx": 11,
+        "num_messages": 22,
+        "content_length": 5565,
+        "has_reasoning_content": false,
+        "input_tokens": 15113,
+        "output_tokens": 1408,
+        "latency_s": 5.440583229064941
+      },
+      {
+        "call_idx": 12,
+        "num_messages": 24,
+        "content_length": 8114,
+        "has_reasoning_content": false,
+        "input_tokens": 16385,
+        "output_tokens": 2015,
+        "latency_s": 11.056113958358765
+      },
+      {
+        "call_idx": 13,
+        "num_messages": 26,
+        "content_length": 5184,
+        "has_reasoning_content": false,
+        "input_tokens": 18164,
+        "output_tokens": 1451,
+        "latency_s": 10.196610927581787
+      },
+      {
+        "call_idx": 14,
+        "num_messages": 28,
+        "content_length": 5267,
+        "has_reasoning_content": false,
+        "input_tokens": 19363,
+        "output_tokens": 1399,
+        "latency_s": 6.866617202758789
+      },
+      {
+        "call_idx": 15,
+        "num_messages": 30,
+        "content_length": 4949,
+        "has_reasoning_content": false,
+        "input_tokens": 20522,
+        "output_tokens": 1444,
+        "latency_s": 6.745117902755737
+      },
+      {
+        "call_idx": 16,
+        "num_messages": 32,
+        "content_length": 4694,
+        "has_reasoning_content": false,
+        "input_tokens": 21661,
+        "output_tokens": 1050,
+        "latency_s": 4.698798179626465
+      },
+      {
+        "call_idx": 17,
+        "num_messages": 34,
+        "content_length": 6807,
+        "has_reasoning_content": false,
+        "input_tokens": 22676,
+        "output_tokens": 1480,
+        "latency_s": 8.247228145599365
+      },
+      {
+        "call_idx": 18,
+        "num_messages": 36,
+        "content_length": 9612,
+        "has_reasoning_content": false,
+        "input_tokens": 24187,
+        "output_tokens": 2048,
+        "latency_s": 8.668936967849731
+      },
+      {
+        "call_idx": 19,
+        "num_messages": 38,
+        "content_length": 6611,
+        "has_reasoning_content": false,
+        "input_tokens": 26264,
+        "output_tokens": 1375,
+        "latency_s": 10.428955793380737
+      },
+      {
+        "call_idx": 20,
+        "num_messages": 40,
+        "content_length": 8595,
+        "has_reasoning_content": false,
+        "input_tokens": 27667,
+        "output_tokens": 2048,
+        "latency_s": 10.768617868423462
+      },
+      {
+        "call_idx": 21,
+        "num_messages": 42,
+        "content_length": 9058,
+        "has_reasoning_content": false,
+        "input_tokens": 30474,
+        "output_tokens": 2048,
+        "latency_s": 12.236663103103638
+      },
+      {
+        "call_idx": 22,
+        "num_messages": 44,
+        "content_length": 4545,
+        "has_reasoning_content": false,
+        "input_tokens": 33250,
+        "output_tokens": 996,
+        "latency_s": 9.2432382106781
+      },
+      {
+        "call_idx": 23,
+        "num_messages": 2,
+        "content_length": 64,
+        "has_reasoning_content": false,
+        "input_tokens": 1964,
+        "output_tokens": 69,
+        "latency_s": 6.439965009689331
+      },
+      {
+        "call_idx": 24,
+        "num_messages": 4,
+        "content_length": 2541,
+        "has_reasoning_content": false,
+        "input_tokens": 2679,
+        "output_tokens": 709,
+        "latency_s": 7.761343002319336
+      },
+      {
+        "call_idx": 25,
+        "num_messages": 6,
+        "content_length": 9178,
+        "has_reasoning_content": false,
+        "input_tokens": 4136,
+        "output_tokens": 2048,
+        "latency_s": 13.385524988174438
+      },
+      {
+        "call_idx": 26,
+        "num_messages": 8,
+        "content_length": 8829,
+        "has_reasoning_content": false,
+        "input_tokens": 6882,
+        "output_tokens": 2048,
+        "latency_s": 9.28885293006897
+      },
+      {
+        "call_idx": 27,
+        "num_messages": 10,
+        "content_length": 8990,
+        "has_reasoning_content": false,
+        "input_tokens": 9575,
+        "output_tokens": 2048,
+        "latency_s": 9.552434921264648
+      },
+      {
+        "call_idx": 28,
+        "num_messages": 12,
+        "content_length": 4563,
+        "has_reasoning_content": false,
+        "input_tokens": 11653,
+        "output_tokens": 1189,
+        "latency_s": 4.696451187133789
+      },
+      {
+        "call_idx": 29,
+        "num_messages": 14,
+        "content_length": 8587,
+        "has_reasoning_content": false,
+        "input_tokens": 12713,
+        "output_tokens": 2048,
+        "latency_s": 9.495645999908447
+      },
+      {
+        "call_idx": 30,
+        "num_messages": 16,
+        "content_length": 9018,
+        "has_reasoning_content": false,
+        "input_tokens": 15486,
+        "output_tokens": 2048,
+        "latency_s": 9.405174016952515
+      },
+      {
+        "call_idx": 31,
+        "num_messages": 18,
+        "content_length": 8613,
+        "has_reasoning_content": false,
+        "input_tokens": 17443,
+        "output_tokens": 2048,
+        "latency_s": 9.962475061416626
+      },
+      {
+        "call_idx": 32,
+        "num_messages": 20,
+        "content_length": 8477,
+        "has_reasoning_content": false,
+        "input_tokens": 19335,
+        "output_tokens": 2048,
+        "latency_s": 11.486768960952759
+      },
+      {
+        "call_idx": 33,
+        "num_messages": 22,
+        "content_length": 5693,
+        "has_reasoning_content": false,
+        "input_tokens": 21206,
+        "output_tokens": 1476,
+        "latency_s": 9.365515947341919
+      },
+      {
+        "call_idx": 34,
+        "num_messages": 24,
+        "content_length": 8645,
+        "has_reasoning_content": false,
+        "input_tokens": 23124,
+        "output_tokens": 1847,
+        "latency_s": 8.085880041122437
+      },
+      {
+        "call_idx": 35,
+        "num_messages": 26,
+        "content_length": 3674,
+        "has_reasoning_content": false,
+        "input_tokens": 25002,
+        "output_tokens": 1048,
+        "latency_s": 7.057341814041138
+      },
+      {
+        "call_idx": 36,
+        "num_messages": 28,
+        "content_length": 4508,
+        "has_reasoning_content": false,
+        "input_tokens": 26452,
+        "output_tokens": 1248,
+        "latency_s": 5.114404201507568
+      },
+      {
+        "call_idx": 37,
+        "num_messages": 30,
+        "content_length": 1502,
+        "has_reasoning_content": false,
+        "input_tokens": 27429,
+        "output_tokens": 802,
+        "latency_s": 3.4445958137512207
+      },
+      {
+        "call_idx": 38,
+        "num_messages": 32,
+        "content_length": 4508,
+        "has_reasoning_content": false,
+        "input_tokens": 28565,
+        "output_tokens": 1300,
+        "latency_s": 10.099567174911499
+      },
+      {
+        "call_idx": 39,
+        "num_messages": 2,
+        "content_length": 65,
+        "has_reasoning_content": false,
+        "input_tokens": 1965,
+        "output_tokens": 87,
+        "latency_s": 4.747956991195679
+      },
+      {
+        "call_idx": 40,
+        "num_messages": 4,
+        "content_length": 60,
+        "has_reasoning_content": false,
+        "input_tokens": 2677,
+        "output_tokens": 46,
+        "latency_s": 1.9238553047180176
+      },
+      {
+        "call_idx": 41,
+        "num_messages": 6,
+        "content_length": 1049,
+        "has_reasoning_content": false,
+        "input_tokens": 3408,
+        "output_tokens": 242,
+        "latency_s": 5.3617682456970215
+      },
+      {
+        "call_idx": 42,
+        "num_messages": 8,
+        "content_length": 6913,
+        "has_reasoning_content": false,
+        "input_tokens": 4299,
+        "output_tokens": 1481,
+        "latency_s": 6.9567999839782715
+      },
+      {
+        "call_idx": 43,
+        "num_messages": 10,
+        "content_length": 9321,
+        "has_reasoning_content": false,
+        "input_tokens": 6414,
+        "output_tokens": 2048,
+        "latency_s": 8.307117938995361
+      },
+      {
+        "call_idx": 44,
+        "num_messages": 12,
+        "content_length": 7958,
+        "has_reasoning_content": false,
+        "input_tokens": 9232,
+        "output_tokens": 2048,
+        "latency_s": 7.344356060028076
+      },
+      {
+        "call_idx": 45,
+        "num_messages": 14,
+        "content_length": 9589,
+        "has_reasoning_content": false,
+        "input_tokens": 11998,
+        "output_tokens": 2048,
+        "latency_s": 9.686523914337158
+      },
+      {
+        "call_idx": 46,
+        "num_messages": 16,
+        "content_length": 8474,
+        "has_reasoning_content": false,
+        "input_tokens": 14762,
+        "output_tokens": 2048,
+        "latency_s": 10.833117961883545
+      },
+      {
+        "call_idx": 47,
+        "num_messages": 18,
+        "content_length": 7156,
+        "has_reasoning_content": false,
+        "input_tokens": 17481,
+        "output_tokens": 2048,
+        "latency_s": 10.672231197357178
+      },
+      {
+        "call_idx": 48,
+        "num_messages": 20,
+        "content_length": 7338,
+        "has_reasoning_content": false,
+        "input_tokens": 20269,
+        "output_tokens": 2048,
+        "latency_s": 7.087947130203247
+      },
+      {
+        "call_idx": 49,
+        "num_messages": 22,
+        "content_length": 9201,
+        "has_reasoning_content": false,
+        "input_tokens": 22984,
+        "output_tokens": 2048,
+        "latency_s": 8.554268836975098
+      },
+      {
+        "call_idx": 50,
+        "num_messages": 2,
+        "content_length": 51,
+        "has_reasoning_content": false,
+        "input_tokens": 1979,
+        "output_tokens": 154,
+        "latency_s": 2.958446979522705
+      },
+      {
+        "call_idx": 51,
+        "num_messages": 4,
+        "content_length": 60,
+        "has_reasoning_content": false,
+        "input_tokens": 2769,
+        "output_tokens": 58,
+        "latency_s": 0.5927267074584961
+      },
+      {
+        "call_idx": 52,
+        "num_messages": 6,
+        "content_length": 1132,
+        "has_reasoning_content": false,
+        "input_tokens": 3502,
+        "output_tokens": 253,
+        "latency_s": 3.470771074295044
+      },
+      {
+        "call_idx": 53,
+        "num_messages": 8,
+        "content_length": 58,
+        "has_reasoning_content": false,
+        "input_tokens": 4512,
+        "output_tokens": 93,
+        "latency_s": 2.0829710960388184
+      },
+      {
+        "call_idx": 54,
+        "num_messages": 10,
+        "content_length": 594,
+        "has_reasoning_content": false,
+        "input_tokens": 5222,
+        "output_tokens": 130,
+        "latency_s": 3.2539987564086914
+      },
+      {
+        "call_idx": 55,
+        "num_messages": 12,
+        "content_length": 1834,
+        "has_reasoning_content": false,
+        "input_tokens": 6146,
+        "output_tokens": 394,
+        "latency_s": 1.8514859676361084
+      },
+      {
+        "call_idx": 56,
+        "num_messages": 14,
+        "content_length": 2847,
+        "has_reasoning_content": false,
+        "input_tokens": 7279,
+        "output_tokens": 667,
+        "latency_s": 4.4339048862457275
+      },
+      {
+        "call_idx": 57,
+        "num_messages": 16,
+        "content_length": 8818,
+        "has_reasoning_content": false,
+        "input_tokens": 8630,
+        "output_tokens": 2048,
+        "latency_s": 9.672845840454102
+      },
+      {
+        "call_idx": 58,
+        "num_messages": 18,
+        "content_length": 1638,
+        "has_reasoning_content": false,
+        "input_tokens": 11363,
+        "output_tokens": 1033,
+        "latency_s": 7.302870035171509
+      },
+      {
+        "call_idx": 59,
+        "num_messages": 20,
+        "content_length": 55,
+        "has_reasoning_content": false,
+        "input_tokens": 11877,
+        "output_tokens": 246,
+        "latency_s": 6.630530118942261
+      },
+      {
+        "call_idx": 60,
+        "num_messages": 22,
+        "content_length": 5757,
+        "has_reasoning_content": false,
+        "input_tokens": 12652,
+        "output_tokens": 1252,
+        "latency_s": 4.995316982269287
+      },
+      {
+        "call_idx": 61,
+        "num_messages": 2,
+        "content_length": 65,
+        "has_reasoning_content": false,
+        "input_tokens": 1970,
+        "output_tokens": 146,
+        "latency_s": 1.0528538227081299
+      },
+      {
+        "call_idx": 62,
+        "num_messages": 4,
+        "content_length": 61,
+        "has_reasoning_content": false,
+        "input_tokens": 2698,
+        "output_tokens": 50,
+        "latency_s": 4.99262809753418
+      },
+      {
+        "call_idx": 63,
+        "num_messages": 6,
+        "content_length": 10300,
+        "has_reasoning_content": false,
+        "input_tokens": 3452,
+        "output_tokens": 2048,
+        "latency_s": 15.03811502456665
+      },
+      {
+        "call_idx": 64,
+        "num_messages": 8,
+        "content_length": 9897,
+        "has_reasoning_content": false,
+        "input_tokens": 6217,
+        "output_tokens": 2048,
+        "latency_s": 7.815400838851929
+      },
+      {
+        "call_idx": 65,
+        "num_messages": 10,
+        "content_length": 110,
+        "has_reasoning_content": false,
+        "input_tokens": 8295,
+        "output_tokens": 128,
+        "latency_s": 6.050788879394531
+      },
+      {
+        "call_idx": 66,
+        "num_messages": 12,
+        "content_length": 9960,
+        "has_reasoning_content": false,
+        "input_tokens": 9011,
+        "output_tokens": 2048,
+        "latency_s": 7.742978811264038
+      },
+      {
+        "call_idx": 67,
+        "num_messages": 14,
+        "content_length": 8001,
+        "has_reasoning_content": false,
+        "input_tokens": 11083,
+        "output_tokens": 1955,
+        "latency_s": 12.044599771499634
+      },
+      {
+        "call_idx": 68,
+        "num_messages": 16,
+        "content_length": 8921,
+        "has_reasoning_content": false,
+        "input_tokens": 12665,
+        "output_tokens": 2048,
+        "latency_s": 9.660628080368042
+      },
+      {
+        "call_idx": 69,
+        "num_messages": 18,
+        "content_length": 8034,
+        "has_reasoning_content": false,
+        "input_tokens": 14533,
+        "output_tokens": 2048,
+        "latency_s": 7.984604120254517
+      },
+      {
+        "call_idx": 70,
+        "num_messages": 20,
+        "content_length": 10243,
+        "has_reasoning_content": false,
+        "input_tokens": 16934,
+        "output_tokens": 2048,
+        "latency_s": 8.049172163009644
+      },
+      {
+        "call_idx": 71,
+        "num_messages": 22,
+        "content_length": 10473,
+        "has_reasoning_content": false,
+        "input_tokens": 19013,
+        "output_tokens": 2048,
+        "latency_s": 8.294050931930542
+      },
+      {
+        "call_idx": 72,
+        "num_messages": 24,
+        "content_length": 10479,
+        "has_reasoning_content": false,
+        "input_tokens": 21091,
+        "output_tokens": 2048,
+        "latency_s": 9.720757961273193
+      },
+      {
+        "call_idx": 73,
+        "num_messages": 26,
+        "content_length": 6583,
+        "has_reasoning_content": false,
+        "input_tokens": 23171,
+        "output_tokens": 1601,
+        "latency_s": 6.91762375831604
+      },
+      {
+        "call_idx": 74,
+        "num_messages": 28,
+        "content_length": 1712,
+        "has_reasoning_content": false,
+        "input_tokens": 24567,
+        "output_tokens": 500,
+        "latency_s": 3.552557945251465
+      },
+      {
+        "call_idx": 75,
+        "num_messages": 30,
+        "content_length": 6182,
+        "has_reasoning_content": false,
+        "input_tokens": 25582,
+        "output_tokens": 1235,
+        "latency_s": 5.627542018890381
+      },
+      {
+        "call_idx": 76,
+        "num_messages": 32,
+        "content_length": 10082,
+        "has_reasoning_content": false,
+        "input_tokens": 26848,
+        "output_tokens": 2048,
+        "latency_s": 7.720305919647217
+      },
+      {
+        "call_idx": 77,
+        "num_messages": 34,
+        "content_length": 1875,
+        "has_reasoning_content": false,
+        "input_tokens": 28926,
+        "output_tokens": 518,
+        "latency_s": 4.9551098346710205
+      },
+      {
+        "call_idx": 78,
+        "num_messages": 36,
+        "content_length": 7589,
+        "has_reasoning_content": false,
+        "input_tokens": 30058,
+        "output_tokens": 1544,
+        "latency_s": 8.269179105758667
+      },
+      {
+        "call_idx": 79,
+        "num_messages": 38,
+        "content_length": 5955,
+        "has_reasoning_content": false,
+        "input_tokens": 31631,
+        "output_tokens": 1620,
+        "latency_s": 6.79811692237854
+      },
+      {
+        "call_idx": 80,
+        "num_messages": 40,
+        "content_length": 6015,
+        "has_reasoning_content": false,
+        "input_tokens": 32896,
+        "output_tokens": 1450,
+        "latency_s": 6.65073299407959
+      },
+      {
+        "call_idx": 81,
+        "num_messages": 42,
+        "content_length": 6162,
+        "has_reasoning_content": false,
+        "input_tokens": 34131,
+        "output_tokens": 1441,
+        "latency_s": 6.32013201713562
+      },
+      {
+        "call_idx": 82,
+        "num_messages": 44,
+        "content_length": 9446,
+        "has_reasoning_content": false,
+        "input_tokens": 35432,
+        "output_tokens": 1842,
+        "latency_s": 10.184827089309692
+      },
+      {
+        "call_idx": 83,
+        "num_messages": 46,
+        "content_length": 4655,
+        "has_reasoning_content": false,
+        "input_tokens": 37303,
+        "output_tokens": 1064,
+        "latency_s": 5.221345901489258
+      },
+      {
+        "call_idx": 84,
+        "num_messages": 48,
+        "content_length": 1758,
+        "has_reasoning_content": false,
+        "input_tokens": 39011,
+        "output_tokens": 538,
+        "latency_s": 2.650862216949463
+      },
+      {
+        "call_idx": 85,
+        "num_messages": 50,
+        "content_length": 5246,
+        "has_reasoning_content": false,
+        "input_tokens": 40170,
+        "output_tokens": 1022,
+        "latency_s": 4.857544183731079
+      },
+      {
+        "call_idx": 86,
+        "num_messages": 2,
+        "content_length": 62,
+        "has_reasoning_content": false,
+        "input_tokens": 1955,
+        "output_tokens": 164,
+        "latency_s": 2.134169816970825
+      },
+      {
+        "call_idx": 87,
+        "num_messages": 4,
+        "content_length": 73,
+        "has_reasoning_content": false,
+        "input_tokens": 2646,
+        "output_tokens": 144,
+        "latency_s": 1.0878260135650635
+      },
+      {
+        "call_idx": 88,
+        "num_messages": 6,
+        "content_length": 9797,
+        "has_reasoning_content": false,
+        "input_tokens": 3377,
+        "output_tokens": 2048,
+        "latency_s": 9.869693279266357
+      },
+      {
+        "call_idx": 89,
+        "num_messages": 8,
+        "content_length": 8602,
+        "has_reasoning_content": false,
+        "input_tokens": 6165,
+        "output_tokens": 1663,
+        "latency_s": 7.314815998077393
+      },
+      {
+        "call_idx": 90,
+        "num_messages": 10,
+        "content_length": 3754,
+        "has_reasoning_content": false,
+        "input_tokens": 7857,
+        "output_tokens": 799,
+        "latency_s": 4.113008260726929
+      },
+      {
+        "call_idx": 91,
+        "num_messages": 12,
+        "content_length": 9971,
+        "has_reasoning_content": false,
+        "input_tokens": 9261,
+        "output_tokens": 2048,
+        "latency_s": 9.286510229110718
+      },
+      {
+        "call_idx": 92,
+        "num_messages": 14,
+        "content_length": 3630,
+        "has_reasoning_content": false,
+        "input_tokens": 11908,
+        "output_tokens": 1240,
+        "latency_s": 5.594427824020386
+      },
+      {
+        "call_idx": 93,
+        "num_messages": 16,
+        "content_length": 2882,
+        "has_reasoning_content": false,
+        "input_tokens": 12626,
+        "output_tokens": 693,
+        "latency_s": 3.2678699493408203
+      },
+      {
+        "call_idx": 94,
+        "num_messages": 18,
+        "content_length": 2476,
+        "has_reasoning_content": false,
+        "input_tokens": 13812,
+        "output_tokens": 606,
+        "latency_s": 3.2446141242980957
+      },
+      {
+        "call_idx": 95,
+        "num_messages": 20,
+        "content_length": 8970,
+        "has_reasoning_content": false,
+        "input_tokens": 15003,
+        "output_tokens": 1781,
+        "latency_s": 12.28302001953125
+      },
+      {
+        "call_idx": 96,
+        "num_messages": 22,
+        "content_length": 2844,
+        "has_reasoning_content": false,
+        "input_tokens": 16813,
+        "output_tokens": 650,
+        "latency_s": 3.0888490676879883
+      },
+      {
+        "call_idx": 97,
+        "num_messages": 24,
+        "content_length": 3630,
+        "has_reasoning_content": false,
+        "input_tokens": 17989,
+        "output_tokens": 861,
+        "latency_s": 3.9140751361846924
+      },
+      {
+        "call_idx": 98,
+        "num_messages": 2,
+        "content_length": 10513,
+        "has_reasoning_content": false,
+        "input_tokens": 1969,
+        "output_tokens": 2048,
+        "latency_s": 10.446650266647339
+      },
+      {
+        "call_idx": 99,
+        "num_messages": 4,
+        "content_length": 6909,
+        "has_reasoning_content": false,
+        "input_tokens": 4573,
+        "output_tokens": 1431,
+        "latency_s": 10.50713586807251
+      },
+      {
+        "call_idx": 100,
+        "num_messages": 6,
+        "content_length": 6717,
+        "has_reasoning_content": false,
+        "input_tokens": 6463,
+        "output_tokens": 1420,
+        "latency_s": 5.2768330574035645
+      },
+      {
+        "call_idx": 101,
+        "num_messages": 8,
+        "content_length": 1136,
+        "has_reasoning_content": false,
+        "input_tokens": 8281,
+        "output_tokens": 404,
+        "latency_s": 1.8266806602478027
+      },
+      {
+        "call_idx": 102,
+        "num_messages": 10,
+        "content_length": 6343,
+        "has_reasoning_content": false,
+        "input_tokens": 9302,
+        "output_tokens": 1129,
+        "latency_s": 4.968678951263428
+      },
+      {
+        "call_idx": 103,
+        "num_messages": 12,
+        "content_length": 963,
+        "has_reasoning_content": false,
+        "input_tokens": 10460,
+        "output_tokens": 289,
+        "latency_s": 1.8176100254058838
+      },
+      {
+        "call_idx": 104,
+        "num_messages": 14,
+        "content_length": 6081,
+        "has_reasoning_content": false,
+        "input_tokens": 11267,
+        "output_tokens": 1125,
+        "latency_s": 4.424527168273926
+      },
+      {
+        "call_idx": 105,
+        "num_messages": 16,
+        "content_length": 455,
+        "has_reasoning_content": false,
+        "input_tokens": 12381,
+        "output_tokens": 190,
+        "latency_s": 1.2076680660247803
+      },
+      {
+        "call_idx": 106,
+        "num_messages": 18,
+        "content_length": 6118,
+        "has_reasoning_content": false,
+        "input_tokens": 13211,
+        "output_tokens": 1095,
+        "latency_s": 4.158947944641113
+      },
+      {
+        "call_idx": 107,
+        "num_messages": 20,
+        "content_length": 5582,
+        "has_reasoning_content": false,
+        "input_tokens": 14331,
+        "output_tokens": 1058,
+        "latency_s": 4.092550039291382
+      },
+      {
+        "call_idx": 108,
+        "num_messages": 22,
+        "content_length": 151,
+        "has_reasoning_content": false,
+        "input_tokens": 15366,
+        "output_tokens": 220,
+        "latency_s": 1.4215538501739502
+      },
+      {
+        "call_idx": 109,
+        "num_messages": 24,
+        "content_length": 5447,
+        "has_reasoning_content": false,
+        "input_tokens": 16076,
+        "output_tokens": 978,
+        "latency_s": 3.823072671890259
+      },
+      {
+        "call_idx": 110,
+        "num_messages": 26,
+        "content_length": 5409,
+        "has_reasoning_content": false,
+        "input_tokens": 17085,
+        "output_tokens": 973,
+        "latency_s": 4.030021667480469
+      },
+      {
+        "call_idx": 111,
+        "num_messages": 28,
+        "content_length": 5454,
+        "has_reasoning_content": false,
+        "input_tokens": 18089,
+        "output_tokens": 1132,
+        "latency_s": 9.717671871185303
+      },
+      {
+        "call_idx": 112,
+        "num_messages": 30,
+        "content_length": 5454,
+        "has_reasoning_content": false,
+        "input_tokens": 19100,
+        "output_tokens": 1120,
+        "latency_s": 8.495884895324707
+      },
+      {
+        "call_idx": 113,
+        "num_messages": 32,
+        "content_length": 5380,
+        "has_reasoning_content": false,
+        "input_tokens": 20111,
+        "output_tokens": 1105,
+        "latency_s": 4.957837104797363
+      },
+      {
+        "call_idx": 114,
+        "num_messages": 34,
+        "content_length": 5457,
+        "has_reasoning_content": false,
+        "input_tokens": 21111,
+        "output_tokens": 981,
+        "latency_s": 4.023444890975952
+      },
+      {
+        "call_idx": 115,
+        "num_messages": 36,
+        "content_length": 73,
+        "has_reasoning_content": false,
+        "input_tokens": 22123,
+        "output_tokens": 155,
+        "latency_s": 1.6690089702606201
+      },
+      {
+        "call_idx": 116,
+        "num_messages": 38,
+        "content_length": 5380,
+        "has_reasoning_content": false,
+        "input_tokens": 22827,
+        "output_tokens": 1135,
+        "latency_s": 4.481271028518677
+      },
+      {
+        "call_idx": 117,
+        "num_messages": 2,
+        "content_length": 69,
+        "has_reasoning_content": false,
+        "input_tokens": 1953,
+        "output_tokens": 85,
+        "latency_s": 6.421121120452881
+      },
+      {
+        "call_idx": 118,
+        "num_messages": 4,
+        "content_length": 63,
+        "has_reasoning_content": false,
+        "input_tokens": 2690,
+        "output_tokens": 204,
+        "latency_s": 1.204685926437378
+      },
+      {
+        "call_idx": 119,
+        "num_messages": 6,
+        "content_length": 1954,
+        "has_reasoning_content": false,
+        "input_tokens": 3414,
+        "output_tokens": 365,
+        "latency_s": 5.915648937225342
+      },
+      {
+        "call_idx": 120,
+        "num_messages": 8,
+        "content_length": 9931,
+        "has_reasoning_content": false,
+        "input_tokens": 4437,
+        "output_tokens": 2048,
+        "latency_s": 10.307296991348267
+      },
+      {
+        "call_idx": 121,
+        "num_messages": 10,
+        "content_length": 74,
+        "has_reasoning_content": false,
+        "input_tokens": 6517,
+        "output_tokens": 152,
+        "latency_s": 1.1254651546478271
+      },
+      {
+        "call_idx": 122,
+        "num_messages": 12,
+        "content_length": 805,
+        "has_reasoning_content": false,
+        "input_tokens": 7281,
+        "output_tokens": 153,
+        "latency_s": 1.0924208164215088
+      },
+      {
+        "call_idx": 123,
+        "num_messages": 14,
+        "content_length": 1568,
+        "has_reasoning_content": false,
+        "input_tokens": 8142,
+        "output_tokens": 279,
+        "latency_s": 1.3574042320251465
+      },
+      {
+        "call_idx": 124,
+        "num_messages": 16,
+        "content_length": 2239,
+        "has_reasoning_content": false,
+        "input_tokens": 9125,
+        "output_tokens": 400,
+        "latency_s": 1.8462588787078857
+      },
+      {
+        "call_idx": 125,
+        "num_messages": 18,
+        "content_length": 11004,
+        "has_reasoning_content": false,
+        "input_tokens": 10225,
+        "output_tokens": 2048,
+        "latency_s": 7.150061845779419
+      },
+      {
+        "call_idx": 126,
+        "num_messages": 20,
+        "content_length": 2382,
+        "has_reasoning_content": false,
+        "input_tokens": 12993,
+        "output_tokens": 1291,
+        "latency_s": 5.276268720626831
+      },
+      {
+        "call_idx": 127,
+        "num_messages": 2,
+        "content_length": 76,
+        "has_reasoning_content": false,
+        "input_tokens": 1983,
+        "output_tokens": 142,
+        "latency_s": 0.9181890487670898
+      },
+      {
+        "call_idx": 128,
+        "num_messages": 4,
+        "content_length": 59,
+        "has_reasoning_content": false,
+        "input_tokens": 2707,
+        "output_tokens": 198,
+        "latency_s": 1.3040080070495605
+      },
+      {
+        "call_idx": 129,
+        "num_messages": 6,
+        "content_length": 10137,
+        "has_reasoning_content": false,
+        "input_tokens": 3439,
+        "output_tokens": 2048,
+        "latency_s": 8.95045018196106
+      },
+      {
+        "call_idx": 130,
+        "num_messages": 8,
+        "content_length": 60,
+        "has_reasoning_content": false,
+        "input_tokens": 6188,
+        "output_tokens": 120,
+        "latency_s": 1.0145111083984375
+      },
+      {
+        "call_idx": 131,
+        "num_messages": 10,
+        "content_length": 9589,
+        "has_reasoning_content": false,
+        "input_tokens": 6942,
+        "output_tokens": 2048,
+        "latency_s": 9.204694747924805
+      },
+      {
+        "call_idx": 132,
+        "num_messages": 12,
+        "content_length": 9458,
+        "has_reasoning_content": false,
+        "input_tokens": 9628,
+        "output_tokens": 2048,
+        "latency_s": 7.739025354385376
+      },
+      {
+        "call_idx": 133,
+        "num_messages": 14,
+        "content_length": 55,
+        "has_reasoning_content": false,
+        "input_tokens": 11706,
+        "output_tokens": 152,
+        "latency_s": 1.316960096359253
+      },
+      {
+        "call_idx": 134,
+        "num_messages": 16,
+        "content_length": 56,
+        "has_reasoning_content": false,
+        "input_tokens": 12460,
+        "output_tokens": 141,
+        "latency_s": 2.7051210403442383
+      },
+      {
+        "call_idx": 135,
+        "num_messages": 18,
+        "content_length": 5637,
+        "has_reasoning_content": false,
+        "input_tokens": 13251,
+        "output_tokens": 1220,
+        "latency_s": 4.570275068283081
+      },
+      {
+        "call_idx": 136,
+        "num_messages": 20,
+        "content_length": 5748,
+        "has_reasoning_content": false,
+        "input_tokens": 14502,
+        "output_tokens": 1405,
+        "latency_s": 6.197119951248169
+      },
+      {
+        "call_idx": 137,
+        "num_messages": 22,
+        "content_length": 5664,
+        "has_reasoning_content": false,
+        "input_tokens": 15774,
+        "output_tokens": 1338,
+        "latency_s": 6.082671880722046
+      },
+      {
+        "call_idx": 138,
+        "num_messages": 24,
+        "content_length": 5710,
+        "has_reasoning_content": false,
+        "input_tokens": 16981,
+        "output_tokens": 1407,
+        "latency_s": 5.126644134521484
+      },
+      {
+        "call_idx": 139,
+        "num_messages": 26,
+        "content_length": 6627,
+        "has_reasoning_content": false,
+        "input_tokens": 18239,
+        "output_tokens": 1418,
+        "latency_s": 5.243605136871338
+      },
+      {
+        "call_idx": 140,
+        "num_messages": 28,
+        "content_length": 6782,
+        "has_reasoning_content": false,
+        "input_tokens": 19686,
+        "output_tokens": 1466,
+        "latency_s": 9.863164186477661
+      },
+      {
+        "call_idx": 141,
+        "num_messages": 30,
+        "content_length": 4647,
+        "has_reasoning_content": false,
+        "input_tokens": 21181,
+        "output_tokens": 1259,
+        "latency_s": 5.406726121902466
+      },
+      {
+        "call_idx": 142,
+        "num_messages": 32,
+        "content_length": 4152,
+        "has_reasoning_content": false,
+        "input_tokens": 22225,
+        "output_tokens": 1121,
+        "latency_s": 5.249949932098389
+      },
+      {
+        "call_idx": 143,
+        "num_messages": 34,
+        "content_length": 5505,
+        "has_reasoning_content": false,
+        "input_tokens": 23129,
+        "output_tokens": 1199,
+        "latency_s": 5.206701040267944
+      },
+      {
+        "call_idx": 144,
+        "num_messages": 36,
+        "content_length": 3329,
+        "has_reasoning_content": false,
+        "input_tokens": 24359,
+        "output_tokens": 956,
+        "latency_s": 6.652647018432617
+      },
+      {
+        "call_idx": 145,
+        "num_messages": 38,
+        "content_length": 3236,
+        "has_reasoning_content": false,
+        "input_tokens": 25135,
+        "output_tokens": 955,
+        "latency_s": 7.583616018295288
+      },
+      {
+        "call_idx": 146,
+        "num_messages": 40,
+        "content_length": 7089,
+        "has_reasoning_content": false,
+        "input_tokens": 25844,
+        "output_tokens": 1496,
+        "latency_s": 6.605531930923462
+      },
+      {
+        "call_idx": 147,
+        "num_messages": 42,
+        "content_length": 3276,
+        "has_reasoning_content": false,
+        "input_tokens": 27370,
+        "output_tokens": 1005,
+        "latency_s": 4.516435861587524
+      },
+      {
+        "call_idx": 148,
+        "num_messages": 44,
+        "content_length": 3323,
+        "has_reasoning_content": false,
+        "input_tokens": 28102,
+        "output_tokens": 978,
+        "latency_s": 4.529177188873291
+      },
+      {
+        "call_idx": 149,
+        "num_messages": 46,
+        "content_length": 6266,
+        "has_reasoning_content": false,
+        "input_tokens": 28820,
+        "output_tokens": 1350,
+        "latency_s": 6.038224935531616
+      },
+      {
+        "call_idx": 150,
+        "num_messages": 48,
+        "content_length": 5647,
+        "has_reasoning_content": false,
+        "input_tokens": 30200,
+        "output_tokens": 1348,
+        "latency_s": 7.566264867782593
+      },
+      {
+        "call_idx": 151,
+        "num_messages": 50,
+        "content_length": 5471,
+        "has_reasoning_content": false,
+        "input_tokens": 31513,
+        "output_tokens": 1576,
+        "latency_s": 7.666522264480591
+      },
+      {
+        "call_idx": 152,
+        "num_messages": 52,
+        "content_length": 3239,
+        "has_reasoning_content": false,
+        "input_tokens": 32724,
+        "output_tokens": 869,
+        "latency_s": 4.479497909545898
+      },
+      {
+        "call_idx": 153,
+        "num_messages": 54,
+        "content_length": 6435,
+        "has_reasoning_content": false,
+        "input_tokens": 33453,
+        "output_tokens": 1379,
+        "latency_s": 5.715920925140381
+      },
+      {
+        "call_idx": 154,
+        "num_messages": 56,
+        "content_length": 3316,
+        "has_reasoning_content": false,
+        "input_tokens": 34862,
+        "output_tokens": 840,
+        "latency_s": 3.972553014755249
+      },
+      {
+        "call_idx": 155,
+        "num_messages": 58,
+        "content_length": 5673,
+        "has_reasoning_content": false,
+        "input_tokens": 35612,
+        "output_tokens": 1422,
+        "latency_s": 7.558745861053467
+      },
+      {
+        "call_idx": 156,
+        "num_messages": 60,
+        "content_length": 5470,
+        "has_reasoning_content": false,
+        "input_tokens": 36926,
+        "output_tokens": 1374,
+        "latency_s": 6.240622043609619
+      },
+      {
+        "call_idx": 157,
+        "num_messages": 62,
+        "content_length": 9595,
+        "has_reasoning_content": false,
+        "input_tokens": 38139,
+        "output_tokens": 2048,
+        "latency_s": 8.189527988433838
+      },
+      {
+        "call_idx": 158,
+        "num_messages": 64,
+        "content_length": 3346,
+        "has_reasoning_content": false,
+        "input_tokens": 40218,
+        "output_tokens": 918,
+        "latency_s": 4.087123870849609
+      },
+      {
+        "call_idx": 159,
+        "num_messages": 66,
+        "content_length": 3367,
+        "has_reasoning_content": false,
+        "input_tokens": 40973,
+        "output_tokens": 873,
+        "latency_s": 7.379951000213623
+      },
+      {
+        "call_idx": 160,
+        "num_messages": 68,
+        "content_length": 8326,
+        "has_reasoning_content": false,
+        "input_tokens": 41696,
+        "output_tokens": 1790,
+        "latency_s": 8.258354902267456
+      },
+      {
+        "call_idx": 161,
+        "num_messages": 70,
+        "content_length": 9053,
+        "has_reasoning_content": false,
+        "input_tokens": 43517,
+        "output_tokens": 1951,
+        "latency_s": 8.163139820098877
+      },
+      {
+        "call_idx": 162,
+        "num_messages": 72,
+        "content_length": 6093,
+        "has_reasoning_content": false,
+        "input_tokens": 45499,
+        "output_tokens": 1340,
+        "latency_s": 9.430235147476196
+      },
+      {
+        "call_idx": 163,
+        "num_messages": 74,
+        "content_length": 7008,
+        "has_reasoning_content": false,
+        "input_tokens": 46870,
+        "output_tokens": 1504,
+        "latency_s": 6.662376880645752
+      },
+      {
+        "call_idx": 164,
+        "num_messages": 76,
+        "content_length": 9221,
+        "has_reasoning_content": false,
+        "input_tokens": 48404,
+        "output_tokens": 1986,
+        "latency_s": 14.845318078994751
+      },
+      {
+        "call_idx": 165,
+        "num_messages": 78,
+        "content_length": 9692,
+        "has_reasoning_content": false,
+        "input_tokens": 50421,
+        "output_tokens": 2048,
+        "latency_s": 8.760361194610596
+      },
+      {
+        "call_idx": 166,
+        "num_messages": 80,
+        "content_length": 9385,
+        "has_reasoning_content": false,
+        "input_tokens": 52500,
+        "output_tokens": 2048,
+        "latency_s": 11.351118803024292
+      },
+      {
+        "call_idx": 167,
+        "num_messages": 82,
+        "content_length": 8227,
+        "has_reasoning_content": false,
+        "input_tokens": 54580,
+        "output_tokens": 1774,
+        "latency_s": 8.49195408821106
+      },
+      {
+        "call_idx": 168,
+        "num_messages": 84,
+        "content_length": 3657,
+        "has_reasoning_content": false,
+        "input_tokens": 56385,
+        "output_tokens": 834,
+        "latency_s": 7.57353401184082
+      },
+      {
+        "call_idx": 169,
+        "num_messages": 86,
+        "content_length": 6656,
+        "has_reasoning_content": false,
+        "input_tokens": 57175,
+        "output_tokens": 1416,
+        "latency_s": 7.063776969909668
+      },
+      {
+        "call_idx": 170,
+        "num_messages": 88,
+        "content_length": 6939,
+        "has_reasoning_content": false,
+        "input_tokens": 58622,
+        "output_tokens": 1464,
+        "latency_s": 7.581524848937988
+      },
+      {
+        "call_idx": 171,
+        "num_messages": 90,
+        "content_length": 8698,
+        "has_reasoning_content": false,
+        "input_tokens": 60117,
+        "output_tokens": 1857,
+        "latency_s": 12.035819053649902
+      },
+      {
+        "call_idx": 172,
+        "num_messages": 92,
+        "content_length": 6790,
+        "has_reasoning_content": false,
+        "input_tokens": 62005,
+        "output_tokens": 1429,
+        "latency_s": 6.361406087875366
+      },
+      {
+        "call_idx": 173,
+        "num_messages": 94,
+        "content_length": 7961,
+        "has_reasoning_content": false,
+        "input_tokens": 63465,
+        "output_tokens": 1739,
+        "latency_s": 11.825499057769775
+      },
+      {
+        "call_idx": 174,
+        "num_messages": 96,
+        "content_length": 6201,
+        "has_reasoning_content": false,
+        "input_tokens": 65234,
+        "output_tokens": 1325,
+        "latency_s": 8.865147829055786
+      },
+      {
+        "call_idx": 175,
+        "num_messages": 98,
+        "content_length": 6279,
+        "has_reasoning_content": false,
+        "input_tokens": 66589,
+        "output_tokens": 1375,
+        "latency_s": 10.877702951431274
+      },
+      {
+        "call_idx": 176,
+        "num_messages": 100,
+        "content_length": 9210,
+        "has_reasoning_content": false,
+        "input_tokens": 67995,
+        "output_tokens": 2021,
+        "latency_s": 12.326243877410889
+      },
+      {
+        "call_idx": 177,
+        "num_messages": 102,
+        "content_length": 9352,
+        "has_reasoning_content": false,
+        "input_tokens": 70047,
+        "output_tokens": 2048,
+        "latency_s": 10.184592723846436
+      },
+      {
+        "call_idx": 178,
+        "num_messages": 104,
+        "content_length": 9203,
+        "has_reasoning_content": false,
+        "input_tokens": 72127,
+        "output_tokens": 1971,
+        "latency_s": 8.556339979171753
+      },
+      {
+        "call_idx": 179,
+        "num_messages": 106,
+        "content_length": 9289,
+        "has_reasoning_content": false,
+        "input_tokens": 74129,
+        "output_tokens": 2022,
+        "latency_s": 9.363270282745361
+      },
+      {
+        "call_idx": 180,
+        "num_messages": 108,
+        "content_length": 3771,
+        "has_reasoning_content": false,
+        "input_tokens": 76182,
+        "output_tokens": 977,
+        "latency_s": 7.7818639278411865
+      },
+      {
+        "call_idx": 181,
+        "num_messages": 110,
+        "content_length": 3302,
+        "has_reasoning_content": false,
+        "input_tokens": 77052,
+        "output_tokens": 901,
+        "latency_s": 5.630512714385986
+      },
+      {
+        "call_idx": 182,
+        "num_messages": 112,
+        "content_length": 6738,
+        "has_reasoning_content": false,
+        "input_tokens": 77825,
+        "output_tokens": 1492,
+        "latency_s": 6.683899879455566
+      },
+      {
+        "call_idx": 183,
+        "num_messages": 114,
+        "content_length": 6515,
+        "has_reasoning_content": false,
+        "input_tokens": 79348,
+        "output_tokens": 1416,
+        "latency_s": 6.723861932754517
+      },
+      {
+        "call_idx": 184,
+        "num_messages": 116,
+        "content_length": 9313,
+        "has_reasoning_content": false,
+        "input_tokens": 80795,
+        "output_tokens": 2048,
+        "latency_s": 9.437022924423218
+      },
+      {
+        "call_idx": 185,
+        "num_messages": 118,
+        "content_length": 9589,
+        "has_reasoning_content": false,
+        "input_tokens": 82875,
+        "output_tokens": 2048,
+        "latency_s": 9.265039205551147
+      },
+      {
+        "call_idx": 186,
+        "num_messages": 120,
+        "content_length": 9395,
+        "has_reasoning_content": false,
+        "input_tokens": 84955,
+        "output_tokens": 2048,
+        "latency_s": 9.20376992225647
+      },
+      {
+        "call_idx": 187,
+        "num_messages": 123,
+        "content_length": 2252,
+        "has_reasoning_content": false,
+        "input_tokens": 87101,
+        "output_tokens": 938,
+        "latency_s": 7.199834108352661
+      },
+      {
+        "call_idx": 188,
+        "num_messages": 2,
+        "content_length": 5922,
+        "has_reasoning_content": false,
+        "input_tokens": 1974,
+        "output_tokens": 2048,
+        "latency_s": 8.624911785125732
+      },
+      {
+        "call_idx": 189,
+        "num_messages": 4,
+        "content_length": 58,
+        "has_reasoning_content": false,
+        "input_tokens": 3772,
+        "output_tokens": 216,
+        "latency_s": 1.1205401420593262
+      },
+      {
+        "call_idx": 190,
+        "num_messages": 6,
+        "content_length": 703,
+        "has_reasoning_content": false,
+        "input_tokens": 4515,
+        "output_tokens": 132,
+        "latency_s": 4.277351140975952
+      },
+      {
+        "call_idx": 191,
+        "num_messages": 8,
+        "content_length": 6440,
+        "has_reasoning_content": false,
+        "input_tokens": 5331,
+        "output_tokens": 1226,
+        "latency_s": 6.814671993255615
+      },
+      {
+        "call_idx": 192,
+        "num_messages": 10,
+        "content_length": 61,
+        "has_reasoning_content": false,
+        "input_tokens": 6564,
+        "output_tokens": 141,
+        "latency_s": 4.995673894882202
+      },
+      {
+        "call_idx": 193,
+        "num_messages": 12,
+        "content_length": 70,
+        "has_reasoning_content": false,
+        "input_tokens": 7058,
+        "output_tokens": 110,
+        "latency_s": 3.2542970180511475
+      },
+      {
+        "call_idx": 194,
+        "num_messages": 14,
+        "content_length": 773,
+        "has_reasoning_content": false,
+        "input_tokens": 7770,
+        "output_tokens": 136,
+        "latency_s": 0.9835700988769531
+      },
+      {
+        "call_idx": 195,
+        "num_messages": 16,
+        "content_length": 56,
+        "has_reasoning_content": false,
+        "input_tokens": 8566,
+        "output_tokens": 121,
+        "latency_s": 0.8540210723876953
+      },
+      {
+        "call_idx": 196,
+        "num_messages": 18,
+        "content_length": 5133,
+        "has_reasoning_content": false,
+        "input_tokens": 9252,
+        "output_tokens": 942,
+        "latency_s": 6.8773512840271
+      },
+      {
+        "call_idx": 197,
+        "num_messages": 20,
+        "content_length": 74,
+        "has_reasoning_content": false,
+        "input_tokens": 10223,
+        "output_tokens": 129,
+        "latency_s": 0.9679231643676758
+      },
+      {
+        "call_idx": 198,
+        "num_messages": 22,
+        "content_length": 3401,
+        "has_reasoning_content": false,
+        "input_tokens": 10859,
+        "output_tokens": 1531,
+        "latency_s": 5.6683478355407715
+      }
+    ]
+  }
+}

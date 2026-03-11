@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from konash.synthesis.qa import QuestionAnswerSynthesizer, SyntheticExample
@@ -107,10 +108,11 @@ class SynthesisPipeline:
         examples: Optional[List[SyntheticExample]] = None,
         num_rollouts: Optional[int] = None,
         reference_documents: Optional[List[str]] = None,
+        parallel_workers: int = 4,
     ) -> List[SyntheticExample]:
         """Stage Two: Rollout generation + pass-rate filter + quality filter.
 
-        1. Generate solver rollouts for each QA pair.
+        1. Generate solver rollouts for each QA pair (parallelized across pairs).
         2. Estimate pass rates and filter by range.
         3. Apply quality filters (ambiguity, reference accuracy).
 
@@ -122,6 +124,8 @@ class SynthesisPipeline:
             Rollouts per example. Defaults to config's solver_rollout_count.
         reference_documents : list[str] | None
             Documents for quality filter reference-accuracy checking.
+        parallel_workers : int
+            Number of QA pairs to process in parallel (default 4).
 
         Returns
         -------
@@ -136,16 +140,27 @@ class SynthesisPipeline:
             rollout_count = self.config.solver_rollout_count
         rollout_count = rollout_count or 8
 
-        # Phase 1: Generate rollouts
-        self.rollout_groups = []
-        for qa_idx, ex in enumerate(self.synthetic_examples):
-            group = self.rollout_generator.generate_group(
+        # Phase 1: Generate rollouts (parallel across QA pairs)
+        num_qa = len(self.synthetic_examples)
+        results: List[Optional[RolloutGroup]] = [None] * num_qa
+
+        def _generate_for_qa(qa_idx_ex):
+            qa_idx, ex = qa_idx_ex
+            return qa_idx, self.rollout_generator.generate_group(
                 prompt=ex.question,
                 reference_answer=ex.answer,
                 num_rollouts=rollout_count,
                 qa_idx=qa_idx,
             )
-            self.rollout_groups.append(group)
+
+        max_workers = min(parallel_workers, num_qa) if num_qa > 0 else 1
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for qa_idx, group in pool.map(
+                _generate_for_qa, enumerate(self.synthetic_examples)
+            ):
+                results[qa_idx] = group
+
+        self.rollout_groups = [g for g in results if g is not None]
 
         # Phase 2: Pass-rate filtering
         self.filtered_groups = self.estimate_pass_rate(self.rollout_groups)

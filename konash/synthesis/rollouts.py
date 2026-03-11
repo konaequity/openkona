@@ -3,6 +3,8 @@ from __future__ import annotations
 import json as _json
 import random
 import re as _re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
 
@@ -113,6 +115,7 @@ class RolloutGenerator:
         self.compression_trigger_chars = compression_trigger_chars
         self.on_step = on_step
         self.nugget_scorer = nugget_scorer
+        self._tls = threading.local()  # thread-local storage for per-rollout state
 
     # ------------------------------------------------------------------
     # Public API
@@ -155,16 +158,35 @@ class RolloutGenerator:
         if reference_answer and self.llm_fn is not None:
             nuggets = self._decompose_nuggets(prompt, reference_answer)
 
-        rollouts: List[Rollout] = []
+        # Vary temperature across rollouts for diversity (KARL paper uses
+        # independent rollouts which naturally diverge at scale; at small
+        # scale we need explicit temperature variation).
+        base_temp = 0.7
+        temp_offsets = [0.0, 0.15, -0.1, 0.25, 0.05, -0.05, 0.3, 0.1]
+        rollout_args = []
         for i in range(num_rollouts):
-            rollout = self.generate_single(
+            temp = base_temp + temp_offsets[i % len(temp_offsets)]
+            temp = max(0.1, min(1.2, temp))  # clamp
+            rollout_args.append((i, temp))
+
+        # Run rollouts in parallel — they are independent I/O-bound LLM chains
+        max_workers = min(num_rollouts, 4)
+        rollouts: List[Optional[Rollout]] = [None] * num_rollouts
+
+        def _run_rollout(idx_temp):
+            idx, temp = idx_temp
+            return idx, self.generate_single(
                 prompt,
                 reference_answer=reference_answer,
-                rollout_id=i,
+                rollout_id=idx,
                 qa_idx=qa_idx,
                 nuggets=nuggets,
+                temperature=temp,
             )
-            rollouts.append(rollout)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for idx, rollout in pool.map(_run_rollout, rollout_args):
+                rollouts[idx] = rollout
 
         return RolloutGroup(
             prompt=prompt,
@@ -179,6 +201,7 @@ class RolloutGenerator:
         rollout_id: int = 0,
         qa_idx: int = 0,
         nuggets: Optional[List[str]] = None,
+        temperature: Optional[float] = None,
     ) -> Rollout:
         """Generate a single reasoning rollout for a prompt.
 
@@ -193,6 +216,7 @@ class RolloutGenerator:
         -------
         Rollout
         """
+        self._tls.temperature = temperature
         steps: List[Dict[str, Any]] = []
         final_answer: Optional[str] = None
 
@@ -415,7 +439,11 @@ class RolloutGenerator:
                 "Respond with JSON only."
             )},
         ]
-        response = self.llm_fn(messages)
+        llm_kwargs = {}
+        _temp = getattr(self._tls, 'temperature', None)
+        if _temp is not None:
+            llm_kwargs['temperature'] = _temp
+        response = self.llm_fn(messages, **llm_kwargs)
         content = response.get("content", "") if isinstance(response, dict) else str(response)
 
         # Parse JSON response
@@ -479,7 +507,11 @@ class RolloutGenerator:
             ]
             # Use a larger token budget so thinking models have room
             # for <think> tags AND a complete answer.
-            response = self.llm_fn(messages, max_new_tokens=512)
+            llm_kwargs = {"max_new_tokens": 512}
+            _temp = getattr(self._tls, 'temperature', None)
+            if _temp is not None:
+                llm_kwargs['temperature'] = _temp
+            response = self.llm_fn(messages, **llm_kwargs)
             content = response.get("content", "") if isinstance(response, dict) else str(response)
             if content.strip():
                 return content.strip()
@@ -720,15 +752,26 @@ class RolloutGenerator:
         Called once per question in ``generate_group()`` and reused across
         all rollouts for that question.
         """
+        # Short answers (< 10 words) are already atomic — skip LLM call
+        if len(reference.split()) < 10:
+            return [reference]
+
         messages = [
             {"role": "system", "content": (
                 "Decompose the reference answer into a list of atomic, "
                 "independently verifiable facts (nuggets). Each nugget should "
                 "be a single specific claim that can be judged as supported or "
                 "not supported by a candidate answer.\n\n"
+                "CRITICAL RULES:\n"
+                "- ONLY decompose facts stated IN THE ANSWER TEXT itself\n"
+                "- Do NOT include facts from the question — the question is "
+                "provided only for context\n"
+                "- Each nugget must be something the ANSWER explicitly states\n"
+                "- If the answer is a short entity name or phrase, return it "
+                "as a single nugget\n\n"
                 "Return ONLY a Python list of strings, one per fact. "
                 "Do not include any explanation.\n\n"
-                "Example:\n"
+                "Example 1 (long answer):\n"
                 'Question: "When and where was the first heart transplant?"\n'
                 'Answer: "The first successful human heart transplant was '
                 'performed by Christiaan Barnard on December 3, 1967, at '
@@ -737,7 +780,12 @@ class RolloutGenerator:
                 '["Christiaan Barnard performed the first heart transplant", '
                 '"The transplant occurred on December 3, 1967", '
                 '"It took place at Groote Schuur Hospital", '
-                '"The hospital is in Cape Town, South Africa"]'
+                '"The hospital is in Cape Town, South Africa"]\n\n'
+                "Example 2 (short answer):\n"
+                'Question: "Who wrote Romeo and Juliet?"\n'
+                'Answer: "William Shakespeare"\n'
+                "Nuggets:\n"
+                '["William Shakespeare"]'
             )},
             {"role": "user", "content": (
                 f"Question: {question}\n"
@@ -834,8 +882,15 @@ class RolloutGenerator:
         try:
             response = self.llm_fn(messages, max_new_tokens=1024)
             content = response.get("content", "") if isinstance(response, dict) else str(response)
+            # Strip thinking / reasoning tags from various models
             content = _re.sub(r'<think>.*?</think>\s*', '', content, flags=_re.DOTALL)
-            content = _re.sub(r'<think>.*', '', content, flags=_re.DOTALL).strip()
+            content = _re.sub(r'<think>.*', '', content, flags=_re.DOTALL)
+            content = _re.sub(r'</?(arg_value|think)>', '', content).strip()
+
+            # If content is empty (e.g. GLM reasoning_content not captured),
+            # fall back to heuristic immediately
+            if not content.strip():
+                return _heuristic_evaluate(predicted, reference)
 
             # Parse the label list
             match = _re.search(r'\[.*\]', content, _re.DOTALL)

@@ -7,4 +7,5 @@ dist/
 build/
 *.egg
 .konash/
+.env
 stage2_training_data.json
