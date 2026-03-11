@@ -157,8 +157,8 @@ def cmd_setup(args: argparse.Namespace) -> None:
         console.print("    [bold]To get your free API key:[/]")
         console.print("    1. Go to Together AI → Settings → API Keys")
         console.print("    2. Sign up or log in")
-        console.print("    3. Click [bold]Create API Key[/]")
-        console.print("    4. Copy the key")
+        console.print("    3. Copy your [bold]User API Key[/]")
+        console.print("    [dim]   (Not the Legacy API Key — use the User key at the top)[/]")
         console.print()
 
         if Confirm.ask("    Open Together AI in your browser?", default=True):
