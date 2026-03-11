@@ -779,8 +779,12 @@ def cmd_train(args: argparse.Namespace) -> None:
     console.print()
 
     if next_idx == 0:
-        # Interactive ask loop
-        console.print("    [dim]Type a question and press Enter. Ctrl+C to exit.[/]")
+        # Interactive ask loop — use VGS if value model was trained
+        has_vgs = agent._value_model is not None
+        if has_vgs:
+            console.print("    [dim]Using Value-Guided Search. Type a question, Ctrl+C to exit.[/]")
+        else:
+            console.print("    [dim]Type a question and press Enter. Ctrl+C to exit.[/]")
         console.print()
         while True:
             try:
@@ -790,8 +794,13 @@ def cmd_train(args: argparse.Namespace) -> None:
                 break
             if not question.strip():
                 continue
-            with console.status("[cyan]Thinking...", spinner="dots"):
-                answer = agent.solve(question, parallel_rollouts=1)
+            spinner_label = "[cyan]Searching (VGS)..." if has_vgs else "[cyan]Thinking..."
+            with console.status(spinner_label, spinner="dots"):
+                answer = agent.solve(
+                    question,
+                    parallel_rollouts=3 if has_vgs else 1,
+                    use_vgs=True if has_vgs else None,
+                )
             console.print(f"    [bold]A[/]  {answer}")
             console.print()
     else:
@@ -827,11 +836,31 @@ def cmd_ask(args: argparse.Namespace) -> None:
         hf_token=_get_hf_token(),
     )
 
-    with console.status("[cyan]Thinking...", spinner="dots"):
+    # Try loading value model from checkpoint
+    _use_vgs = args.vgs
+    if _use_vgs:
+        import json as _json
+        vm_path = os.path.join(".konash", args.project, "checkpoints", "value_model.json")
+        if os.path.exists(vm_path):
+            from konash.inference.value_model import ValueModel
+            with open(vm_path) as f:
+                vm_data = _json.load(f)
+            agent._value_model = ValueModel(
+                weights=vm_data["weights"],
+                bias=vm_data["bias"],
+                feature_dim=vm_data["feature_dim"],
+            )
+        else:
+            console.print("[yellow]No value model found — falling back to standard inference.[/]")
+            _use_vgs = False
+
+    spinner_label = "[cyan]Searching (VGS)..." if _use_vgs else "[cyan]Thinking..."
+    with console.status(spinner_label, spinner="dots"):
         answer = agent.solve(
             args.query,
-            parallel_rollouts=args.parallel,
+            parallel_rollouts=args.parallel if args.parallel > 1 else (3 if _use_vgs else 1),
             top_k=args.top_k,
+            use_vgs=True if _use_vgs else None,
         )
 
     console.print()
@@ -1042,6 +1071,10 @@ def main(argv: list[str] | None = None) -> None:
         "--top-k", type=int, default=10, help="Documents per search."
     )
     p_ask.add_argument("--api-key", default=None, help="Together AI key.")
+    p_ask.add_argument(
+        "--vgs", action="store_true", default=False,
+        help="Use Value-Guided Search (requires trained value model).",
+    )
     p_ask.set_defaults(func=cmd_ask)
 
     # --- search ---
