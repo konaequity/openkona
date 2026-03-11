@@ -350,23 +350,18 @@ def download_freshstack(
 
     os.makedirs(docs_dir, exist_ok=True)
 
-    # FreshStack has multiple domain subsets
-    domains = ["biology", "earth_science", "economics", "psychology", "robotics"]
+    # FreshStack Oct 2024: 5 software/ML domains
+    domains = ["angular", "godot", "langchain", "laravel", "yolo"]
     doc_count = 0
     eval_questions: List[Dict] = []
 
     for domain in domains:
         _print(console, f"    Downloading {domain}...")
         try:
-            ds = load_dataset("freshstack", domain, split="corpus")
+            ds = load_dataset("freshstack/corpus-oct-2024", domain, split="train")
         except Exception:
-            try:
-                ds = load_dataset(
-                    "castorini/freshstack", domain, split="corpus",
-                )
-            except Exception:
-                _print(console, f"    [dim]Skipped {domain} (not available)[/]")
-                continue
+            _print(console, f"    [dim]Skipped {domain} (not available)[/]")
+            continue
 
         _print(console, f"    {domain}: {len(ds)} documents")
 
@@ -387,7 +382,9 @@ def download_freshstack(
 
         # Try to get queries for eval
         try:
-            qs = load_dataset("freshstack", domain, split="queries")
+            qs = load_dataset(
+                "freshstack/queries-oct-2024-unfiltered", domain, split="train",
+            )
             for rec in qs:
                 if len(eval_questions) < 20:
                     eval_questions.append({
