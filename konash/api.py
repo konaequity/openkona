@@ -245,11 +245,11 @@ class Agent:
         self.api_base = api_base or os.environ.get("KONASH_API_BASE")
         self.api_key = api_key or os.environ.get("KONASH_API_KEY", "no-key")
 
-        # Corpus — use Together AI embeddings API
+        # Corpus — use Qwen3-Embedding-0.6B locally (KARL paper default)
         if isinstance(corpus, Corpus):
             self.corpus = corpus
         else:
-            embed_fn = self._make_together_embed_fn()
+            embed_fn = self._make_local_embed_fn()
             self.corpus = Corpus(corpus, chunk_size=chunk_size, embed_fn=embed_fn)
 
         # Inference API (split mode: fast API for inference, local model for training)
@@ -901,37 +901,27 @@ class Agent:
             )
         return self._llm_client
 
-    def _make_together_embed_fn(self):
-        """Return an embed_fn that calls Together AI's embeddings API."""
-        import urllib.request
+    def _make_local_embed_fn(self):
+        """Return an embed_fn using Qwen3-Embedding-0.6B locally."""
+        try:
+            from sentence_transformers import SentenceTransformer
+            model = SentenceTransformer(
+                "Qwen/Qwen3-Embedding-0.6B",
+                device="cpu",
+                trust_remote_code=True,
+            )
 
-        api_base = (self.api_base or "https://api.together.xyz/v1").rstrip("/")
-        api_key = self.api_key
-        model = "intfloat/multilingual-e5-large-instruct"
-        batch_size = 128  # Together AI max per request
-
-        def embed_fn(texts):
-            import numpy as _np
-            all_embeddings = []
-            for i in range(0, len(texts), batch_size):
-                batch = texts[i : i + batch_size]
-                payload = json.dumps({"model": model, "input": batch})
-                req = urllib.request.Request(
-                    f"{api_base}/embeddings",
-                    data=payload.encode("utf-8"),
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                        "User-Agent": "konash",
-                    },
+            def embed_fn(texts):
+                return model.encode(
+                    texts,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                    batch_size=64,
                 )
-                with urllib.request.urlopen(req, timeout=120) as resp:
-                    result = json.loads(resp.read())
-                for item in sorted(result["data"], key=lambda x: x["index"]):
-                    all_embeddings.append(item["embedding"])
-            return _np.array(all_embeddings, dtype=_np.float32)
 
-        return embed_fn
+            return embed_fn
+        except ImportError:
+            return None  # Corpus falls back to trigram hash
 
     def _get_generate_fn(self):
         """Return a callable that generates text from messages.

@@ -9,12 +9,22 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-try:
-    import faiss
+faiss = None
+_FAISS_AVAILABLE = False
 
-    _FAISS_AVAILABLE = True
-except ImportError:
-    _FAISS_AVAILABLE = False
+
+def _ensure_faiss():
+    """Lazy-load faiss to avoid conflicts with embedding models."""
+    global faiss, _FAISS_AVAILABLE
+    if _FAISS_AVAILABLE:
+        return True
+    try:
+        import faiss as _faiss
+        faiss = _faiss
+        _FAISS_AVAILABLE = True
+        return True
+    except ImportError:
+        return False
 
 logger = logging.getLogger(__name__)
 
@@ -248,11 +258,11 @@ class VectorSearchTool:
             self.embed_fn = None
         self.cache_dir = cache_dir
 
-        # FAISS or numpy backend
+        # FAISS or numpy backend (lazy-loaded to avoid conflicts)
         if use_faiss is None:
-            self._use_faiss = _FAISS_AVAILABLE
+            self._use_faiss = _ensure_faiss()
         else:
-            if use_faiss and not _FAISS_AVAILABLE:
+            if use_faiss and not _ensure_faiss():
                 raise ImportError(
                     "use_faiss=True but faiss is not installed. "
                     "Install with: pip install faiss-cpu"
