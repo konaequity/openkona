@@ -207,11 +207,11 @@ def resolve_embedding_model_name(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 def load_gemini_embedding_model(
-    model_name: str = "gemini-embedding-001",
+    model_name: str = "gemini-embedding-2-preview",
     api_key: Optional[str] = None,
     output_dimensionality: int = 768,
     batch_size: int = 100,
-    max_workers: int = 20,
+    max_workers: int = 5,
 ) -> Callable[[List[str]], np.ndarray]:
     """Load a Gemini embedding model and return a callable.
 
@@ -243,8 +243,18 @@ def load_gemini_embedding_model(
 
     key = api_key or os.environ.get("GOOGLE_API_KEY")
     if not key:
+        # Check ~/.konash/config.json (set by `konash setup`)
+        config_path = os.path.expanduser("~/.konash/config.json")
+        if os.path.exists(config_path):
+            import json as _json
+            try:
+                with open(config_path) as f:
+                    key = _json.load(f).get("google_api_key")
+            except Exception:
+                pass
+    if not key:
         raise ValueError(
-            "No Google API key found. Set GOOGLE_API_KEY env var or pass api_key=."
+            "No Google API key found. Run `konash setup` or set GOOGLE_API_KEY env var."
         )
 
     client = genai.Client(api_key=key)
@@ -254,7 +264,7 @@ def load_gemini_embedding_model(
         resolved, output_dimensionality, batch_size, max_workers,
     )
 
-    def _embed_batch(batch: List[str]) -> np.ndarray:
+    def _embed_batch(batch: List[str], task_type: str = "RETRIEVAL_DOCUMENT") -> np.ndarray:
         import time as _time
 
         for attempt in range(8):
@@ -263,7 +273,7 @@ def load_gemini_embedding_model(
                     model=resolved,
                     contents=batch,
                     config=types.EmbedContentConfig(
-                        task_type="RETRIEVAL_DOCUMENT",
+                        task_type=task_type,
                         output_dimensionality=output_dimensionality,
                     ),
                 )
@@ -284,33 +294,40 @@ def load_gemini_embedding_model(
                 else:
                     raise
 
-    def embed_fn(texts: List[str]) -> np.ndarray:
+    def _run_parallel(texts: List[str], task_type: str) -> np.ndarray:
         import time as _time
 
-        # Split into batches
         batches = [
             (i, texts[i : i + batch_size])
             for i in range(0, len(texts), batch_size)
         ]
 
         if len(batches) == 1:
-            return _embed_batch(batches[0][1])
+            return _embed_batch(batches[0][1], task_type)
 
-        # Parallel API calls with rate-limit-aware concurrency
         results: Dict[int, np.ndarray] = {}
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {}
             for idx, batch in batches:
-                futures[pool.submit(_embed_batch, batch)] = idx
-                # Small stagger to avoid burst-hitting the rate limit
+                futures[pool.submit(_embed_batch, batch, task_type)] = idx
                 _time.sleep(0.05)
             for future in as_completed(futures):
                 idx = futures[future]
                 results[idx] = future.result()
 
-        # Reassemble in original order
         ordered = [results[i] for i, _ in batches]
         return np.vstack(ordered)
+
+    def embed_fn(texts: List[str]) -> np.ndarray:
+        """Embed documents (for indexing)."""
+        return _run_parallel(texts, "RETRIEVAL_DOCUMENT")
+
+    def query_fn(texts: List[str]) -> np.ndarray:
+        """Embed queries (for searching)."""
+        return _run_parallel(texts, "RETRIEVAL_QUERY")
+
+    # Attach query_fn so VectorSearchTool can use it
+    embed_fn.query_fn = query_fn  # type: ignore[attr-defined]
 
     return embed_fn
 
@@ -750,13 +767,20 @@ class VectorSearchTool:
     # -- internal helpers -----------------------------------------------------
 
     def _encode_query(self, query: Union[str, np.ndarray]) -> np.ndarray:
-        """Convert a query to a normalised 1-D embedding vector."""
+        """Convert a query to a normalised 1-D embedding vector.
+
+        Uses ``embed_fn.query_fn`` (RETRIEVAL_QUERY task type) when available
+        for better search quality with Gemini embeddings.
+        """
         if isinstance(query, str):
             if self.embed_fn is None:
                 raise ValueError(
                     "Cannot search with a text query without an embed_fn."
                 )
-            vec = np.array(self.embed_fn([query]), dtype=np.float32).flatten()
+            # Prefer query-optimized embedding when available (Gemini)
+            qfn = getattr(self.embed_fn, "query_fn", None)
+            fn = qfn if qfn is not None else self.embed_fn
+            vec = np.array(fn([query]), dtype=np.float32).flatten()
         else:
             vec = np.array(query, dtype=np.float32).flatten()
 

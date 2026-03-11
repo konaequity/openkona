@@ -928,7 +928,7 @@ class Agent:
         """Return an embed_fn using Gemini Embedding API."""
         from konash.retrieval.vector_search import load_gemini_embedding_model
         return load_gemini_embedding_model(
-            model_name="gemini-embedding-001",
+            model_name="gemini-embedding-2-preview",
             output_dimensionality=768,
         )
 

@@ -83,10 +83,12 @@ def _arrow_select(console: Console, options: list[dict]) -> int:
     return selected
 
 from konash.auth import (
+    GOOGLE_AI_KEYS_PAGE,
     TOGETHER_KEYS_PAGE,
     HF_TOKENS_PAGE,
     detect_hf_token,
     hf_device_flow,
+    validate_google_key,
     validate_hf_token,
     validate_together_key,
 )
@@ -231,6 +233,10 @@ def _get_together_key() -> str | None:
     return _get_key(["TOGETHER_API_KEY"], "together_api_key")
 
 
+def _get_google_key() -> str | None:
+    return _get_key(["GOOGLE_API_KEY"], "google_api_key")
+
+
 def _get_hf_token() -> str | None:
     token = _get_key(["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"], "hf_token")
     if token:
@@ -291,6 +297,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
     console.rule(style="dim")
     console.print()
     console.print("    [dim]Together AI[/]  — runs the model  (free tier)")
+    console.print("    [dim]Google AI[/]    — corpus embeddings  (free tier)")
     console.print("    [dim]HuggingFace[/]  — stores trained models  (free)")
     console.print()
 
@@ -339,9 +346,53 @@ def cmd_setup(args: argparse.Namespace) -> None:
     else:
         config["together_api_key"] = together_key
 
-    # ── 2 · HuggingFace ──────────────────────────────────────────────
+    # ── 2 · Google AI (Gemini Embeddings) ──────────────────────────────
     console.print()
-    console.rule("[bold]2[/]  HuggingFace", style="dim")
+    console.rule("[bold]2[/]  Google AI", style="dim")
+    console.print()
+
+    google_key = _get_google_key()
+
+    if google_key:
+        console.print(f"    Key found: [dim]{_mask(google_key)}[/]")
+        with console.status("    Validating...", spinner="dots"):
+            valid = validate_google_key(google_key)
+        if valid:
+            console.print("    [green]✓[/]  Valid")
+            if not Confirm.ask("    Keep this key?", default=True):
+                google_key = None
+        else:
+            console.print("    [red]✗[/]  Key no longer works")
+            google_key = None
+
+    if not google_key:
+        console.print("    Get a free API key from Google AI Studio:")
+        console.print("    [dim]Click 'Create API key' → copy[/]")
+        console.print()
+
+        if Confirm.ask("    Open aistudio.google.com?", default=True):
+            webbrowser.open(GOOGLE_AI_KEYS_PAGE)
+
+        console.print()
+        google_key = Prompt.ask("    Paste your Google API key", password=True)
+
+        if google_key:
+            with console.status("    Validating...", spinner="dots"):
+                valid = validate_google_key(google_key)
+            if valid:
+                console.print("    [green]✓[/]  Valid")
+                config["google_api_key"] = google_key
+            else:
+                console.print("    [red]✗[/]  Invalid — check and try again")
+                return
+        else:
+            console.print("    [dim]Skipped. Set GOOGLE_API_KEY later.[/]")
+    else:
+        config["google_api_key"] = google_key
+
+    # ── 3 · HuggingFace ──────────────────────────────────────────────
+    console.print()
+    console.rule("[bold]3[/]  HuggingFace", style="dim")
     console.print()
 
     hf_token = _get_hf_token()
@@ -394,6 +445,13 @@ def cmd_setup(args: argparse.Namespace) -> None:
         )
     else:
         console.print("    [red]✗[/]  Together AI    not set")
+
+    if config.get("google_api_key"):
+        console.print(
+            f"    [green]✓[/]  Google AI      {_mask(config['google_api_key'])}"
+        )
+    else:
+        console.print("    [red]✗[/]  Google AI      not set")
 
     if config.get("hf_token"):
         console.print(
@@ -460,6 +518,7 @@ def _download_dataset(key: str) -> str:
 def cmd_setup_check() -> None:
     """Non-interactive validation of all keys."""
     together_key = _get_together_key()
+    google_key = _get_google_key()
     hf_token = _get_hf_token()
     all_ok = True
 
@@ -475,6 +534,18 @@ def cmd_setup_check() -> None:
             all_ok = False
     else:
         console.print("[red]✗[/] Together AI key not found")
+        all_ok = False
+
+    if google_key:
+        with console.status("[cyan]Checking Google AI...", spinner="dots"):
+            valid = validate_google_key(google_key)
+        if valid:
+            console.print("[green]✓[/] Google AI key valid")
+        else:
+            console.print("[red]✗[/] Google AI key invalid")
+            all_ok = False
+    else:
+        console.print("[red]✗[/] Google AI key not found")
         all_ok = False
 
     if hf_token:
@@ -808,6 +879,13 @@ def cmd_status(args: argparse.Namespace) -> None:
         console.print(f"    [green]✓[/]  Together AI    {_mask(together_key)}")
     else:
         console.print("    [red]✗[/]  Together AI    not set")
+
+    # Google AI key
+    google_key = _get_google_key()
+    if google_key:
+        console.print(f"    [green]✓[/]  Google AI      {_mask(google_key)}")
+    else:
+        console.print("    [red]✗[/]  Google AI      not set")
 
     # HF token
     hf_token = _get_hf_token()

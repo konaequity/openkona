@@ -41,6 +41,11 @@ _HF_TOKEN_PATHS = [
 TOGETHER_KEYS_PAGE = "https://api.together.xyz/settings/api-keys"
 HF_TOKENS_PAGE = "https://huggingface.co/settings/tokens"
 
+# ---------------------------------------------------------------------------
+# Google AI (Gemini Embeddings)
+# ---------------------------------------------------------------------------
+GOOGLE_AI_KEYS_PAGE = "https://aistudio.google.com/app/apikey"
+
 
 def detect_hf_token() -> Optional[str]:
     """Check well-known locations for an existing HuggingFace token."""
@@ -78,6 +83,24 @@ def validate_together_key(key: str) -> bool:
                 "Content-Type": "application/json",
                 "User-Agent": "konash",
             },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def validate_google_key(key: str) -> bool:
+    """Validate a Google API key with a minimal Gemini embedding call."""
+    try:
+        payload = json.dumps({
+            "model": "models/gemini-embedding-2-preview",
+            "content": {"parts": [{"text": "test"}]},
+        })
+        req = urllib.request.Request(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2-preview:embedContent?key={key}",
+            data=payload.encode("utf-8"),
+            headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.status == 200
