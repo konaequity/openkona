@@ -245,11 +245,11 @@ class Agent:
         self.api_base = api_base or os.environ.get("KONASH_API_BASE")
         self.api_key = api_key or os.environ.get("KONASH_API_KEY", "no-key")
 
-        # Corpus — use Qwen3-Embedding-8B via HuggingFace Inference API
+        # Corpus — use Together AI embeddings API
         if isinstance(corpus, Corpus):
             self.corpus = corpus
         else:
-            embed_fn = self._make_hf_embed_fn()
+            embed_fn = self._make_together_embed_fn()
             self.corpus = Corpus(corpus, chunk_size=chunk_size, embed_fn=embed_fn)
 
         # Inference API (split mode: fast API for inference, local model for training)
@@ -901,25 +901,34 @@ class Agent:
             )
         return self._llm_client
 
-    def _make_hf_embed_fn(self):
-        """Return an embed_fn that calls HuggingFace Inference API with Qwen3-Embedding."""
-        from huggingface_hub import InferenceClient
+    def _make_together_embed_fn(self):
+        """Return an embed_fn that calls Together AI's embeddings API."""
+        import urllib.request
 
-        hf_token = self._hf_token or os.environ.get("HF_TOKEN")
-        client = InferenceClient(api_key=hf_token)
-        model = "Qwen/Qwen3-Embedding-8B"
-        batch_size = 32
+        api_base = (self.api_base or "https://api.together.xyz/v1").rstrip("/")
+        api_key = self.api_key
+        model = "intfloat/multilingual-e5-large-instruct"
+        batch_size = 128  # Together AI max per request
 
         def embed_fn(texts):
             import numpy as _np
             all_embeddings = []
             for i in range(0, len(texts), batch_size):
                 batch = texts[i : i + batch_size]
-                for text in batch:
-                    result = client.feature_extraction(text, model=model)
-                    arr = _np.array(result, dtype=_np.float32)
-                    # Flatten if needed (can be (1, dim) or (dim,))
-                    all_embeddings.append(arr.flatten())
+                payload = json.dumps({"model": model, "input": batch})
+                req = urllib.request.Request(
+                    f"{api_base}/embeddings",
+                    data=payload.encode("utf-8"),
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "User-Agent": "konash",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    result = json.loads(resp.read())
+                for item in sorted(result["data"], key=lambda x: x["index"]):
+                    all_embeddings.append(item["embedding"])
             return _np.array(all_embeddings, dtype=_np.float32)
 
         return embed_fn
