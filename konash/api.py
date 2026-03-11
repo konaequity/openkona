@@ -40,6 +40,13 @@ MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
         "description": "GLM 4.5 Air (106B MoE, 12B active) on Together AI",
         "pricing": {"input_per_m": 0.20, "output_per_m": 1.10},
     },
+    "glm-4.5-air-unsloth": {
+        "base_model": "unsloth/GLM-4.5-Air",
+        "use_unsloth": True,
+        "load_in_fp8": True,
+        "temperature": 0.7,
+        "description": "GLM 4.5 Air via Unsloth (local OAPL training, FP8)",
+    },
     "glm-4.5-air-zhipu": {
         "base_model": "glm-4.5-air",
         "api_base": "https://api.z.ai/api/paas/v4",
@@ -220,6 +227,8 @@ class Agent:
         lora_alpha: int = 32,
         load_in_4bit: bool = False,
         load_in_8bit: bool = False,
+        load_in_fp8: bool = False,
+        use_unsloth: bool = False,
         gradient_checkpointing: bool = False,
         device: str = "auto",
         dtype: str = "auto",
@@ -227,6 +236,8 @@ class Agent:
         self.base_model = base_model
         self.project = project
         self.temperature = temperature
+        self._use_unsloth = use_unsloth
+        self._load_in_fp8 = load_in_fp8
 
         # Corpus
         if isinstance(corpus, Corpus):
@@ -297,10 +308,15 @@ class Agent:
         cfg = MODEL_PRESETS[preset]
         defaults: Dict[str, Any] = {
             "base_model": cfg["base_model"],
-            "api_base": cfg["api_base"],
         }
+        if cfg.get("api_base"):
+            defaults["api_base"] = cfg["api_base"]
         if cfg.get("temperature") is not None:
             defaults["temperature"] = cfg["temperature"]
+        if cfg.get("use_unsloth"):
+            defaults["use_unsloth"] = True
+        if cfg.get("load_in_fp8"):
+            defaults["load_in_fp8"] = True
 
         # Resolve API key from env if not explicitly provided
         if "api_key" not in kwargs:
@@ -756,28 +772,48 @@ class Agent:
     # ------------------------------------------------------------------
 
     def _get_model_engine(self) -> Any:
-        """Load the model locally with LoRA. Returns a LocalModelEngine."""
+        """Load the model locally with LoRA.
+
+        Returns an ``UnslothEngine`` if ``use_unsloth=True``, otherwise
+        a ``LocalModelEngine``.
+        """
         if self._model_engine is not None:
             return self._model_engine
 
-        from konash.inference.local import LocalModelEngine
-
-        # Check for existing adapter
         adapter_path = os.path.join(self.checkpoint_dir, "adapter")
         has_adapter = os.path.exists(adapter_path)
 
-        self._model_engine = LocalModelEngine(
-            self.base_model,
-            device=self._device,
-            dtype=self._dtype,
-            lora_r=self._lora_r,
-            lora_alpha=self._lora_alpha,
-            load_in_4bit=self._load_in_4bit,
-            load_in_8bit=self._load_in_8bit,
-            gradient_checkpointing=self._gradient_checkpointing,
-            temperature=self.temperature,
-            adapter_path=adapter_path if has_adapter else None,
-        )
+        if self._use_unsloth:
+            from konash.training.unsloth_engine import UnslothEngine
+
+            self._model_engine = UnslothEngine(
+                self.base_model,
+                lora_r=self._lora_r,
+                lora_alpha=self._lora_alpha,
+                load_in_fp8=self._load_in_fp8,
+                temperature=self.temperature,
+            )
+            # Load existing adapter if resuming
+            if has_adapter:
+                from peft import PeftModel
+                self._model_engine.model = PeftModel.from_pretrained(
+                    self._model_engine.model, adapter_path, is_trainable=True,
+                )
+        else:
+            from konash.inference.local import LocalModelEngine
+
+            self._model_engine = LocalModelEngine(
+                self.base_model,
+                device=self._device,
+                dtype=self._dtype,
+                lora_r=self._lora_r,
+                lora_alpha=self._lora_alpha,
+                load_in_4bit=self._load_in_4bit,
+                load_in_8bit=self._load_in_8bit,
+                gradient_checkpointing=self._gradient_checkpointing,
+                temperature=self.temperature,
+                adapter_path=adapter_path if has_adapter else None,
+            )
         return self._model_engine
 
     def _get_inference_client(self) -> _OpenAILLMClient:

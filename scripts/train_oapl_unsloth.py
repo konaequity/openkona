@@ -1,0 +1,566 @@
+#!/usr/bin/env python3
+"""OAPL training with Unsloth on GLM 4.5 Air.
+
+Designed for Together AI GPU clusters (2× H100 SXM, 160 GB total VRAM).
+
+Usage:
+    # From pre-generated rollouts (Stage 3 output):
+    python scripts/train_oapl_unsloth.py \
+        --rollouts glm_test_results/stage3_results.json \
+        --output ./checkpoints/iter1
+
+    # Full pipeline (synthesis → rollouts → OAPL, iterative):
+    python scripts/train_oapl_unsloth.py \
+        --corpus ./my_docs \
+        --iterations 2 \
+        --output ./checkpoints
+
+    # Resume from checkpoint:
+    python scripts/train_oapl_unsloth.py \
+        --rollouts glm_test_results/stage3_results.json \
+        --adapter ./checkpoints/iter1/adapter \
+        --output ./checkpoints/iter2
+
+Environment:
+    TOGETHER_API_KEY    — Together AI key (for rollout generation via API)
+    UNSLOTH_VLLM_STANDBY=1  — Enable vLLM weight sharing (saves ~9 GB)
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+
+# Enable vLLM standby before any imports
+os.environ.setdefault("UNSLOTH_VLLM_STANDBY", "1")
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="OAPL training with Unsloth")
+
+    # Data source (pick one)
+    p.add_argument("--rollouts", type=str, default=None,
+                    help="Path to stage3_results.json (pre-generated rollouts)")
+    p.add_argument("--corpus", type=str, default=None,
+                    help="Path to corpus directory (for full pipeline)")
+
+    # Model
+    p.add_argument("--model", type=str, default="unsloth/GLM-4.5-Air",
+                    help="Unsloth model ID")
+    p.add_argument("--adapter", type=str, default=None,
+                    help="Path to existing LoRA adapter (for resuming)")
+    p.add_argument("--fp8", action="store_true", default=True,
+                    help="Load model in FP8 (default: True for H100)")
+    p.add_argument("--no-fp8", action="store_true",
+                    help="Disable FP8, use BF16 instead")
+
+    # LoRA
+    p.add_argument("--lora-r", type=int, default=16, help="LoRA rank")
+    p.add_argument("--lora-alpha", type=int, default=None,
+                    help="LoRA alpha (default: 2 * lora_r)")
+
+    # OAPL hyperparams
+    p.add_argument("--lr", type=float, default=1e-6, help="Learning rate")
+    p.add_argument("--beta-kl", type=float, default=0.001,
+                    help="KL regularization coefficient")
+    p.add_argument("--beta-value", type=float, default=1.0,
+                    help="Temperature for V* estimation")
+    p.add_argument("--max-grad-norm", type=float, default=1.0,
+                    help="Max gradient norm for clipping")
+    p.add_argument("--epochs", type=int, default=1,
+                    help="Training epochs per iteration")
+
+    # Pipeline (full mode only)
+    p.add_argument("--iterations", type=int, default=2,
+                    help="Number of synthesis→train iterations")
+    p.add_argument("--rollouts-per-example", type=int, default=8,
+                    help="Rollouts per QA pair")
+    p.add_argument("--max-examples", type=int, default=None,
+                    help="Cap on training examples per iteration")
+    p.add_argument("--max-seq-length", type=int, default=2048,
+                    help="Max sequence length")
+
+    # Output
+    p.add_argument("--output", type=str, default="./checkpoints",
+                    help="Output directory for checkpoints")
+
+    # Export
+    p.add_argument("--push-to-hub", type=str, default=None,
+                    help="HuggingFace Hub repo to push adapter (e.g. your-name/konash-glm45-air-lora)")
+    p.add_argument("--merge-and-export", type=str, default=None,
+                    help="Path to save merged full model (base + LoRA)")
+    p.add_argument("--export-gguf", type=str, default=None,
+                    help="Export merged model as GGUF (e.g. q4_k_m, q8_0, f16)")
+    p.add_argument("--deploy-together", type=str, default=None,
+                    help="Deploy to Together AI endpoint (provide model name, e.g. konash-glm45-air-v1)")
+
+    return p.parse_args()
+
+
+def export_model(engine, args):
+    """Export trained model: push to Hub, merge LoRA, convert to GGUF, deploy to Together AI."""
+    hf_token = os.environ.get("HF_TOKEN")
+
+    if args.push_to_hub:
+        print(f"\n  Pushing adapter to HuggingFace Hub: {args.push_to_hub}")
+        engine.model.push_to_hub(args.push_to_hub, token=hf_token)
+        engine.tokenizer.push_to_hub(args.push_to_hub, token=hf_token)
+        print(f"  Pushed: https://huggingface.co/{args.push_to_hub}")
+
+    if args.merge_and_export:
+        print(f"\n  Merging LoRA into base model → {args.merge_and_export}")
+        engine.model.save_pretrained_merged(
+            args.merge_and_export,
+            engine.tokenizer,
+            save_method="merged_16bit",
+        )
+        print(f"  Merged model saved to {args.merge_and_export}")
+
+        # Optionally push merged model to Hub too
+        if args.push_to_hub:
+            merged_hub = args.push_to_hub + "-merged"
+            print(f"  Pushing merged model to Hub: {merged_hub}")
+            engine.model.push_to_hub_merged(
+                merged_hub,
+                engine.tokenizer,
+                save_method="merged_16bit",
+                token=hf_token,
+            )
+
+    if args.export_gguf:
+        quant = args.export_gguf
+        gguf_dir = os.path.join(args.output, f"gguf-{quant}")
+        print(f"\n  Exporting GGUF ({quant}) → {gguf_dir}")
+        engine.model.save_pretrained_gguf(
+            gguf_dir,
+            engine.tokenizer,
+            quantization_method=quant,
+        )
+        print(f"  GGUF saved to {gguf_dir}")
+
+        if args.push_to_hub:
+            gguf_hub = args.push_to_hub + "-GGUF"
+            print(f"  Pushing GGUF to Hub: {gguf_hub}")
+            engine.model.push_to_hub_gguf(
+                gguf_hub,
+                engine.tokenizer,
+                quantization_method=quant,
+                token=hf_token,
+            )
+
+    if args.deploy_together:
+        _deploy_to_together(engine, args)
+
+
+def _deploy_to_together(engine, args):
+    """Merge LoRA, push to HuggingFace, upload to Together AI, create endpoint."""
+    import subprocess
+
+    model_name = args.deploy_together
+    hf_token = os.environ.get("HF_TOKEN")
+    hf_repo = args.push_to_hub
+
+    # Step 1: Merge LoRA into base model and push to HF (required for Together upload)
+    if not hf_repo:
+        hf_repo = f"konash/{model_name}"
+        print(f"\n  No --push-to-hub specified, using: {hf_repo}")
+
+    merged_path = args.merge_and_export or os.path.join(args.output, "merged")
+
+    if not os.path.exists(merged_path):
+        print(f"\n  Merging LoRA into base model → {merged_path}")
+        engine.model.save_pretrained_merged(
+            merged_path,
+            engine.tokenizer,
+            save_method="merged_16bit",
+        )
+
+    print(f"  Pushing merged model to HuggingFace: {hf_repo}")
+    engine.model.push_to_hub_merged(
+        hf_repo,
+        engine.tokenizer,
+        save_method="merged_16bit",
+        token=hf_token,
+    )
+
+    # Step 2: Upload to Together AI from HuggingFace
+    print(f"\n  Uploading to Together AI: {model_name}")
+    upload_cmd = [
+        "together", "models", "upload",
+        "--model-name", model_name,
+        "--model-source", hf_repo,
+    ]
+    if hf_token:
+        upload_cmd.extend(["--hf-token", hf_token])
+
+    result = subprocess.run(upload_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  Upload failed: {result.stderr}")
+        print("  You can retry manually:")
+        print(f"    together models upload --model-name {model_name} --model-source {hf_repo}")
+        return
+
+    print(f"  Upload started: {result.stdout.strip()}")
+
+    # Step 3: Create dedicated endpoint
+    print(f"\n  Creating dedicated endpoint...")
+    endpoint_cmd = [
+        "together", "endpoints", "create",
+        "--display-name", f"{model_name}-endpoint",
+        "--model", model_name,
+        "--gpu", "h100",
+        "--gpu-count", "2",
+        "--no-speculative-decoding",
+    ]
+    result = subprocess.run(endpoint_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  Endpoint creation failed: {result.stderr}")
+        print("  Model uploaded — create endpoint manually:")
+        print(f"    together endpoints create --display-name {model_name} "
+              f"--model {model_name} --gpu h100 --gpu-count 2")
+        return
+
+    print(f"  Endpoint created: {result.stdout.strip()}")
+    print(f"\n  Your trained model is now available via Together AI API!")
+    print(f"  Use model name: {model_name}")
+
+
+def load_rollouts_from_stage3(path: str):
+    """Load pre-generated rollouts from stage3_results.json."""
+    from konash.training.dataset import OfflineRolloutDataset
+
+    with open(path) as f:
+        data = json.load(f)
+
+    # Stage 3 results: groups can be at data["rollouts"]["groups"],
+    # data["groups"], or data["rollout_groups"]
+    groups = data.get("groups", data.get("rollout_groups", []))
+    if not groups and isinstance(data.get("rollouts"), dict):
+        groups = data["rollouts"].get("groups", [])
+    if not groups:
+        print(f"  ERROR: No rollout groups found in {path}")
+        sys.exit(1)
+
+    # Filter to surviving groups (pass rate in [0.1, 0.9])
+    surviving = []
+    for g in groups:
+        rollouts = g.get("rollouts", [])
+        if not rollouts:
+            continue
+        pass_rate = sum(1 for r in rollouts if r.get("passed")) / len(rollouts)
+        if 0.1 <= pass_rate <= 0.9:
+            surviving.append(g)
+
+    if not surviving:
+        print("  WARNING: No groups survived pass-rate filter [0.1, 0.9].")
+        print("  Using all groups with mixed pass/fail instead.")
+        surviving = [
+            g for g in groups
+            if g.get("rollouts")
+            and 0 < sum(1 for r in g["rollouts"] if r.get("passed")) < len(g["rollouts"])
+        ]
+
+    print(f"  Loaded {len(groups)} groups, {len(surviving)} surviving")
+
+    rollout_dicts = []
+    for g in surviving:
+        prompt = g.get("question", g.get("prompt", ""))
+        for r in g.get("rollouts", []):
+            # Full step dicts if available, otherwise construct minimal
+            # steps from final_answer for tokenization
+            steps = r.get("steps", [])
+            if not steps and r.get("final_answer"):
+                steps = [{"type": "answer", "answer": r["final_answer"]}]
+            rollout_dicts.append({
+                "prompt": prompt,
+                "rollout": steps,
+                "reward": 1.0 if r.get("passed") else 0.0,
+            })
+
+    dataset = OfflineRolloutDataset.from_rollouts(rollout_dicts)
+    print(f"  Dataset: {len(dataset.prompts)} groups, {len(dataset)} rollouts")
+    return dataset
+
+
+def train_from_rollouts(args):
+    """Train OAPL from pre-generated rollouts."""
+    from konash.training.unsloth_engine import UnslothEngine
+    from konash.training.oapl import OAPLTrainer
+
+    print("=" * 60)
+    print("  KONASH OAPL Training (Unsloth)")
+    print("=" * 60)
+    print(f"  Model:     {args.model}")
+    print(f"  FP8:       {args.fp8 and not args.no_fp8}")
+    print(f"  LoRA r:    {args.lora_r}")
+    print(f"  LR:        {args.lr}")
+    print(f"  Beta KL:   {args.beta_kl}")
+    print(f"  Beta V:    {args.beta_value}")
+    print(f"  Rollouts:  {args.rollouts}")
+    print(f"  Output:    {args.output}")
+    print()
+
+    # Load data
+    print("Loading rollout data...")
+    dataset = load_rollouts_from_stage3(args.rollouts)
+
+    # Load model
+    print("\nLoading model via Unsloth...")
+    t0 = time.time()
+    engine = UnslothEngine(
+        model_name=args.model,
+        max_seq_length=args.max_seq_length,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        load_in_fp8=args.fp8 and not args.no_fp8,
+    )
+    print(f"  Model loaded in {time.time() - t0:.1f}s")
+
+    # If resuming from adapter, load it
+    if args.adapter and os.path.exists(args.adapter):
+        print(f"\n  Loading adapter from {args.adapter}")
+        from peft import PeftModel
+        engine.model = PeftModel.from_pretrained(
+            engine.model, args.adapter, is_trainable=True,
+        )
+
+    # Snapshot reference policy (pi_ref = current model before training)
+    engine.snapshot_reference()
+
+    # Create trainer
+    trainer = OAPLTrainer(
+        beta_kl=args.beta_kl,
+        beta_value=args.beta_value,
+    )
+
+    # Train
+    all_stats = []
+    for epoch in range(args.epochs):
+        print(f"\n{'='*60}")
+        print(f"  Epoch {epoch + 1}/{args.epochs}")
+        print(f"{'='*60}")
+
+        t0 = time.time()
+        stats = trainer.train_epoch_torch(
+            dataset=dataset,
+            model_engine=engine,
+            learning_rate=args.lr,
+            max_grad_norm=args.max_grad_norm,
+        )
+        elapsed = time.time() - t0
+
+        stats["epoch"] = epoch + 1
+        stats["wall_time_s"] = elapsed
+        all_stats.append(stats)
+
+        print(f"  Loss:       {stats['mean_loss']:.4f}")
+        print(f"  Groups:     {stats['num_groups']}")
+        print(f"  Rollouts:   {stats['num_rollouts']}")
+        print(f"  Segments:   {stats['num_segments']}")
+        print(f"  Masked:     {stats['masked_token_pct']:.1f}% tokens")
+        print(f"  Wall time:  {elapsed:.1f}s")
+
+    # Save checkpoint
+    os.makedirs(args.output, exist_ok=True)
+    adapter_path = os.path.join(args.output, "adapter")
+    engine.save_adapter(adapter_path)
+
+    meta = {
+        "model": args.model,
+        "lora_r": args.lora_r,
+        "lora_alpha": args.lora_alpha or args.lora_r * 2,
+        "beta_kl": args.beta_kl,
+        "beta_value": args.beta_value,
+        "learning_rate": args.lr,
+        "fp8": args.fp8 and not args.no_fp8,
+        "rollouts_source": args.rollouts,
+        "stats": all_stats,
+    }
+    meta_path = os.path.join(args.output, "training_meta.json")
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+
+    print(f"\n{'='*60}")
+    print(f"  Training complete!")
+    print(f"  Adapter: {adapter_path}")
+    print(f"  Meta:    {meta_path}")
+    print(f"{'='*60}")
+
+    # Export (push to Hub, merge, GGUF)
+    if args.push_to_hub or args.merge_and_export or args.export_gguf or args.deploy_together:
+        export_model(engine, args)
+
+    return all_stats
+
+
+def train_full_pipeline(args):
+    """Full iterative pipeline: synthesis → rollouts → OAPL → repeat."""
+    from konash.training.unsloth_engine import UnslothEngine
+    from konash.training.oapl import OAPLTrainer
+    from konash.training.dataset import OfflineRolloutDataset
+    from konash.corpus import Corpus
+    from konash.synthesis.pipeline import SynthesisPipeline
+    from konash.synthesis.qa import QuestionAnswerSynthesizer
+    from konash.synthesis.rollouts import RolloutGenerator
+
+    print("=" * 60)
+    print("  KONASH Full Pipeline (Unsloth + OAPL)")
+    print("=" * 60)
+    print(f"  Model:      {args.model}")
+    print(f"  Corpus:     {args.corpus}")
+    print(f"  Iterations: {args.iterations}")
+    print(f"  Output:     {args.output}")
+    print()
+
+    # Load model
+    print("Loading model via Unsloth...")
+    engine = UnslothEngine(
+        model_name=args.model,
+        max_seq_length=args.max_seq_length,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        load_in_fp8=args.fp8 and not args.no_fp8,
+    )
+
+    # Ingest corpus
+    print("Ingesting corpus...")
+    corpus = Corpus(args.corpus, chunk_size=512)
+    corpus.ingest()
+    print(f"  Indexed {corpus.num_documents} chunks")
+
+    # Build generate_fn from engine
+    def generate_fn(messages, **kwargs):
+        if "max_new_tokens" not in kwargs:
+            kwargs["max_new_tokens"] = kwargs.pop("max_tokens", 512)
+        return engine.generate(messages, **kwargs)
+
+    # Trainer
+    trainer = OAPLTrainer(beta_kl=args.beta_kl, beta_value=args.beta_value)
+
+    # Snapshot initial reference
+    engine.snapshot_reference()
+
+    all_iteration_stats = []
+
+    for iteration in range(args.iterations):
+        print(f"\n{'='*60}")
+        print(f"  Iteration {iteration + 1}/{args.iterations}")
+        print(f"{'='*60}")
+
+        # Stage 1: Synthesis
+        print("  Synthesizing QA pairs...")
+        synthesizer = QuestionAnswerSynthesizer(
+            vector_search_tool=corpus.vector_search,
+            llm_fn=generate_fn,
+        )
+        rollout_gen = RolloutGenerator(
+            search_tool=corpus.vector_search,
+            llm_fn=generate_fn,
+            max_steps=5,
+        )
+        pipeline = SynthesisPipeline(
+            synthesizer=synthesizer,
+            rollout_generator=rollout_gen,
+        )
+
+        examples = pipeline.run_stage_one(
+            documents=None,
+            num_examples=args.max_examples,
+        )
+        print(f"  Generated {len(examples)} QA pairs")
+
+        # Stage 2: Rollouts + filtering
+        print("  Generating rollouts...")
+        final_examples = pipeline.run_stage_two(
+            examples=examples,
+            num_rollouts=args.rollouts_per_example,
+        )
+        print(f"  {len(final_examples)} examples after filtering")
+
+        if not final_examples or not pipeline.filtered_groups:
+            print("  No training data — skipping.")
+            continue
+
+        # Build dataset
+        rollout_dicts = []
+        for group in pipeline.filtered_groups:
+            for rollout in group.rollouts:
+                rollout_dicts.append({
+                    "prompt": group.prompt,
+                    "rollout": rollout.steps,
+                    "reward": 1.0 if rollout.passed else 0.0,
+                })
+
+        dataset = OfflineRolloutDataset.from_rollouts(rollout_dicts)
+        print(f"  Training on {len(dataset.prompts)} groups, "
+              f"{len(dataset)} rollouts")
+
+        # Stage 3: OAPL training
+        print("  Training with OAPL...")
+        stats = trainer.train_epoch_torch(
+            dataset=dataset,
+            model_engine=engine,
+            learning_rate=args.lr,
+            max_grad_norm=args.max_grad_norm,
+        )
+        print(f"  Loss: {stats['mean_loss']:.4f}  "
+              f"Groups: {stats['num_groups']}  "
+              f"Rollouts: {stats['num_rollouts']}")
+
+        all_iteration_stats.append({
+            "iteration": iteration + 1,
+            "examples": len(final_examples),
+            **stats,
+        })
+
+        # Checkpoint
+        iter_dir = os.path.join(args.output, f"iter{iteration + 1}")
+        os.makedirs(iter_dir, exist_ok=True)
+        engine.save_adapter(os.path.join(iter_dir, "adapter"))
+
+        # Save rollouts for reproducibility
+        rollouts_path = os.path.join(iter_dir, "rollouts.json")
+        with open(rollouts_path, "w") as f:
+            json.dump(rollout_dicts, f, indent=2, default=str)
+
+        # Snapshot as new reference for next iteration
+        if iteration < args.iterations - 1:
+            engine.snapshot_reference()
+            print("  Snapshotted LoRA as pi_ref for next iteration")
+
+    # Save final meta
+    meta_path = os.path.join(args.output, "training_meta.json")
+    with open(meta_path, "w") as f:
+        json.dump({
+            "model": args.model,
+            "iterations": len(all_iteration_stats),
+            "stats": all_iteration_stats,
+        }, f, indent=2)
+
+    print(f"\n{'='*60}")
+    print(f"  Pipeline complete! {len(all_iteration_stats)} iterations")
+    print(f"  Checkpoints: {args.output}")
+    print(f"{'='*60}")
+
+    # Export (push to Hub, merge, GGUF)
+    if args.push_to_hub or args.merge_and_export or args.export_gguf or args.deploy_together:
+        export_model(engine, args)
+
+
+def main():
+    args = parse_args()
+
+    if args.rollouts:
+        train_from_rollouts(args)
+    elif args.corpus:
+        train_full_pipeline(args)
+    else:
+        print("ERROR: Provide either --rollouts (pre-generated) or --corpus (full pipeline)")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
