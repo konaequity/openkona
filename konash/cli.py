@@ -14,7 +14,7 @@ import webbrowser
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
 from rich.table import Table
 
 from konash.auth import (
@@ -98,7 +98,8 @@ def cmd_default() -> None:
     grid.add_column(style="bold cyan", min_width=36)
     grid.add_column(style="dim")
     grid.add_row("konash setup", "Set up API keys")
-    grid.add_row("konash train ./my_docs", "Train on your documents")
+    grid.add_row("konash download browsecomp-plus", "Download benchmark corpus")
+    grid.add_row("konash train", "Train (interactive wizard)")
     grid.add_row('konash ask --corpus ./docs "Q"', "Ask a question")
     grid.add_row("konash search --corpus ./docs Q", "Search documents")
     grid.add_row("konash status", "Check your setup")
@@ -314,6 +315,41 @@ def cmd_setup_check() -> None:
 
 
 # ---------------------------------------------------------------------------
+# konash download
+# ---------------------------------------------------------------------------
+
+def cmd_download(args: argparse.Namespace) -> None:
+    corpus_name = args.corpus_name.lower().replace("_", "-")
+
+    if corpus_name == "browsecomp-plus":
+        from konash.download import download_browsecomp_plus
+
+        console.print()
+        console.rule("[bold cyan]Downloading BrowseComp-Plus")
+        console.print()
+
+        with console.status(
+            "    [cyan]Downloading and decrypting...", spinner="dots"
+        ):
+            output_dir = download_browsecomp_plus(console=console)
+
+        console.print()
+        console.print(Panel(
+            f"Corpus saved to: [bold]{output_dir}[/]\n\n"
+            f"Train with:\n"
+            f"  [cyan]konash train {output_dir}/documents[/]",
+            title="[bold green]Download Complete",
+            border_style="green",
+            padding=(1, 2),
+        ))
+        console.print()
+    else:
+        console.print(f"\n[red]Unknown corpus:[/] {corpus_name}")
+        console.print("Available: [cyan]browsecomp-plus[/]\n")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # konash train
 # ---------------------------------------------------------------------------
 
@@ -330,41 +366,134 @@ def cmd_train(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    # Pre-training config summary
+    # ── Interactive wizard ───────────────────────────────────────────
+    console.print()
+    console.print(Panel(
+        "[bold cyan]KONASH Training[/]\n\n"
+        "Configure your training run.\n"
+        "[dim]Press Enter to accept defaults.[/]",
+        border_style="cyan",
+        padding=(1, 4),
+    ))
+
+    # Corpus
+    console.print()
+    console.rule("[bold cyan]Corpus")
+    console.print()
+
+    corpus = args.corpus
+    if not corpus:
+        console.print('    Enter a path to your documents folder.')
+        console.print(
+            '    [dim]Type "browsecomp-plus" to download the benchmark.[/]'
+        )
+        console.print()
+        corpus = Prompt.ask("    Path to documents")
+
+        if corpus.lower().replace("_", "-") in ("browsecomp-plus", "bcp"):
+            from konash.download import download_browsecomp_plus
+
+            console.print()
+            output_dir = download_browsecomp_plus(console=console)
+            corpus = os.path.join(output_dir, "documents")
+            console.print()
+
+    if not os.path.exists(corpus):
+        console.print(f"    [red]Path not found:[/] {corpus}")
+        sys.exit(1)
+
+    # Model
+    console.print()
+    console.rule("[bold cyan]Model")
+    console.print()
+    model = Prompt.ask(
+        "    Model ID", default=args.model or DEFAULT_MODEL,
+    )
+
+    # Scale
+    console.print()
+    console.rule("[bold cyan]Scale")
+    console.print()
+    console.print(
+        "    [dim]KARL paper: 1,735 synthesis calls, 8 rollouts, "
+        "200 rollout steps[/]"
+    )
+    console.print()
+
+    synthesis_calls = IntPrompt.ask(
+        "    Synthesis calls / iteration",
+        default=args.synthesis_calls,
+    )
+    rollouts = IntPrompt.ask(
+        "    Rollouts per example",
+        default=args.rollouts,
+    )
+    rollout_steps = IntPrompt.ask(
+        "    Max steps per rollout",
+        default=args.rollout_steps,
+    )
+    iterations = IntPrompt.ask(
+        "    Training iterations",
+        default=args.iterations,
+    )
+
+    # Advanced
+    console.print()
+    console.rule("[bold cyan]Advanced")
+    console.print()
+
+    lr = FloatPrompt.ask("    Learning rate", default=args.lr)
+    chunk_size = IntPrompt.ask("    Chunk size (words)", default=args.chunk_size)
+
+    # ── Summary + confirm ────────────────────────────────────────────
+    est_synth = synthesis_calls * iterations
+    est_roll = synthesis_calls * 8 * rollouts
+    est_cost = est_synth * 0.05 + est_roll * 0.02
+
     grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="bold cyan", justify="right", min_width=18)
+    grid.add_column(style="bold cyan", justify="right", min_width=22)
     grid.add_column()
-    grid.add_row("Corpus", args.corpus)
-    grid.add_row("Model", args.model)
-    grid.add_row("Iterations", str(args.iterations))
-    grid.add_row("Rollouts / example", str(args.rollouts))
-    grid.add_row("Chunk size", f"{args.chunk_size} words")
-    grid.add_row("Learning rate", f"{args.lr:.0e}")
-    if args.max_examples:
-        grid.add_row("Max examples", str(args.max_examples))
+    grid.add_row("Corpus", corpus)
+    grid.add_row("Model", model)
+    grid.add_row("Synthesis calls", f"{synthesis_calls:,} / iteration")
+    grid.add_row("Rollouts / example", str(rollouts))
+    grid.add_row("Rollout steps", str(rollout_steps))
+    grid.add_row("Iterations", str(iterations))
+    grid.add_row("Learning rate", f"{lr:.0e}")
+    grid.add_row("Chunk size", f"{chunk_size} words")
+    grid.add_row("Est. cost", f"[yellow]~${est_cost:,.0f}[/] on Together AI")
 
     console.print()
     console.print(Panel(
         grid,
-        title="[bold cyan]KONASH Training",
+        title="[bold]Training Summary",
         border_style="cyan",
         padding=(1, 2),
     ))
     console.print()
 
+    if not Confirm.ask("    Start training?", default=True):
+        console.print("    [dim]Aborted.[/]\n")
+        return
+
+    # ── Train ────────────────────────────────────────────────────────
+    console.print()
+
     agent = Agent(
-        base_model=args.model,
-        corpus=args.corpus,
+        base_model=model,
+        corpus=corpus,
         project=args.project,
         api_base=TOGETHER_API_BASE,
         api_key=api_key,
-        chunk_size=args.chunk_size,
+        chunk_size=chunk_size,
     )
     agent.train(
-        iterations=args.iterations,
-        rollouts_per_example=args.rollouts,
+        iterations=iterations,
+        synthesis_calls=synthesis_calls,
+        rollouts_per_example=rollouts,
+        rollout_max_steps=rollout_steps,
         max_examples=args.max_examples,
-        learning_rate=args.lr,
+        learning_rate=lr,
         verbose=True,
     )
 
@@ -549,26 +678,52 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_setup.set_defaults(func=cmd_setup)
 
+    # --- download ---
+    p_dl = subparsers.add_parser(
+        "download", help="Download a benchmark corpus.",
+    )
+    p_dl.add_argument(
+        "corpus_name", help="Corpus to download (e.g. browsecomp-plus).",
+    )
+    p_dl.set_defaults(func=cmd_download)
+
     # --- train ---
     p_train = subparsers.add_parser("train", help="Train a knowledge agent.")
-    p_train.add_argument("corpus", help="Path to your documents folder.")
+    p_train.add_argument(
+        "corpus", nargs="?", default=None,
+        help="Path to your documents folder (interactive if omitted).",
+    )
     p_train.add_argument("--model", default=DEFAULT_MODEL, help="Model ID.")
     p_train.add_argument("--project", default="default", help="Project name.")
     p_train.add_argument(
-        "--iterations", type=int, default=2, help="Training iterations."
+        "--iterations", type=int, default=2,
+        help="Training iterations (default: 2).",
     )
     p_train.add_argument(
-        "--rollouts", type=int, default=8, help="Rollouts per example."
+        "--synthesis-calls", type=int, default=1500,
+        help="Synthesis calls per iteration (default: 1500, KARL: 1735).",
     )
     p_train.add_argument(
-        "--max-examples", type=int, default=None, help="Max training examples."
-    )
-    p_train.add_argument("--lr", type=float, default=1e-5, help="Learning rate.")
-    p_train.add_argument(
-        "--chunk-size", type=int, default=512, help="Chunk size in words."
+        "--rollouts", type=int, default=8,
+        help="Rollouts per example (default: 8).",
     )
     p_train.add_argument(
-        "--api-key", default=None, help="Together AI key (or run konash setup)."
+        "--rollout-steps", type=int, default=50,
+        help="Max steps per rollout (default: 50, KARL BCP: 200).",
+    )
+    p_train.add_argument(
+        "--max-examples", type=int, default=None,
+        help="Cap on training examples per iteration.",
+    )
+    p_train.add_argument(
+        "--lr", type=float, default=1e-5, help="Learning rate.",
+    )
+    p_train.add_argument(
+        "--chunk-size", type=int, default=512, help="Chunk size in words.",
+    )
+    p_train.add_argument(
+        "--api-key", default=None,
+        help="Together AI key (or run konash setup).",
     )
     p_train.set_defaults(func=cmd_train)
 

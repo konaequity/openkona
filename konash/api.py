@@ -336,7 +336,9 @@ class Agent:
         self,
         *,
         iterations: int = 2,
+        synthesis_calls: int = 1500,
         rollouts_per_example: int = 8,
+        rollout_max_steps: int = 50,
         max_examples: Optional[int] = None,
         few_shot_examples: Optional[List[SyntheticExample]] = None,
         learning_rate: float = 1e-6,
@@ -348,8 +350,9 @@ class Agent:
 
         1. Load the model locally (with LoRA).
         2. Ingest the corpus and build the vector search index.
-        3. Synthesize QA pairs from the corpus using the model.
-        4. Generate rollouts and filter by pass rate.
+        3. Synthesize QA pairs via *synthesis_calls* independent calls
+           (KARL: 1,735 calls × 8 candidates each).
+        4. Deduplicate and generate rollouts, filter by pass rate.
         5. Train with OAPL (real gradient updates on LoRA params).
         6. Repeat for *iterations* rounds.
         7. Save the LoRA adapter checkpoint.
@@ -358,8 +361,14 @@ class Agent:
         ----------
         iterations : int
             Number of synthesis → train cycles (default 2).
+        synthesis_calls : int
+            Independent synthesis calls per iteration (default 1500).
+            Each call generates ~8 QA pairs with fresh random seed docs.
+            KARL paper uses 1,735 calls for BrowseComp-Plus.
         rollouts_per_example : int
             Number of rollouts per training example (default 8).
+        rollout_max_steps : int
+            Max reasoning steps per rollout (default 50).
         max_examples : int | None
             Cap on synthesized training examples per iteration.
         few_shot_examples : list[SyntheticExample] | None
@@ -439,7 +448,7 @@ class Agent:
             search_tool=self.corpus.vector_search,
             llm_fn=_rollout_fn,
             on_step=_on_step,
-            max_steps=5,  # converges in 3-4 steps; avoids runaway loops
+            max_steps=rollout_max_steps,
         )
         pipeline = SynthesisPipeline(
             synthesizer=synthesizer,
@@ -467,25 +476,46 @@ class Agent:
             if self._model_engine is not None:
                 self._model_engine._torch.cuda.empty_cache()
 
-            # Let the synthesizer explore the corpus via vector search
-            # (KARL paper approach: agent searches, reads, then proposes QA
-            # pairs grounded in retrieved content).
+            # Multi-call synthesis: KARL makes ~1,735 independent calls,
+            # each generating ~8 QA pairs with fresh random seed docs.
+            # This volume + dedup is how diversity is achieved.
             if verbose:
-                print("  Synthesizing QA pairs (agent exploring corpus) ...")
-            try:
-                examples = pipeline.run_stage_one(
-                    documents=None,  # let synthesizer search the corpus
-                    num_examples=max_examples,
-                )
-            except (ValueError, RuntimeError) as e:
+                print(f"  Synthesizing QA pairs ({synthesis_calls} calls × ~8 each) ...")
+            all_raw_examples: List[SyntheticExample] = []
+            for call_idx in range(synthesis_calls):
+                try:
+                    batch = synthesizer.synthesize(
+                        documents=None,
+                        num_examples=8,
+                    )
+                    all_raw_examples.extend(batch)
+                    if verbose and (call_idx + 1) % 50 == 0:
+                        print(f"    Call {call_idx + 1}/{synthesis_calls}: "
+                              f"{len(all_raw_examples)} raw QA pairs so far")
+                except (ValueError, RuntimeError) as e:
+                    if verbose and (call_idx + 1) % 100 == 0:
+                        print(f"    Call {call_idx + 1} failed: {e}")
+                    continue
+
+            if not all_raw_examples:
                 if verbose:
-                    print(f"  Synthesis failed: {e}")
-                    print("  Skipping this iteration.")
+                    print("  No QA pairs synthesized — skipping iteration.")
                 continue
+
+            # Deduplicate the full batch
             if verbose:
-                print(f"  Generated {len(examples)} examples:")
-                for i, ex in enumerate(examples):
+                print(f"  Raw: {len(all_raw_examples)} QA pairs, deduplicating...")
+            examples = pipeline.deduplicate(all_raw_examples)
+
+            if max_examples and len(examples) > max_examples:
+                examples = examples[:max_examples]
+
+            if verbose:
+                print(f"  After dedup: {len(examples)} examples")
+                for i, ex in enumerate(examples[:10]):
                     print(f"    [{i+1}] {(ex.question or '')[:80]}")
+                if len(examples) > 10:
+                    print(f"    ... and {len(examples) - 10} more")
 
             # Step 4: Generate rollouts + filter
             if verbose:
