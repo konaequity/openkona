@@ -253,9 +253,9 @@ class Agent:
         rollouts_per_example: int = 8,
         max_examples: Optional[int] = None,
         few_shot_examples: Optional[List[SyntheticExample]] = None,
-        learning_rate: float = 1e-5,
-        beta_kl: float = 0.1,
-        beta_value: float = 0.05,
+        learning_rate: float = 1e-6,
+        beta_kl: float = 0.001,
+        beta_value: float = 1.0,
         verbose: bool = True,
     ) -> Dict[str, Any]:
         """Run the full KONASH training loop.

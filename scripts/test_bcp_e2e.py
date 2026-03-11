@@ -648,7 +648,7 @@ def phase_oapl_training(filtered_groups: List) -> Dict[str, Any]:
     print(f"  Dataset: {len(dataset)} entries, "
           f"{len(dataset.prompts)} prompt groups")
 
-    trainer = OAPLTrainer(beta_kl=0.1, beta_value=0.05)
+    trainer = OAPLTrainer()
 
     # Lightweight training (no GPU) — tests the loss computation path
     print(f"  Running OAPL training (lightweight mode, no GPU)...")

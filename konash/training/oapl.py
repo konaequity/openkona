@@ -23,20 +23,20 @@ class OAPLTrainer:
     reference_policy : callable or None
         The frozen reference policy pi_ref used for KL regularisation.
     beta_value : float
-        Temperature for the soft value estimation (default 0.05).
+        Temperature for the soft value estimation (default 1.0).
     beta_kl : float
-        Coefficient for the KL-divergence term (default 0.1).
+        Coefficient for the KL-divergence term (default 0.001).
     """
 
     reference_policy = None
-    beta_value = 0.05
-    beta_kl = 0.1
+    beta_value = 1.0
+    beta_kl = 0.001
 
     def __init__(
         self,
         reference_policy: Optional[Callable] = None,
-        beta_value: float = 0.05,
-        beta_kl: float = 0.1,
+        beta_value: float = 1.0,
+        beta_kl: float = 0.001,
     ):
         self.reference_policy = reference_policy
         self.beta_value = beta_value
@@ -173,7 +173,7 @@ class OAPLTrainer:
         self,
         dataset: Any,
         model_engine: Any,
-        learning_rate: float = 1e-5,
+        learning_rate: float = 1e-6,
         max_grad_norm: float = 1.0,
     ) -> Dict[str, float]:
         """Run one OAPL training epoch with real PyTorch gradients.
@@ -220,7 +220,7 @@ class OAPLTrainer:
         import torch
 
         optimizer = torch.optim.AdamW(
-            model_engine.trainable_params, lr=learning_rate, weight_decay=0.01,
+            model_engine.trainable_params, lr=learning_rate, weight_decay=1e-8,
         )
 
         total_loss = 0.0
@@ -529,7 +529,7 @@ class OAPLTrainer:
         self,
         dataset: Any,
         policy_fn: Optional[Callable] = None,
-        learning_rate: float = 1e-5,
+        learning_rate: float = 1e-6,
     ) -> Dict[str, float]:
         """Run one training epoch over the dataset.
 
