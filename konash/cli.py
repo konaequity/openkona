@@ -137,35 +137,36 @@ MODELS = [
 ]
 
 # Training scale presets
+# qa_pairs is the user-facing number; internally divided by 8 to get API calls
 SCALE_PRESETS = [
     {
         "name": "Quick test",
-        "hint": "3 synthesis calls  ·  ~5 min  ·  ~$0.50",
-        "synthesis_calls": 3,
+        "hint": "~24 QA pairs  ·  4 rollouts  ·  ~5 min  ·  ~$0.50",
+        "qa_pairs": 24,
         "rollouts": 4,
         "rollout_steps": 10,
         "iterations": 1,
     },
     {
         "name": "Small run",
-        "hint": "50 synthesis calls  ·  ~30 min  ·  ~$15",
-        "synthesis_calls": 50,
+        "hint": "~400 QA pairs  ·  8 rollouts  ·  ~30 min  ·  ~$15",
+        "qa_pairs": 400,
         "rollouts": 8,
         "rollout_steps": 30,
         "iterations": 1,
     },
     {
         "name": "KARL scale",
-        "hint": "1,500 calls  ·  ~8 hrs  ·  ~$400",
-        "synthesis_calls": 1500,
+        "hint": "~12K QA pairs  ·  8 rollouts  ·  ~8 hrs  ·  ~$400",
+        "qa_pairs": 12000,
         "rollouts": 8,
         "rollout_steps": 50,
         "iterations": 2,
     },
     {
         "name": "KARL full",
-        "hint": "1,735 calls  ·  200 steps  ·  ~$600",
-        "synthesis_calls": 1735,
+        "hint": "~14K QA pairs  ·  8 rollouts  ·  200 steps  ·  ~$600",
+        "qa_pairs": 13880,
         "rollouts": 8,
         "rollout_steps": 200,
         "iterations": 2,
@@ -411,7 +412,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
             model=DEFAULT_MODEL,
             project="default",
             iterations=2,
-            synthesis_calls=1500,
+            qa_pairs=12000,
             rollouts=8,
             rollout_steps=50,
             max_examples=None,
@@ -619,13 +620,13 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     if scale_idx < len(SCALE_PRESETS):
         preset = SCALE_PRESETS[scale_idx]
-        synthesis_calls = preset["synthesis_calls"]
+        qa_pairs = preset["qa_pairs"]
         rollouts = preset["rollouts"]
         rollout_steps = preset["rollout_steps"]
         iterations = preset["iterations"]
     else:
-        synthesis_calls = IntPrompt.ask(
-            "    Synthesis calls / iteration", default=args.synthesis_calls,
+        qa_pairs = IntPrompt.ask(
+            "    QA pairs to synthesize", default=args.qa_pairs,
         )
         rollouts = IntPrompt.ask(
             "    Rollouts per example", default=args.rollouts,
@@ -640,9 +641,12 @@ def cmd_train(args: argparse.Namespace) -> None:
     lr = args.lr
     chunk_size = args.chunk_size
 
+    # Convert QA pairs → synthesis calls (each call produces ~8 pairs)
+    synthesis_calls = max(1, qa_pairs // 8)
+
     # ── Summary + confirm ────────────────────────────────────────────
     est_synth = synthesis_calls * iterations
-    est_roll = synthesis_calls * 8 * rollouts
+    est_roll = qa_pairs * rollouts
     est_cost = est_synth * 0.05 + est_roll * 0.02
 
     console.print()
@@ -654,12 +658,10 @@ def cmd_train(args: argparse.Namespace) -> None:
     grid.add_column()
     grid.add_row("Corpus", corpus)
     grid.add_row("Model", model)
-    grid.add_row("Synthesis calls", f"{synthesis_calls:,} / iteration")
+    grid.add_row("QA pairs", f"~{qa_pairs:,} / iteration")
     grid.add_row("Rollouts / example", str(rollouts))
     grid.add_row("Rollout steps", str(rollout_steps))
     grid.add_row("Iterations", str(iterations))
-    grid.add_row("Learning rate", f"{lr:.0e}")
-    grid.add_row("Chunk size", f"{chunk_size} words")
     grid.add_row("Est. cost", f"~${est_cost:,.0f}")
     console.print(grid)
     console.print()
@@ -876,8 +878,8 @@ def main(argv: list[str] | None = None) -> None:
         help="Training iterations (default: 2).",
     )
     p_train.add_argument(
-        "--synthesis-calls", type=int, default=1500,
-        help="Synthesis calls per iteration (default: 1500, KARL: 1735).",
+        "--qa-pairs", type=int, default=12000,
+        help="QA pairs to synthesize per iteration (default: 12000).",
     )
     p_train.add_argument(
         "--rollouts", type=int, default=8,
