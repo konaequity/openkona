@@ -178,16 +178,16 @@ SCALE_PRESETS = [
 # Available datasets for the corpus picker
 DATASETS = [
     {
-        "name": "BrowseComp-Plus",
-        "key": "browsecomp-plus",
-        "desc": "Web retrieval benchmark  ·  40K docs  ·  encrypted",
-        "source": "Tevatron/browsecomp-plus",
-    },
-    {
         "name": "FinanceBench",
         "key": "financebench",
         "desc": "Financial QA  ·  SEC filings  ·  150 questions",
         "source": "PatronusAI/financebench",
+    },
+    {
+        "name": "BrowseComp-Plus",
+        "key": "browsecomp-plus",
+        "desc": "Web retrieval benchmark  ·  40K docs  ·  encrypted",
+        "source": "Tevatron/browsecomp-plus",
     },
     {
         "name": "QAMPARI",
