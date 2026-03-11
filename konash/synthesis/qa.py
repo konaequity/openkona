@@ -296,7 +296,8 @@ class QuestionAnswerSynthesizer:
 
         proposed: List[SyntheticExample] = []
         search_count = 0
-        min_searches = 3
+        # Scale min searches with target count — at least 1 search per question
+        min_searches = max(3, count)
         empty_count = 0
 
         for step_idx in range(self.max_steps):
@@ -348,11 +349,20 @@ class QuestionAnswerSynthesizer:
 
                 remaining = count - len(proposed)
                 if remaining > 0:
+                    # Build list of topics already covered
+                    covered = []
+                    for ex in proposed:
+                        if ex.answer:
+                            covered.append(ex.answer[:60])
+                    covered_str = ", ".join(covered) if covered else "none yet"
                     messages.append({"role": "user", "content": (
                         f"Recorded {len(new_examples)} question(s). "
-                        f"{remaining} more needed. "
-                        f"SEARCH for DIFFERENT topics in the corpus — "
-                        f"explore new areas you haven't searched yet."
+                        f"{remaining} more needed.\n\n"
+                        f"Topics/answers already covered: [{covered_str}]\n\n"
+                        f"You MUST search for a COMPLETELY DIFFERENT topic — "
+                        f"a different person, place, event, or subject entirely. "
+                        f"Do NOT generate another question about any topic above. "
+                        f"SEARCH for a new area of the corpus:"
                     )})
 
             else:
@@ -431,10 +441,8 @@ class QuestionAnswerSynthesizer:
             "  eliminates candidates until only one entity/fact remains\n"
             "- The facts are buried deep in the documents, not in the first paragraph\n"
             "- A human could verify the answer by pointing to exact sentences in the documents\n"
-            "- Example: 'What is the name of the military officer who found the Rosetta Stone,\n"
-            "  and under which treaty was it surrendered to Britain?'\n"
-            "  → Answer: 'Pierre-François Bouchard discovered it; surrendered under the\n"
-            "  Treaty of Alexandria (1801)'\n\n"
+            "- Constraints come from DIFFERENT parts of one or more documents, requiring\n"
+            "  cross-referencing to arrive at the answer\n\n"
             "WHAT MAKES A BAD QUESTION (never generate these):\n"
             "- Answer is an explanation, comparison, or opinion ('How does X relate to Y?')\n"
             "- Answer requires reasoning beyond what the text states ('What principle connects...')\n"
@@ -468,19 +476,26 @@ class QuestionAnswerSynthesizer:
         doc_context = ""
         if documents:
             doc_lines = []
-            for i, doc in enumerate(documents[:3], 1):
-                doc_lines.append(f"[Starting Document {i}] {doc[:400]}")
+            for i, doc in enumerate(documents[:5], 1):
+                doc_lines.append(f"[Starting Document {i}] {doc[:500]}")
             doc_context = (
-                "\n\nHere are some starting documents for context:\n"
+                "\n\nHere are starting documents from DIFFERENT parts of the corpus. "
+                "Each one represents a DIFFERENT topic area:\n"
                 + "\n\n".join(doc_lines)
-                + "\n\nUse SEARCH to discover more."
+                + "\n\nUse SEARCH to explore EACH of these topic areas deeply. "
+                "Generate questions from DIFFERENT topics — do NOT generate "
+                "multiple questions about the same subject."
             )
 
         return (
             f"Generate {count} challenging, multi-constraint questions from "
             f"the corpus. Each question should require combining at least 2 "
             f"facts to answer correctly.\n\n"
-            f"Start by searching the corpus to discover what topics it covers."
+            f"CRITICAL: Each question MUST be about a DIFFERENT topic/subject. "
+            f"Do not generate multiple questions about the same person, event, "
+            f"or entity.\n\n"
+            f"Start by searching the corpus to discover what topics it covers. "
+            f"Search for at least {count} DIFFERENT topics before proposing."
             + doc_context
         )
 
