@@ -278,6 +278,7 @@ class Agent:
         self._inference_client: Optional[_OpenAILLMClient] = None
         self._model_engine: Optional[Any] = None  # LocalModelEngine
         self._base_agent: Optional[BaseAgent] = None
+        self._value_model: Optional[Any] = None  # ValueModel for VGS
         self._trained = False
         self._iteration = 0
 
@@ -510,6 +511,8 @@ class Agent:
         )
 
         stats: List[Dict[str, Any]] = []
+        all_value_rollouts: List[Any] = []  # Accumulate for value model
+        all_value_rewards: List[float] = []
 
         for iteration in range(iterations):
             if verbose:
@@ -724,6 +727,11 @@ class Agent:
                         f"{epoch_stats['num_rollouts']} rollouts[/]"
                     )
 
+                # Accumulate rollout data for value model training
+                for rd in rollout_dicts:
+                    all_value_rollouts.append(rd["rollout"])
+                    all_value_rewards.append(rd["reward"])
+
             self._iteration = iteration + 1
 
             # Snapshot current LoRA as πref for the next iteration
@@ -733,7 +741,40 @@ class Agent:
                 if verbose:
                     _con.print("  [dim]Snapshotted LoRA as πref for next iteration[/]")
 
-        # Step 6: Save checkpoint
+        # Step 6: Train value model for VGS inference
+        value_model_trained = False
+        if all_value_rollouts:
+            from konash.inference.value_model import ValueModel
+
+            if verbose:
+                with _con.status(
+                    f"  [cyan]Training value model  "
+                    f"[dim]({len(all_value_rollouts)} rollouts)[/]...",
+                    spinner="dots",
+                ):
+                    self._value_model = ValueModel(feature_dim=64)
+                    vm_stats = self._value_model.fit(
+                        all_value_rollouts,
+                        all_value_rewards,
+                        lr=0.01,
+                        epochs=20,
+                    )
+            else:
+                self._value_model = ValueModel(feature_dim=64)
+                vm_stats = self._value_model.fit(
+                    all_value_rollouts,
+                    all_value_rewards,
+                    lr=0.01,
+                    epochs=20,
+                )
+            value_model_trained = True
+            if verbose:
+                _con.print(
+                    f"  [green]✓[/]  Value model trained  "
+                    f"[dim]loss {vm_stats['final_loss']:.4f}[/]"
+                )
+
+        # Step 7: Save checkpoint
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         meta_path = os.path.join(self.checkpoint_dir, "training_meta.json")
 
@@ -742,12 +783,27 @@ class Agent:
             adapter_path = os.path.join(self.checkpoint_dir, "adapter")
             engine.save_adapter(adapter_path)
 
+        # Save value model
+        if value_model_trained and self._value_model is not None:
+            import numpy as _np
+            vm_path = os.path.join(self.checkpoint_dir, "value_model.json")
+            with open(vm_path, "w") as f:
+                weights = self._value_model.weights
+                if hasattr(weights, "tolist"):
+                    weights = weights.tolist()
+                json.dump({
+                    "weights": weights,
+                    "bias": self._value_model.bias,
+                    "feature_dim": self._value_model.feature_dim,
+                }, f)
+
         with open(meta_path, "w") as f:
             json.dump({
                 "base_model": self.base_model,
                 "project": self.project,
                 "iterations": self._iteration,
                 "stats": stats,
+                "value_model": value_model_trained,
             }, f, indent=2)
 
         self._trained = True
@@ -771,6 +827,9 @@ class Agent:
         parallel_rollouts: int = 1,
         max_steps: int = 20,
         top_k: int = 10,
+        use_vgs: Optional[bool] = None,
+        vgs_candidate_width: int = 2,
+        vgs_max_depth: int = 10,
     ) -> str:
         """Answer a question using the trained (or base) knowledge agent.
 
@@ -780,11 +839,20 @@ class Agent:
             The question to answer.
         parallel_rollouts : int
             Number of independent rollouts to run and aggregate (default 1).
-            Set to 10-20 for Parallel Thinking.
+            For VGS, this is the number of parallel search trees.
+            For Parallel Thinking, this is the number of rollouts.
         max_steps : int
             Maximum agent steps per rollout.
         top_k : int
             Number of documents to retrieve per search.
+        use_vgs : bool | None
+            Use Value-Guided Search when a value model is available.
+            ``None`` (default) auto-detects: uses VGS if a value model
+            is loaded, otherwise falls back to Parallel Thinking.
+        vgs_candidate_width : int
+            Number of candidate continuations per BFS expansion step.
+        vgs_max_depth : int
+            Maximum BFS depth per search tree.
 
         Returns
         -------
@@ -858,14 +926,14 @@ class Agent:
                 }],
             )
 
-        if parallel_rollouts <= 1:
+        if parallel_rollouts <= 1 and not (use_vgs and self._value_model):
             # Single rollout
             env = make_environment()
             env.reset(prompt=query)
             result = env.run_episode(agent, max_steps=max_steps)
             return result.get("final_answer") or ""
 
-        # Parallel Thinking
+        # Shared agent wrapper for both VGS and Parallel Thinking
         class _EnvironmentBackedAgent:
             def __init__(self, base_agent: BaseAgent) -> None:
                 self._base_agent = base_agent
@@ -878,6 +946,63 @@ class Agent:
                     max_steps=kwargs.get("max_steps", max_steps),
                 )
 
+            def generate_step(
+                self, conversation_history: Any, **kwargs: Any,
+            ) -> Dict[str, Any]:
+                """Single agent step for VGS expand().
+
+                VGS calls this with the conversation history built from
+                the search tree state. We run one agent step (generate +
+                optional tool execution) and return a step dict.
+                """
+                messages = (
+                    list(conversation_history)
+                    if isinstance(conversation_history, list)
+                    else [{"role": "user", "content": str(conversation_history)}]
+                )
+
+                # Available tools for the agent
+                search_tools = [{
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "description": "Search the knowledge base.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string",
+                                          "description": "The search query."}
+                            },
+                            "required": ["query"],
+                        },
+                    },
+                }]
+
+                step_result = self._base_agent.generate_step(
+                    messages, available_tools=search_tools,
+                )
+                content = step_result.get("content", "")
+                tool_calls = step_result.get("tool_calls")
+
+                # Execute tool call if present
+                if tool_calls:
+                    obs = tool_executor(tool_calls[0])
+                    return {
+                        "type": "tool_call",
+                        "role": "assistant",
+                        "content": content,
+                        "result": obs.get("content", ""),
+                        "terminal": False,
+                    }
+
+                # No tool call → final answer
+                return {
+                    "type": "answer",
+                    "role": "assistant",
+                    "content": content,
+                    "terminal": True,
+                }
+
             def extract_final_answer(self, conversation_history: Any, **kwargs: Any) -> str | None:
                 if isinstance(conversation_history, dict):
                     conversation_history = (
@@ -888,6 +1013,28 @@ class Agent:
                 return self._base_agent.extract_final_answer(conversation_history, **kwargs)
 
         env_agent = _EnvironmentBackedAgent(agent)
+
+        # Decide: VGS or Parallel Thinking
+        _use_vgs = use_vgs if use_vgs is not None else (self._value_model is not None)
+
+        if _use_vgs and self._value_model is not None:
+            from konash.inference.value_search import ValueGuidedSearchEngine
+
+            vgs_engine = ValueGuidedSearchEngine(
+                agent=env_agent,
+                value_model=self._value_model,
+                aggregator=GenerativeAggregator(
+                    agent=env_agent,
+                    aggregation_mode="weighted_majority_vote",
+                ),
+                candidate_width=vgs_candidate_width,
+                parallel_searches=max(parallel_rollouts, 1),
+                max_depth=vgs_max_depth,
+            )
+            result = vgs_engine.run(query)
+            return result.get("answer", "")
+
+        # Fallback: Parallel Thinking (no value model)
         engine = ParallelThinkingEngine(
             agent=env_agent,
             aggregator=GenerativeAggregator(
@@ -954,6 +1101,20 @@ class Agent:
         )
         agent._trained = True
         agent._iteration = meta.get("iterations", 0)
+
+        # Load value model if it was trained
+        if meta.get("value_model"):
+            vm_path = os.path.join(project_dir, "checkpoints", "value_model.json")
+            if os.path.exists(vm_path):
+                from konash.inference.value_model import ValueModel
+                with open(vm_path) as f:
+                    vm_data = json.load(f)
+                agent._value_model = ValueModel(
+                    weights=vm_data["weights"],
+                    bias=vm_data["bias"],
+                    feature_dim=vm_data["feature_dim"],
+                )
+
         return agent
 
     # ------------------------------------------------------------------
