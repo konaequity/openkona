@@ -1,7 +1,4 @@
-"""KONASH command-line interface.
-
-Polished with ``rich`` — panels, spinners, progress, styled output.
-"""
+"""KONASH command-line interface."""
 
 from __future__ import annotations
 
@@ -13,7 +10,6 @@ import webbrowser
 
 from rich import box
 from rich.console import Console
-from rich.panel import Panel
 from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
 from rich.table import Table
 
@@ -86,27 +82,34 @@ def _mask(key: str) -> str:
 
 def cmd_default() -> None:
     console.print()
-    console.print(Panel(
-        "[bold cyan]KONASH[/]  v" + _get_version() + "\n\n"
-        "Train knowledge agents that search, retrieve, and reason\n"
-        "over your documents using reinforcement learning.",
-        border_style="cyan",
-        padding=(1, 4),
-    ))
 
+    # Header — name left, version right
+    header = Table.grid(expand=True)
+    header.add_column(ratio=1)
+    header.add_column(justify="right")
+    header.add_row(
+        "[bold]KONASH[/]",
+        f"[dim]{_get_version()}[/]",
+    )
+    console.print(header)
+    console.print(
+        "[dim]Train knowledge agents that search, retrieve, and reason.[/]"
+    )
+    console.print()
+    console.rule(style="dim")
+
+    # Commands grid — clean, no panels
+    console.print()
     grid = Table.grid(padding=(0, 4))
-    grid.add_column(style="bold cyan", min_width=36)
+    grid.add_column(style="bold", min_width=36)
     grid.add_column(style="dim")
-    grid.add_row("konash setup", "Set up API keys")
+    grid.add_row("konash setup", "Configure API keys")
+    grid.add_row("konash train", "Train an agent")
     grid.add_row("konash download browsecomp-plus", "Download benchmark corpus")
-    grid.add_row("konash train", "Train (interactive wizard)")
     grid.add_row('konash ask --corpus ./docs "Q"', "Ask a question")
     grid.add_row("konash search --corpus ./docs Q", "Search documents")
-    grid.add_row("konash status", "Check your setup")
-
-    console.print(Panel(
-        grid, title="[bold]Commands", border_style="dim", padding=(1, 2),
-    ))
+    grid.add_row("konash status", "Check configuration")
+    console.print(grid)
     console.print()
 
 
@@ -124,99 +127,95 @@ def _get_version() -> str:
 
 def cmd_setup(args: argparse.Namespace) -> None:
     console.print()
-    console.print(Panel(
-        "[bold cyan]KONASH Setup[/]\n\n"
-        "We'll configure your API keys. Takes about 2 minutes.\n\n"
-        "[dim]Together AI  — runs the AI model  (free tier)[/]\n"
-        "[dim]HuggingFace  — stores your trained model  (free)[/]",
-        border_style="cyan",
-        padding=(1, 4),
-    ))
+
+    # Header
+    header = Table.grid(expand=True)
+    header.add_column(ratio=1)
+    header.add_column(justify="right")
+    header.add_row("[bold]KONASH[/]  Setup", f"[dim]{_get_version()}[/]")
+    console.print(header)
+    console.print()
+    console.rule(style="dim")
+    console.print()
+    console.print("    [dim]Together AI[/]  — runs the model  (free tier)")
+    console.print("    [dim]HuggingFace[/]  — stores trained models  (free)")
+    console.print()
 
     config = _load_config()
 
-    # ── Step 1: Together AI ──────────────────────────────────────────
-    console.print()
-    console.rule("[bold cyan]Step 1 of 2  ·  Together AI")
+    # ── 1 · Together AI ──────────────────────────────────────────────
+    console.rule("[bold]1[/]  Together AI", style="dim")
     console.print()
 
     together_key = _get_together_key()
 
     if together_key:
         console.print(f"    Key found: [dim]{_mask(together_key)}[/]")
-        with console.status("    [cyan]Validating...", spinner="dots"):
+        with console.status("    Validating...", spinner="dots"):
             valid = validate_together_key(together_key)
         if valid:
-            console.print("    [bold green]✓[/] Valid")
+            console.print("    [green]✓[/]  Valid")
             if not Confirm.ask("    Keep this key?", default=True):
                 together_key = None
         else:
-            console.print("    [bold red]✗[/] Key no longer works")
+            console.print("    [red]✗[/]  Key no longer works")
             together_key = None
 
     if not together_key:
-        console.print("    [bold]To get your free API key:[/]")
-        console.print("    1. Go to Together AI → Settings → API Keys")
-        console.print("    2. Sign up or log in")
-        console.print("    3. Copy your [bold]User API Key[/]")
-        console.print("    [dim]   (Not the Legacy API Key — use the User key at the top)[/]")
+        console.print("    Get your free User API Key:")
+        console.print("    [dim]Settings → API Keys → copy the User key (not Legacy)[/]")
         console.print()
 
-        if Confirm.ask("    Open Together AI in your browser?", default=True):
+        if Confirm.ask("    Open together.ai?", default=True):
             webbrowser.open(TOGETHER_KEYS_PAGE)
 
         console.print()
-        together_key = Prompt.ask("    Paste your API key", password=True)
+        together_key = Prompt.ask("    Paste your User API Key", password=True)
 
         if together_key:
-            with console.status("    [cyan]Validating...", spinner="dots"):
+            with console.status("    Validating...", spinner="dots"):
                 valid = validate_together_key(together_key)
             if valid:
-                console.print("    [bold green]✓[/] Key is valid")
+                console.print("    [green]✓[/]  Valid")
                 config["together_api_key"] = together_key
             else:
-                console.print("    [bold red]✗[/] Invalid key — check and try again")
+                console.print("    [red]✗[/]  Invalid — check and try again")
                 return
         else:
-            console.print("    [dim]Skipped. Set TOGETHER_API_KEY env var later.[/]")
+            console.print("    [dim]Skipped. Set TOGETHER_API_KEY later.[/]")
     else:
         config["together_api_key"] = together_key
 
-    # ── Step 2: HuggingFace ──────────────────────────────────────────
+    # ── 2 · HuggingFace ──────────────────────────────────────────────
     console.print()
-    console.rule("[bold cyan]Step 2 of 2  ·  HuggingFace")
+    console.rule("[bold]2[/]  HuggingFace", style="dim")
     console.print()
 
     hf_token = _get_hf_token()
 
     if hf_token:
         console.print(f"    Token found: [dim]{_mask(hf_token)}[/]")
-        with console.status("    [cyan]Validating...", spinner="dots"):
+        with console.status("    Validating...", spinner="dots"):
             username = validate_hf_token(hf_token)
         if username:
-            console.print(f"    [bold green]✓[/] Logged in as [bold]{username}[/]")
+            console.print(f"    [green]✓[/]  {username}")
             if not Confirm.ask("    Keep this token?", default=True):
                 hf_token = None
         else:
-            console.print("    [bold red]✗[/] Token no longer works")
+            console.print("    [red]✗[/]  Token no longer works")
             hf_token = None
 
     if not hf_token:
-        # Try OAuth device flow first (no manual copy needed)
         hf_token = hf_device_flow(console)
 
         if hf_token:
-            console.print("    [bold green]✓[/] Authorized via OAuth")
+            console.print("    [green]✓[/]  Authorized via OAuth")
         else:
-            # Manual fallback
-            console.print("    [bold]To get your free token:[/]")
-            console.print("    1. Go to HuggingFace → Settings → Access Tokens")
-            console.print("    2. Sign up or log in")
-            console.print("    3. Create a token with [bold]Write[/] access")
-            console.print("    4. Copy the token")
+            console.print("    Create a token with Write access:")
+            console.print("    [dim]Settings → Access Tokens → New token[/]")
             console.print()
 
-            if Confirm.ask("    Open HuggingFace in your browser?", default=True):
+            if Confirm.ask("    Open huggingface.co?", default=True):
                 webbrowser.open(HF_TOKENS_PAGE)
 
             console.print()
@@ -225,51 +224,62 @@ def cmd_setup(args: argparse.Namespace) -> None:
         if hf_token:
             config["hf_token"] = hf_token
         else:
-            console.print(
-                "    [dim]Skipped. Only needed to deploy trained models.[/]"
-            )
+            console.print("    [dim]Skipped — only needed to deploy models.[/]")
     else:
         config["hf_token"] = hf_token
 
-    # ── Save & Summary ───────────────────────────────────────────────
+    # ── Summary ──────────────────────────────────────────────────────
     _save_config(config)
 
-    summary = Table.grid(padding=(0, 2))
-    summary.add_column(style="bold", justify="right", min_width=14)
-    summary.add_column()
+    console.print()
+    console.rule(style="dim")
+    console.print()
 
     if config.get("together_api_key"):
-        summary.add_row(
-            "Together AI",
-            f"[green]✓[/]  {_mask(config['together_api_key'])}",
+        console.print(
+            f"    [green]✓[/]  Together AI    {_mask(config['together_api_key'])}"
         )
     else:
-        summary.add_row("Together AI", "[red]✗  not set[/]")
+        console.print("    [red]✗[/]  Together AI    not set")
 
     if config.get("hf_token"):
-        summary.add_row(
-            "HuggingFace",
-            f"[green]✓[/]  {_mask(config['hf_token'])}",
+        console.print(
+            f"    [green]✓[/]  HuggingFace    {_mask(config['hf_token'])}"
         )
     else:
-        summary.add_row("HuggingFace", "[yellow]–  skipped[/]")
+        console.print("    [dim]–[/]  HuggingFace    skipped")
 
-    summary.add_row("Config", f"[dim]{CONFIG_FILE}[/]")
+    console.print(f"    [dim]Config saved to {CONFIG_FILE}[/]")
 
+    # ── Flow into training ───────────────────────────────────────────
     console.print()
-    console.print(Panel(
-        summary,
-        title="[bold green]Setup Complete",
-        border_style="green",
-        padding=(1, 2),
-    ))
+    console.rule(style="dim")
+    console.print()
 
-    console.print()
-    console.print("    [bold]Next steps:[/]")
-    console.print()
-    console.print("    [cyan]konash train ./my_docs[/]")
-    console.print('    [cyan]konash ask --corpus ./my_docs "What is X?"[/]')
-    console.print()
+    if config.get("together_api_key"):
+        if Confirm.ask("    Continue to training?", default=True):
+            console.print()
+            # Build a minimal args namespace for cmd_train
+            train_args = argparse.Namespace(
+                corpus=None,
+                model=DEFAULT_MODEL,
+                project="default",
+                iterations=2,
+                synthesis_calls=1500,
+                rollouts=8,
+                rollout_steps=50,
+                max_examples=None,
+                lr=1e-5,
+                chunk_size=512,
+                api_key=None,
+            )
+            cmd_train(train_args)
+        else:
+            console.print("    [dim]Run [bold]konash train[/dim] when ready.[/]")
+            console.print()
+    else:
+        console.print("    Run [bold]konash setup[/] again to add your API key.")
+        console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -325,23 +335,25 @@ def cmd_download(args: argparse.Namespace) -> None:
         from konash.download import download_browsecomp_plus
 
         console.print()
-        console.rule("[bold cyan]Downloading BrowseComp-Plus")
+        header = Table.grid(expand=True)
+        header.add_column(ratio=1)
+        header.add_column(justify="right")
+        header.add_row("[bold]KONASH[/]  Download", "[dim]browsecomp-plus[/]")
+        console.print(header)
+        console.print()
+        console.rule(style="dim")
         console.print()
 
         with console.status(
-            "    [cyan]Downloading and decrypting...", spinner="dots"
+            "    Downloading and decrypting...", spinner="dots"
         ):
             output_dir = download_browsecomp_plus(console=console)
 
         console.print()
-        console.print(Panel(
-            f"Corpus saved to: [bold]{output_dir}[/]\n\n"
-            f"Train with:\n"
-            f"  [cyan]konash train {output_dir}/documents[/]",
-            title="[bold green]Download Complete",
-            border_style="green",
-            padding=(1, 2),
-        ))
+        console.rule(style="dim")
+        console.print()
+        console.print(f"    [green]✓[/]  Saved to {output_dir}")
+        console.print(f"    [dim]Train with:[/]  konash train {output_dir}/documents")
         console.print()
     else:
         console.print(f"\n[red]Unknown corpus:[/] {corpus_name}")
@@ -368,17 +380,19 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     # ── Interactive wizard ───────────────────────────────────────────
     console.print()
-    console.print(Panel(
-        "[bold cyan]KONASH Training[/]\n\n"
-        "Configure your training run.\n"
-        "[dim]Press Enter to accept defaults.[/]",
-        border_style="cyan",
-        padding=(1, 4),
-    ))
+
+    header = Table.grid(expand=True)
+    header.add_column(ratio=1)
+    header.add_column(justify="right")
+    header.add_row("[bold]KONASH[/]  Train", f"[dim]{_get_version()}[/]")
+    console.print(header)
+    console.print("[dim]Press Enter to accept defaults.[/]")
+    console.print()
+    console.rule(style="dim")
 
     # Corpus
     console.print()
-    console.rule("[bold cyan]Corpus")
+    console.rule("[bold]Corpus[/]", style="dim")
     console.print()
 
     corpus = args.corpus
@@ -404,7 +418,7 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     # Model
     console.print()
-    console.rule("[bold cyan]Model")
+    console.rule("[bold]Model[/]", style="dim")
     console.print()
     model = Prompt.ask(
         "    Model ID", default=args.model or DEFAULT_MODEL,
@@ -412,11 +426,10 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     # Scale
     console.print()
-    console.rule("[bold cyan]Scale")
+    console.rule("[bold]Scale[/]", style="dim")
     console.print()
     console.print(
-        "    [dim]KARL paper: 1,735 synthesis calls, 8 rollouts, "
-        "200 rollout steps[/]"
+        "    [dim]KARL: 1,735 synthesis calls · 8 rollouts · 200 steps[/]"
     )
     console.print()
 
@@ -439,7 +452,7 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     # Advanced
     console.print()
-    console.rule("[bold cyan]Advanced")
+    console.rule("[bold]Advanced[/]", style="dim")
     console.print()
 
     lr = FloatPrompt.ask("    Learning rate", default=args.lr)
@@ -450,8 +463,12 @@ def cmd_train(args: argparse.Namespace) -> None:
     est_roll = synthesis_calls * 8 * rollouts
     est_cost = est_synth * 0.05 + est_roll * 0.02
 
+    console.print()
+    console.rule(style="dim")
+    console.print()
+
     grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="bold cyan", justify="right", min_width=22)
+    grid.add_column(style="bold", justify="right", min_width=22)
     grid.add_column()
     grid.add_row("Corpus", corpus)
     grid.add_row("Model", model)
@@ -461,15 +478,8 @@ def cmd_train(args: argparse.Namespace) -> None:
     grid.add_row("Iterations", str(iterations))
     grid.add_row("Learning rate", f"{lr:.0e}")
     grid.add_row("Chunk size", f"{chunk_size} words")
-    grid.add_row("Est. cost", f"[yellow]~${est_cost:,.0f}[/] on Together AI")
-
-    console.print()
-    console.print(Panel(
-        grid,
-        title="[bold]Training Summary",
-        border_style="cyan",
-        padding=(1, 2),
-    ))
+    grid.add_row("Est. cost", f"~${est_cost:,.0f}")
+    console.print(grid)
     console.print()
 
     if not Confirm.ask("    Start training?", default=True):
@@ -498,11 +508,9 @@ def cmd_train(args: argparse.Namespace) -> None:
     )
 
     console.print()
-    console.print(Panel(
-        "[bold green]Training complete![/]",
-        border_style="green",
-        padding=(0, 2),
-    ))
+    console.rule(style="dim")
+    console.print()
+    console.print("    [green]✓[/]  Training complete")
     console.print()
 
 
@@ -539,12 +547,9 @@ def cmd_ask(args: argparse.Namespace) -> None:
         )
 
     console.print()
-    console.print(Panel(
-        answer,
-        title="[bold green]Answer",
-        border_style="green",
-        padding=(1, 2),
-    ))
+    console.rule(style="dim")
+    console.print()
+    console.print(answer)
     console.print()
 
 
@@ -592,30 +597,33 @@ def cmd_search(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_status(args: argparse.Namespace) -> None:
-    table = Table(
-        box=box.SIMPLE_HEAVY,
-        show_header=False,
-        padding=(0, 2),
-    )
-    table.add_column("Key", style="bold", min_width=14)
-    table.add_column("Status")
+    console.print()
+
+    header = Table.grid(expand=True)
+    header.add_column(ratio=1)
+    header.add_column(justify="right")
+    header.add_row("[bold]KONASH[/]  Status", f"[dim]{_get_version()}[/]")
+    console.print(header)
+    console.print()
+    console.rule(style="dim")
+    console.print()
 
     # Together key
     together_key = _get_together_key()
     if together_key:
-        table.add_row("Together AI", f"[green]✓[/]  {_mask(together_key)}")
+        console.print(f"    [green]✓[/]  Together AI    {_mask(together_key)}")
     else:
-        table.add_row("Together AI", "[red]✗  NOT SET[/]")
+        console.print("    [red]✗[/]  Together AI    not set")
 
     # HF token
     hf_token = _get_hf_token()
     if hf_token:
-        table.add_row("HuggingFace", f"[green]✓[/]  {_mask(hf_token)}")
+        console.print(f"    [green]✓[/]  HuggingFace    {_mask(hf_token)}")
     else:
-        table.add_row("HuggingFace", "[yellow]–  not set[/]")
+        console.print("    [dim]–[/]  HuggingFace    not set")
 
     # Config
-    table.add_row("Config", f"[dim]{CONFIG_FILE}[/]")
+    console.print(f"    [dim]Config  {CONFIG_FILE}[/]")
 
     # Training status
     project_dir = os.path.join(".konash", "default", "checkpoints")
@@ -626,26 +634,17 @@ def cmd_status(args: argparse.Namespace) -> None:
                 meta = json.load(f)
             model = meta.get("base_model", "?")
             iters = meta.get("iterations", 0)
-            table.add_row(
-                "Trained",
-                f"[green]✓[/]  {model} ({iters} iters)",
-            )
+            console.print(f"    [green]✓[/]  Trained        {model} ({iters} iters)")
         else:
-            table.add_row("Trained", "[yellow]checkpoint exists, no meta[/]")
+            console.print("    [dim]–[/]  Trained        checkpoint exists, no meta")
     else:
-        table.add_row("Trained", "[dim]no[/]")
+        console.print("    [dim]–[/]  Trained        no")
 
-    console.print()
-    console.print(Panel(
-        table,
-        title="[bold cyan]KONASH Status",
-        border_style="cyan",
-        padding=(1, 2),
-    ))
     console.print()
 
     if not together_key:
-        console.print("    Run [cyan]konash setup[/] to configure.\n")
+        console.print("    Run [bold]konash setup[/] to configure.")
+        console.print()
 
 
 # ---------------------------------------------------------------------------
