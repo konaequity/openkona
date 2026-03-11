@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "konash"
-version = "0.1.12"
+version = "0.2.0"
 description = "Train knowledge agents that search, retrieve, compress, and reason — on a single GPU."
 requires-python = ">=3.11"
 dependencies = [
@@ -20,6 +20,11 @@ train = [
     "accelerate>=0.25",
     "bitsandbytes>=0.46.1",
 ]
+unsloth = [
+    "unsloth",
+    "peft>=0.7",
+    "together>=2.0",
+]
 search = [
     "faiss-cpu>=1.7",
 ]
@@ -33,6 +38,8 @@ all = [
     "accelerate>=0.25",
     "bitsandbytes>=0.41",
     "faiss-cpu>=1.7",
+    "unsloth",
+    "together>=2.0",
 ]
 
 [project.scripts]
