@@ -21,8 +21,8 @@ Bottlenecks and friction points standing between KONASH and open-source traction
 
 ## P2 — Testing and CI
 
-- [ ] Add a basic test suite (unit tests for synthesis, rollouts, OAPL loss, VGS)
-- [ ] Set up GitHub Actions for CI on every PR
+- [x] Add a basic test suite (unit tests for synthesis, rollouts, OAPL loss, VGS)
+- [x] Set up GitHub Actions for CI on every PR
 - [ ] Test the parallelized synthesis (api.py) and VGS (value_search.py) changes that are currently unvalidated
 - [ ] Integration test: full pipeline at quick-test scale runs without errors
 
