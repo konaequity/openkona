@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
 
 def test_verification_matrix_traces_core_karl_subsystems():
-    matrix = Path("/Users/joeyroth/Desktop/openkona/docs/verification-matrix.md").read_text()
+    matrix = (_REPO_ROOT / "docs" / "verification-matrix.md").read_text()
     for phrase in [
         "KARLBench",
         "BrowseComp-Plus",
@@ -33,7 +35,7 @@ def test_verification_matrix_traces_core_karl_subsystems():
 
 
 def test_verification_matrix_records_in_distribution_and_held_out_split():
-    matrix = Path("/Users/joeyroth/Desktop/openkona/docs/verification-matrix.md").read_text()
+    matrix = (_REPO_ROOT / "docs" / "verification-matrix.md").read_text()
     for phrase in [
         "in-distribution training tasks: BrowseComp-Plus and TREC-Biogen",
         "held-out evaluation tasks: FinanceBench, QAMPARI, FreshStack, PMBench",
