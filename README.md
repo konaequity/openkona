@@ -8,8 +8,8 @@
 Point it at any document corpus — it trains a model that learns <i>how to search</i>, not just facts.
 </p>
 
-[![PRs-Welcome](https://img.shields.io/badge/PRs-welcome-blue.svg)](CONTRIBUTING.md)
 [![PyPI](https://img.shields.io/pypi/v/konash)](https://pypi.org/project/konash/)
+[![PRs-Welcome](https://img.shields.io/badge/PRs-welcome-blue.svg)](CONTRIBUTING.md)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 
 </div>
@@ -33,7 +33,7 @@ konash setup    # walks you through API keys
 konash train    # pick a corpus, model, and scale — hit go
 ```
 
-That's it. Setup takes 2 minutes. Training takes 5 minutes (quick test) to several hours (KARL scale).
+Setup takes 2 minutes. Training takes 5 minutes (quick test) to several hours (scaled up).
 
 ### What happens under the hood
 
@@ -67,6 +67,52 @@ answer = agent.solve("Your question here", parallel_rollouts=3)
 
 ---
 
+## Features
+
+| | Feature | Description |
+|---|---|---|
+| **Agentic QA Synthesis** | Multi-turn agent loop explores your corpus via search, generates grounded multi-constraint question-answer pairs |
+| **OAPL Training** | Off-policy RL with squared advantage loss trains on successful search trajectories |
+| **Value-Guided Search** | Learned value model scores partial rollouts, parallel BFS tree search at inference time |
+| **Pass-Rate Filtering** | Keeps questions at the learning frontier — not too easy, not too hard (0.1–0.9 pass rate) |
+| **Parallel Rollouts** | N=10–20 independent rollouts + aggregation for consistent answers |
+| **Pre-built Indexes** | Ships with Qwen3-Embedding-8B indexes for supported datasets — no embedding step needed |
+| **Any Corpus** | Point at a local folder of documents — KONASH builds the index on first run |
+
+---
+
+## How It Works
+
+Standard retrieval systems use a frozen model with a single retrieve-then-read pass. KONASH trains the model's **search policy** through reinforcement learning:
+
+- The model learns **what to search for** (query generation)
+- The model learns **when to search again** (multi-step retrieval)
+- The model learns **how to reason** over retrieved evidence (cross-document synthesis)
+- The trained model **generalizes to new corpora** it hasn't seen
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   Agentic    │     │   Rollout    │     │  Pass-rate   │     │     OAPL     │
+│  QA Synthesis│────▶│  Generation  │────▶│  Filtering   │────▶│   Training   │
+│  (parallel)  │     │  (parallel)  │     │  [0.1, 0.9]  │     │  (off-policy)│
+└──────────────┘     └──────────────┘     └──────────────┘     └──────┬───────┘
+                                                                      │
+                                                              ┌───────▼───────┐
+                                                              │ Value Model   │
+                                                              │   Training    │
+                                                              └───────┬───────┘
+                                                                      │
+                                                              ┌───────▼───────┐
+                                                              │  Value-Guided │
+                                                              │    Search     │
+                                                              │   (VGS)       │
+                                                              └───────────────┘
+```
+
+Each iteration: synthesize → rollout → filter → train → repeat with improved model.
+
+---
+
 ## Requirements
 
 ### API Keys (set up via `konash setup`)
@@ -89,13 +135,13 @@ answer = agent.solve("Your question here", parallel_rollouts=3)
 
 Datasets download automatically when selected in `konash train`:
 
-| Dataset | Domain | Docs | Size | Pre-built Index |
-|---------|--------|------|------|-----------------|
-| **BrowseComp-Plus** | Web documents (67K articles) | 67,707 | 2.5 GB | Qwen3-Embedding-8B via Tevatron |
-| **FinanceBench** | SEC filings, financial reports | ~150 | Varies | — |
-| **QAMPARI** | Encyclopedic entity search | 250K+ chunks | Varies | — |
-| **FreshStack** | Technical documentation | Varies | Varies | — |
-| **Local folder** | Your own documents | Any | Any | Built on first run |
+| Dataset | Domain | Docs | Pre-built Index |
+|---------|--------|------|-----------------|
+| **BrowseComp-Plus** | Web documents (67K articles) | 67,707 | Qwen3-Embedding-8B via Tevatron |
+| **FinanceBench** | SEC filings, financial reports | ~150 | — |
+| **QAMPARI** | Encyclopedic entity search | 250K+ chunks | — |
+| **FreshStack** | Technical documentation | Varies | — |
+| **Local folder** | Your own documents | Any | Built on first run |
 
 ### Supported file formats (local folders)
 
@@ -123,44 +169,8 @@ Any model available on [Together AI](https://api.together.xyz/models):
 | Agent Task | Notebook | Description |
 |---|---|---|
 | **Trivia Night** | *Coming soon* | Train a model to answer multi-constraint trivia by searching Wikipedia |
-
----
-
-## How it differs from standard RAG
-
-Standard RAG uses a frozen model with a single retrieve-then-read pass. KONASH trains the model's **search policy** through RL:
-
-- The model learns **what to search for** (query generation)
-- The model learns **when to search again** (multi-step retrieval)
-- The model learns **how to reason** over retrieved evidence (cross-document synthesis)
-- The trained model **generalizes to new corpora** it hasn't seen
-
-With test-time compute scaling (parallel rollouts or VGS), a fine-tuned 8B model can match or exceed Opus 4.6 on grounded reasoning tasks.
-
----
-
-## Training Pipeline
-
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Agentic    │     │   Rollout    │     │  Pass-rate   │     │     OAPL     │
-│  QA Synthesis│────▶│  Generation  │────▶│  Filtering   │────▶│   Training   │
-│  (parallel)  │     │  (parallel)  │     │  [0.1, 0.9]  │     │  (off-policy)│
-└──────────────┘     └──────────────┘     └──────────────┘     └──────┬───────┘
-                                                                      │
-                                                              ┌───────▼───────┐
-                                                              │ Value Model   │
-                                                              │   Training    │
-                                                              └───────┬───────┘
-                                                                      │
-                                                              ┌───────▼───────┐
-                                                              │  Value-Guided │
-                                                              │    Search     │
-                                                              │   (VGS)       │
-                                                              └───────────────┘
-```
-
-Each iteration: synthesize → rollout → filter → train → repeat with improved model.
+| **20 Questions** | *Coming soon* | Train an agent to identify entities through iterative yes/no questioning |
+| **GeoGuessr** | *Coming soon* | Train an agent to geolocate images by searching geographic knowledge bases |
 
 ---
 
@@ -182,7 +192,6 @@ Contributions are welcome! Please open an issue or PR on [GitHub](https://github
   howpublished = {\url{https://github.com/konaequity/konash}}
 }
 ```
-
 
 ---
 
