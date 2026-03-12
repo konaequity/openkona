@@ -499,9 +499,18 @@ class Agent:
             on_step=_on_step,
             max_steps=rollout_max_steps,
         )
+        # At small scale, relax pass-rate filter — with few QA pairs,
+        # strict filtering often leaves 0 training examples.
+        from konash.synthesis.filters import PassRateFilter
+        if synthesis_calls <= 10:
+            pr_filter = PassRateFilter(min_pass_rate=0.0, max_pass_rate=1.0)
+        else:
+            pr_filter = PassRateFilter(min_pass_rate=0.1, max_pass_rate=0.9)
+
         pipeline = SynthesisPipeline(
             synthesizer=synthesizer,
             rollout_generator=rollout_gen,
+            pass_rate_filter=pr_filter,
         )
 
         # Set up trainer
