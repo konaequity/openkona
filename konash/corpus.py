@@ -145,6 +145,107 @@ class Corpus:
         corpus_id = hashlib.md5(str(self.path.resolve()).encode()).hexdigest()[:12]
         return Path(self.cache_dir) / f"index_{corpus_id}.npz"
 
+    def _bundled_index_path(self) -> Optional[Path]:
+        """Check for a pre-built index shipped alongside the corpus.
+
+        Looks for ``prebuilt_index.npz`` in the corpus directory itself
+        and its parent (handles ``browsecomp-plus/documents/``).
+        """
+        for candidate in (self.path, self.path.parent):
+            p = candidate / "prebuilt_index.npz"
+            if p.exists():
+                return p
+        return None
+
+    def _load_prebuilt(
+        self,
+        index_path: Path,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    ) -> bool:
+        """Load a slim pre-built index (vectors + doc_ids) and map text from disk."""
+        try:
+            data = np.load(str(index_path), allow_pickle=True)
+        except Exception:
+            return False
+
+        # Slim format: vectors + doc_ids (no text stored)
+        if "doc_ids" in data:
+            vectors = data["vectors"].astype(np.float32)
+            doc_ids = data["doc_ids"].tolist()
+            docs_dir = self.path if self.path.is_dir() else self.path.parent
+
+            documents = []
+            for docid in doc_ids:
+                fpath = docs_dir / f"{docid}.txt"
+                text = fpath.read_text(errors="replace") if fpath.exists() else ""
+                documents.append({"text": text, "source": str(fpath), "chunk_index": 0})
+
+            self.documents = documents
+            self.vector_search.index(documents, embeddings=vectors, text_key="text")
+            self._indexed = True
+            self._align_embed_fn(index_path)
+            if progress_callback:
+                progress_callback("embedding", len(documents), len(documents))
+            return True
+
+        # Legacy format: full documents stored in npz
+        if self.vector_search.load_cached_index(path=str(index_path)):
+            self.documents = self.vector_search._documents
+            self._indexed = True
+            self._align_embed_fn(index_path)
+            if progress_callback:
+                progress_callback("embedding", len(self.documents), len(self.documents))
+            return True
+
+        return False
+
+    def _align_embed_fn(self, index_path: Path) -> None:
+        """Swap the query embed function to match a pre-built index's model.
+
+        Pre-built indexes store an ``embed_model`` key so we know which
+        model produced the vectors.  If it differs from the currently
+        configured embed function we load the matching one.
+        """
+        try:
+            meta = np.load(str(index_path), allow_pickle=True)
+            model = str(meta.get("embed_model", ""))
+        except Exception:
+            return
+
+        if not model or model == "":
+            return
+
+        if "qwen3" in model:
+            try:
+                self._set_qwen3_query_fn()
+            except Exception:
+                pass  # Fall back to whatever was configured
+
+    def _set_qwen3_query_fn(self) -> None:
+        """Set query embed_fn to Qwen3-Embedding-8B via HF Inference API."""
+        import json as _json
+        from huggingface_hub import InferenceClient
+
+        config_path = os.path.expanduser("~/.konash/config.json")
+        hf_token = os.environ.get("HF_TOKEN")
+        if not hf_token and os.path.exists(config_path):
+            with open(config_path) as f:
+                hf_token = _json.load(f).get("hf_token")
+
+        client = InferenceClient(api_key=hf_token)
+        hf_model = "Qwen/Qwen3-Embedding-8B"
+
+        def query_fn(texts):
+            all_embs = []
+            for i in range(0, len(texts), 100):
+                batch = texts[i : i + 100]
+                r = client.feature_extraction(batch, model=hf_model)
+                all_embs.append(np.array(r, dtype=np.float32))
+            return np.vstack(all_embs) if len(all_embs) > 1 else all_embs[0]
+
+        self.vector_search.embed_fn = query_fn
+        self.embed_fn = query_fn
+
     def ingest(
         self,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
@@ -159,7 +260,7 @@ class Corpus:
 
         Returns *self* for chaining.
         """
-        # Try loading from cache first
+        # Try loading from project-specific cache first
         cache_file = self._cache_path()
         if cache_file is not None and cache_file.exists():
             if self.vector_search.load_cached_index(path=str(cache_file)):
@@ -168,6 +269,12 @@ class Corpus:
                 if progress_callback:
                     total = len(self.documents)
                     progress_callback("embedding", total, total)
+                return self
+
+        # Try bundled pre-built index (shipped with corpus download)
+        bundled = self._bundled_index_path()
+        if bundled is not None:
+            if self._load_prebuilt(bundled, progress_callback):
                 return self
 
         raw_docs = self._read_all(progress_callback)
