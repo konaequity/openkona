@@ -1,103 +1,85 @@
 # Contributing to KONASH
 
-Clone the repository:
+Thanks for your interest in contributing! This guide will help you get set up.
+
+## Development Setup
 
 ```bash
+# Clone the repo
 git clone https://github.com/konaequity/konash.git
 cd konash
+
+# Create a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install in editable mode with dev dependencies
+pip install -e ".[dev,search]"
+
+# For local training development
+pip install -e ".[dev,train]"
+
+# For everything
+pip install -e ".[all,dev]"
 ```
 
-Install the dependencies:
+## API Keys
+
+Run setup to configure your keys:
 
 ```bash
-uv sync --group dev
+konash setup
 ```
 
-### Code Quality Checks (prek)
+This stores keys in `~/.konash/config.json`. You'll need:
+- **Together AI** — LLM inference ([api.together.xyz](https://api.together.xyz))
+- **HuggingFace** — Embeddings and pre-built indexes ([huggingface.co/settings/tokens](https://huggingface.co/settings/tokens))
+- **Google AI** *(optional)* — Gemini embeddings ([aistudio.google.com](https://aistudio.google.com))
 
-This project uses [prek](https://github.com/j178/prek) to run local checks (ruff, pyright, uv.lock sync, and unit tests). Before submitting a pull request, please ensure your code passes all quality checks:
+## Project Structure
+
+```
+konash/
+  api.py              # High-level Agent class
+  cli.py              # CLI (konash train, konash ask, konash setup)
+  corpus.py           # Corpus loading, embedding, vector search
+  download.py         # Dataset and pre-built index downloads
+  inference/
+    value_search.py   # Value-Guided Search (VGS) engine
+  synthesis/
+    qa.py             # Agentic QA synthesizer
+    rollouts.py       # Rollout generator
+    pipeline.py       # Orchestrates synthesis + rollouts + filtering
+  training/
+    oapl.py           # OAPL trainer (squared-advantage loss)
+    unsloth_engine.py # Unsloth-based training engine
+```
+
+## Running Tests
 
 ```bash
-# Install git hooks (optional but recommended)
-uv run prek install
-
-# Run all checks against all files (formatting, linting, typecheck, uv.lock, tests)
-uv run prek run --all-files
+pytest
 ```
 
-You can also run individual hooks:
+## Making Changes
 
-```bash
-uv run prek run ruff
-uv run prek run ruff-format
-uv run prek run pyright
-uv run prek run uv-lock-check
-uv run prek run pytest
-```
+1. Fork the repo and create a branch from `main`
+2. Make your changes
+3. Add tests if applicable
+4. Run `pytest` to make sure nothing is broken
+5. Open a PR against `main`
 
-These checks are automatically run in CI for all pull requests.
+## What to Work On
 
-### Release Process
+Check [ROADMAP.md](ROADMAP.md) for prioritized tasks. Issues labeled `good first issue` are a good starting point.
 
-To create a new release:
+## Style
 
-1. **Review merged PRs since the last release**:
-   - Go to the [pull requests page](https://github.com/konaequity/konash/pulls?q=is%3Apr+is%3Amerged+sort%3Aupdated-desc)
-   - Review PRs merged since the last release to understand what changed
-   - Note any breaking changes, new features, or important bug fixes
+- Python 3.11+
+- Keep dependencies minimal — core package should stay lightweight
+- Prefer simple, direct code over abstractions
+- Match the style of surrounding code
 
-2. **Create a draft release**:
-   - Go to [Actions](https://github.com/konaequity/konash/actions)
-   - Click "Run workflow"
-   - Select the version bump type:
-     - `patch`: Bug fixes and minor changes (0.1.0 → 0.1.1)
-     - `minor`: New features and non-breaking changes (0.1.0 → 0.2.0)
-     - `major`: Breaking changes (0.1.0 → 1.0.0)
+## Questions?
 
-3. **Edit the draft release notes**:
-   - Go to the [releases page](https://github.com/konaequity/konash/releases)
-   - Click "Edit" on the draft release
-   - Add release highlights, breaking changes, and curated changelog
-
-4. **Finalize the release**:
-   - Review and merge the automatically created release PR
-   - This will automatically create the git tag, publish release notes, and build the package
-
-### GPU Training (Local or Cloud VM)
-
-Copy the `.env.example` file to `.env` and set the environment variables:
-
-```bash
-cp .env.example .env
-```
-
-Make sure you're on a machine with at least one A100-80GB or H100 GPU. Lower-end GPUs may work for smaller models with QLoRA, but training will be slower.
-
-### Running an Example
-
-Once set up, you can run one of the example notebooks:
-
-```bash
-jupyter notebook notebooks/trivia_night.ipynb
-```
-
-You can monitor training progress with Weights & Biases.
-
-You should see improvement in `val/reward` after the first OAPL iteration completes.
-
-### Adding Docs
-
-We use Mintlify to serve our docs. Here are the steps for adding a new page:
-
-1. Clone the repo
-2. Open the `/docs` directory in your CLI and IDE
-3. Run `npx mintlify dev` to start serving a local version of the docs in your browser
-4. Create a new `.mdx` file in the relevant directory
-5. Add a title and sidebar title (see other pages for examples)
-6. In `docs.json`, add a link to the new page within one of the `navigation`.`groups`
-7. Ensure everything works by navigating to and viewing the page in your browser
-8. Submit a PR
-
-### Cleaning Up
-
-When you're done, shut down your GPU instance (if using a cloud VM) or stop the local training process.
+Open a [GitHub Discussion](https://github.com/konaequity/konash/discussions) or file an [issue](https://github.com/konaequity/konash/issues).
