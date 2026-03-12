@@ -390,6 +390,25 @@ def cmd_setup(args: argparse.Namespace) -> None:
     else:
         config["google_api_key"] = google_key
 
+    # Google tier selection (determines embedding speed)
+    if config.get("google_api_key"):
+        console.print()
+        console.print("    [dim]Embedding speed depends on your Google billing tier.[/]")
+        console.print("    [dim]Check at: console.cloud.google.com → APIs → Quotas[/]")
+        console.print()
+        tier_opts = [
+            {"label": "Free", "hint": "100 RPM  ·  slow"},
+            {"label": "Tier 1", "hint": "3K RPM  ·  ~5 min for BCP"},
+            {"label": "Tier 2", "hint": "5K RPM  ·  ~3 min for BCP"},
+            {"label": "Tier 3", "hint": "20K RPM  ·  <1 min for BCP"},
+        ]
+        tier_keys = ["free", "tier-1", "tier-2", "tier-3"]
+        console.print("    [dim]Use arrow keys, press Enter to select[/]")
+        console.print()
+        tier_idx = _arrow_select(console, tier_opts)
+        config["google_tier"] = tier_keys[tier_idx]
+        console.print(f"    Set to [bold]{tier_opts[tier_idx]['label']}[/]")
+
     # ── 3 · HuggingFace ──────────────────────────────────────────────
     console.print()
     console.rule("[bold]3[/]  HuggingFace", style="dim")

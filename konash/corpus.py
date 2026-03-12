@@ -137,6 +137,14 @@ class Corpus:
     # Public API
     # ------------------------------------------------------------------
 
+    def _cache_path(self) -> Optional[Path]:
+        """Return the index cache file path, or None if caching is disabled."""
+        if self.cache_dir is None:
+            return None
+        # Deterministic cache key from corpus path
+        corpus_id = hashlib.md5(str(self.path.resolve()).encode()).hexdigest()[:12]
+        return Path(self.cache_dir) / f"index_{corpus_id}.npz"
+
     def ingest(
         self,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
@@ -151,6 +159,17 @@ class Corpus:
 
         Returns *self* for chaining.
         """
+        # Try loading from cache first
+        cache_file = self._cache_path()
+        if cache_file is not None and cache_file.exists():
+            if self.vector_search.load_cached_index(path=str(cache_file)):
+                self.documents = self.vector_search._documents
+                self._indexed = True
+                if progress_callback:
+                    total = len(self.documents)
+                    progress_callback("embedding", total, total)
+                return self
+
         raw_docs = self._read_all(progress_callback)
         self.documents = self._chunk_all(raw_docs, progress_callback)
 
@@ -185,6 +204,12 @@ class Corpus:
                 progress_callback("embedding", total, total)
 
         self._indexed = True
+
+        # Save index to cache for instant reload next time
+        if cache_file is not None:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            self.vector_search.save_index(str(cache_file))
+
         return self
 
     def search(

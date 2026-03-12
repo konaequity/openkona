@@ -252,7 +252,13 @@ class Agent:
             self.corpus = corpus
         else:
             embed_fn = self._make_embed_fn()
-            self.corpus = Corpus(corpus, chunk_size=chunk_size, embed_fn=embed_fn)
+            # Cache embeddings next to checkpoint dir for instant reload
+            _ckpt = checkpoint_dir or os.path.join(".konash", project, "checkpoints")
+            _cache_dir = os.path.join(_ckpt, "index_cache")
+            self.corpus = Corpus(
+                corpus, chunk_size=chunk_size, embed_fn=embed_fn,
+                cache_dir=_cache_dir,
+            )
 
         # Inference API (split mode: fast API for inference, local model for training)
         self.inference_api_base = inference_api_base or os.environ.get("KONASH_INFERENCE_API_BASE")

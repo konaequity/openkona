@@ -206,12 +206,38 @@ def resolve_embedding_model_name(name: str) -> str:
 # Gemini Embedding via Google GenAI API
 # ---------------------------------------------------------------------------
 
+# Gemini Embedding 2 rate limits by tier
+# See: https://ai.google.dev/gemini-api/docs/rate-limits
+GEMINI_TIERS = {
+    "free":   {"rpm": 100,    "target_rpm": 80,     "workers": 3},
+    "tier-1": {"rpm": 3_000,  "target_rpm": 2_500,  "workers": 25},
+    "tier-2": {"rpm": 5_000,  "target_rpm": 4_000,  "workers": 40},
+    "tier-3": {"rpm": 20_000, "target_rpm": 16_000,  "workers": 80},
+}
+
+
+def _load_gemini_tier() -> Optional[dict]:
+    """Load Gemini tier from ``~/.konash/config.json``."""
+    config_path = os.path.expanduser("~/.konash/config.json")
+    try:
+        if os.path.exists(config_path):
+            import json as _json
+            with open(config_path) as f:
+                tier_name = _json.load(f).get("google_tier")
+            if tier_name and tier_name in GEMINI_TIERS:
+                return {"tier": tier_name, **GEMINI_TIERS[tier_name]}
+    except Exception:
+        pass
+    return None
+
+
 def load_gemini_embedding_model(
     model_name: str = "gemini-embedding-2-preview",
     api_key: Optional[str] = None,
     output_dimensionality: int = 768,
     batch_size: int = 100,
-    max_workers: int = 5,
+    max_workers: Optional[int] = None,
+    target_rpm: Optional[int] = None,
 ) -> Callable[[List[str]], np.ndarray]:
     """Load a Gemini embedding model and return a callable.
 
@@ -226,10 +252,12 @@ def load_gemini_embedding_model(
         Embedding vector size.  Recommended: 768, 1536, or 3072.
         Smaller = faster downstream search, minimal quality loss (MRL).
     batch_size : int
-        Max texts per API call (default 100).
-    max_workers : int
-        Concurrent API requests (default 20).  Gemini free tier allows
-        1,500 RPM; 20 workers keeps us well under that.
+        Max texts per API call (default 100, Gemini max).
+    max_workers : int or None
+        Concurrent API requests.  Auto-detected from tier if ``None``.
+    target_rpm : int or None
+        Max requests per minute.  Auto-detected from tier if ``None``.
+        Set to 0 to disable pacing.
 
     Returns
     -------
@@ -259,10 +287,26 @@ def load_gemini_embedding_model(
 
     client = genai.Client(api_key=key)
     resolved = resolve_embedding_model_name(model_name)
-    logger.info(
-        "Gemini embedding: model=%s, dim=%d, batch=%d, workers=%d",
-        resolved, output_dimensionality, batch_size, max_workers,
-    )
+
+    # Resolve tier → workers/rpm if not explicitly set
+    if max_workers is None or target_rpm is None:
+        tier = _load_gemini_tier()
+        if tier is None:
+            # Default to tier-1 (most common paid tier)
+            tier = {"tier": "tier-1", **GEMINI_TIERS["tier-1"]}
+        if max_workers is None:
+            max_workers = tier["workers"]
+        if target_rpm is None:
+            target_rpm = tier["target_rpm"]
+        logger.info(
+            "Gemini tier: %s (RPM limit %d → target %d, %d workers)",
+            tier["tier"], tier.get("rpm", "?"), target_rpm, max_workers,
+        )
+    else:
+        logger.info(
+            "Gemini embedding: model=%s, dim=%d, batch=%d, workers=%d, rpm=%d",
+            resolved, output_dimensionality, batch_size, max_workers, target_rpm,
+        )
 
     def _embed_batch(batch: List[str], task_type: str = "RETRIEVAL_DOCUMENT") -> np.ndarray:
         import time as _time
@@ -294,9 +338,36 @@ def load_gemini_embedding_model(
                 else:
                     raise
 
-    def _run_parallel(texts: List[str], task_type: str) -> np.ndarray:
-        import time as _time
+    # Token-bucket rate limiter: allows bursts up to max_workers but
+    # sustains at most target_rpm requests per minute.
+    import threading as _threading
 
+    class _RateLimiter:
+        """Sliding-window rate limiter using a token bucket."""
+
+        def __init__(self, rpm: int):
+            self._interval = 60.0 / rpm if rpm > 0 else 0.0
+            self._lock = _threading.Lock()
+            self._last = 0.0
+
+        def wait(self) -> None:
+            if self._interval <= 0:
+                return
+            import time as _t
+            with self._lock:
+                now = _t.monotonic()
+                earliest = self._last + self._interval
+                if now < earliest:
+                    _t.sleep(earliest - now)
+                self._last = _t.monotonic()
+
+    _limiter = _RateLimiter(target_rpm)
+
+    def _rate_limited_embed(batch: List[str], task_type: str) -> np.ndarray:
+        _limiter.wait()
+        return _embed_batch(batch, task_type)
+
+    def _run_parallel(texts: List[str], task_type: str) -> np.ndarray:
         batches = [
             (i, texts[i : i + batch_size])
             for i in range(0, len(texts), batch_size)
@@ -309,8 +380,7 @@ def load_gemini_embedding_model(
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {}
             for idx, batch in batches:
-                futures[pool.submit(_embed_batch, batch, task_type)] = idx
-                _time.sleep(0.05)
+                futures[pool.submit(_rate_limited_embed, batch, task_type)] = idx
             for future in as_completed(futures):
                 idx = futures[future]
                 results[idx] = future.result()
