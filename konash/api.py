@@ -924,7 +924,7 @@ class Agent:
             query_text = _extract_tool_query(tool_call)
             results = self.corpus.search(query_text, top_k=top_k)
             result_text = "\n\n".join(
-                f"[{i+1}] (score: {r.get('score', 0):.3f}) {r.get('text', '')[:500]}"
+                f"[{i+1}] (score: {r.get('score', 0):.3f}) {r.get('text', '')}"
                 for i, r in enumerate(results)
             )
             observation: Dict[str, Any] = {"role": "tool", "content": result_text}

@@ -272,26 +272,58 @@ def download_financebench(
     eval_questions: List[Dict] = []
 
     for rec in ds:
-        # Each record has question, answer, context/evidence
         question = rec.get("question", "")
         answer = rec.get("answer", "")
         doc_name = rec.get("doc_name", "") or rec.get("company", f"doc_{doc_count}")
-        context = rec.get("evidence", "") or rec.get("context", "")
-        if isinstance(context, list):
-            context = "\n\n".join(str(c) for c in context)
 
-        if context and doc_name not in seen:
-            seen.add(doc_name)
-            safe_name = doc_name.replace("/", "_").replace("\\", "_")[:100]
-            filepath = os.path.join(docs_dir, f"{safe_name}.txt")
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(context)
-            doc_count += 1
+        # Extract evidence — FinanceBench stores evidence as a list of dicts,
+        # each with 'evidence_text', 'evidence_text_full_page', and
+        # 'evidence_page_num'.  Save each unique evidence page as a separate
+        # file so multi-question documents don't lose pages.
+        evidence = rec.get("evidence", "") or rec.get("context", "")
 
-        if question and len(eval_questions) < 20:
+        # Normalise to a list of evidence chunks
+        if isinstance(evidence, dict):
+            evidence_items = [evidence]
+        elif isinstance(evidence, list):
+            evidence_items = [e for e in evidence if isinstance(e, dict)]
+        else:
+            evidence_items = []
+            # Fallback: treat as raw text
+            if evidence:
+                doc_key = doc_name
+                if doc_key not in seen:
+                    seen.add(doc_key)
+                    safe_name = doc_name.replace("/", "_").replace("\\", "_")[:120]
+                    filepath = os.path.join(docs_dir, f"{safe_name}.txt")
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        f.write(str(evidence))
+                    doc_count += 1
+
+        for ev in evidence_items:
+            page_num = ev.get("evidence_page_num", "")
+            # Prefer full page text for maximum context
+            context = (
+                ev.get("evidence_text_full_page", "")
+                or ev.get("evidence_text", "")
+            )
+            if not context:
+                continue
+
+            doc_key = f"{doc_name}_p{page_num}" if page_num else doc_name
+            if doc_key not in seen:
+                seen.add(doc_key)
+                safe_name = doc_key.replace("/", "_").replace("\\", "_")[:120]
+                filepath = os.path.join(docs_dir, f"{safe_name}.txt")
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(context)
+                doc_count += 1
+
+        if question:
             eval_questions.append({
                 "question": question,
                 "answer": answer,
+                "doc_name": doc_name,
             })
 
     eval_path = os.path.join(output_dir, "eval_questions.json")
@@ -300,6 +332,7 @@ def download_financebench(
 
     _print(console, f"    [bold green]Done![/]")
     _print(console, f"    Documents:  {doc_count}")
+    _print(console, f"    Eval Q's:   {len(eval_questions)}")
     _print(console, f"    Saved to:   {output_dir}")
 
     return output_dir
