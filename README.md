@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.png" alt="KONASH" width="200">
+
 # KONASH
 
 **Knowledge-grounded Off-policy Networks for Agentic System Harnesses**
