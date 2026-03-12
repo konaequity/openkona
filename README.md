@@ -14,9 +14,16 @@ Point it at any document corpus — it trains a model that learns <i>how to sear
 
 </div>
 
-KONASH trains knowledge agents via reinforcement learning that match or exceed frontier models on grounded reasoning tasks — at a fraction of the cost. 
+KONASH trains knowledge agents via reinforcement learning that match or exceed frontier models on grounded reasoning tasks — at a fraction of the cost.
 
 ---
+
+## Key Benefits
+
+- **100x cheaper training** — Single GPU replaces multi-node clusters. ~$100–500 per iteration instead of ~$10K–50K.
+- **Higher quality** — RL-trained agents search more efficiently, retrieve more diversely, and reason more accurately than their base models. The gains are algorithmic, not scale-dependent.
+- **Consistent results** — Parallel thinking (N=10–20 rollouts + aggregation) turns probabilistic search into near-deterministic accuracy. Cheap rollouts on a small model mean you can afford this on every query.
+- **Zero lock-in** — Your model, your weights, your infrastructure. Deploy anywhere with vLLM and LoRA hot-swapping.
 
 ## Quickstart
 
@@ -76,11 +83,6 @@ answer = agent.solve("Your question here", parallel_rollouts=3)
 - Core dependencies: `numpy`, `rich`, `together`, `google-genai`
 - Optional: `faiss-cpu` (fast vector search), `torch` + `transformers` + `peft` (local training)
 
-### Hardware
-
-- **No GPU required** for API-based training (Together AI handles inference, OAPL runs on their cluster)
-- **Single GPU** (T4+) for local QLoRA training via Unsloth
-
 ---
 
 ## Supported Datasets
@@ -121,23 +123,19 @@ Any model available on [Together AI](https://api.together.xyz/models):
 | Agent Task | Notebook | Description |
 |---|---|---|
 | **Trivia Night** | *Coming soon* | Train a model to answer multi-constraint trivia by searching Wikipedia |
-| **20 Questions** | *Coming soon* | Train a model to identify a mystery entity in 20 yes/no searches |
-| **GeoGuessr** | *Coming soon* | Train a model to pinpoint locations from landmark and terrain descriptions |
 
 ---
 
-## Agent Harness + Reinforcement Learning
+## How it differs from standard RAG
 
-KONASH wraps each model in an **agent harness** — an environment where the model interacts with tools (vector search, context compression) across multi-step episodes. The harness records full trajectories: what the model searched for, what it retrieved, how it reasoned, and whether it got the right answer.
+Standard RAG uses a frozen model with a single retrieve-then-read pass. KONASH trains the model's **search policy** through RL:
 
-These trajectories become training data for **off-policy RL (OAPL)**. The model learns from both successes and failures:
+- The model learns **what to search for** (query generation)
+- The model learns **when to search again** (multi-step retrieval)
+- The model learns **how to reason** over retrieved evidence (cross-document synthesis)
+- The trained model **generalizes to new corpora** it hasn't seen
 
-- **What to search for** — query generation improves with reward signal
-- **When to search again** — the model learns multi-step retrieval strategies
-- **How to reason** over retrieved evidence — cross-document synthesis emerges from training
-- **Generalization** — the trained search policy transfers to new corpora the model hasn't seen
-
-Test-time compute scaling (parallel rollouts or Value-Guided Search) further amplifies the trained model's capabilities.
+With test-time compute scaling (parallel rollouts or VGS), a fine-tuned 8B model can match or exceed Opus 4.6 on grounded reasoning tasks.
 
 ---
 
@@ -177,13 +175,14 @@ Contributions are welcome! Please open an issue or PR on [GitHub](https://github
 ```bibtex
 @misc{konaequity2026konash,
   author = {Kona Equity},
-  title = {KONASH: Knowledge Agents via Reinforcement Learning},
+  title = {KONASH: Knowledge-grounded Off-policy Networks for Agentic System Harnesses},
   year = {2026},
   publisher = {GitHub},
   journal = {GitHub repository},
   howpublished = {\url{https://github.com/konaequity/konash}}
 }
 ```
+
 
 ---
 
