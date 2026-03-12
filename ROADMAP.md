@@ -16,7 +16,7 @@ Bottlenecks and friction points standing between KONASH and open-source traction
 
 - [ ] Ship the Trivia Night Colab notebook — must run end-to-end with one click
 - [ ] Time-to-first-result under 10 minutes on Colab free tier (T4 GPU)
-- [ ] Add a second inference provider (Groq free tier, local vLLM) so the demo doesn't depend on a paid API
+- [ ] Add a second inference provider (that has glm 4.5 air) so the demo doesn't depend on a single API
 - [ ] Remove Together AI as a single point of failure — got Cloudflare-blocked during normal usage
 
 ## P2 — Testing and CI
