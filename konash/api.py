@@ -222,7 +222,7 @@ class Agent:
         hf_token: Optional[str] = None,
         checkpoint_dir: Optional[str] = None,
         chunk_size: int = 512,
-        embedding_provider: str = "gemini",
+        embedding_provider: str = "gte-large",
         temperature: float = 0.7,
         # LoRA / model config
         lora_r: int = 16,
@@ -1232,11 +1232,14 @@ class Agent:
         """Return an embed_fn based on ``self.embedding_provider``.
 
         Providers:
-        - ``"gemini"`` — Gemini Embedding API (fast, free tier, default)
+        - ``"gte-large"`` — GTE-large via sentence-transformers (1024-dim, best retrieval)
+        - ``"gemini"`` — Gemini Embedding API (fast, free tier)
         - ``"hf"`` — Qwen3-Embedding-8B via HuggingFace Inference API
         - ``"local"`` — Qwen3-Embedding-0.6B via sentence-transformers (CPU)
         """
-        if self.embedding_provider == "gemini":
+        if self.embedding_provider == "gte-large":
+            return self._make_gte_large_embed_fn()
+        elif self.embedding_provider == "gemini":
             return self._make_gemini_embed_fn()
         elif self.embedding_provider == "hf":
             return self._make_hf_embed_fn()
@@ -1246,8 +1249,13 @@ class Agent:
         else:
             raise ValueError(
                 f"Unknown embedding_provider={self.embedding_provider!r}. "
-                "Use 'gemini', 'hf', or 'local'."
+                "Use 'gte-large', 'gemini', 'hf', or 'local'."
             )
+
+    def _make_gte_large_embed_fn(self):
+        """Return an embed_fn using GTE-large via sentence-transformers."""
+        from konash.retrieval.vector_search import load_embedding_model
+        return load_embedding_model("thenlper/gte-large")
 
     def _make_gemini_embed_fn(self):
         """Return an embed_fn using Gemini Embedding API."""

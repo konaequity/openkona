@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 
+from konash.retrieval.bm25 import BM25
 from konash.retrieval.vector_search import VectorSearchTool
 
 
@@ -131,6 +132,7 @@ class Corpus:
         self.vector_search = VectorSearchTool(
             embed_fn=self.embed_fn, cache_dir=cache_dir
         )
+        self.bm25 = BM25()
         self._indexed = False
 
     # ------------------------------------------------------------------
@@ -183,6 +185,7 @@ class Corpus:
             self.documents = documents
             self.vector_search.index(documents, embeddings=vectors, text_key="text")
             self._indexed = True
+            self.bm25.index(documents, text_key="text")
             self._align_embed_fn(index_path)
             if progress_callback:
                 progress_callback("embedding", len(documents), len(documents))
@@ -192,6 +195,7 @@ class Corpus:
         if self.vector_search.load_cached_index(path=str(index_path)):
             self.documents = self.vector_search._documents
             self._indexed = True
+            self.bm25.index(self.documents, text_key="text")
             self._align_embed_fn(index_path)
             if progress_callback:
                 progress_callback("embedding", len(self.documents), len(self.documents))
@@ -266,6 +270,7 @@ class Corpus:
             if self.vector_search.load_cached_index(path=str(cache_file)):
                 self.documents = self.vector_search._documents
                 self._indexed = True
+                self.bm25.index(self.documents, text_key="text")
                 if progress_callback:
                     total = len(self.documents)
                     progress_callback("embedding", total, total)
@@ -311,6 +316,7 @@ class Corpus:
                 progress_callback("embedding", total, total)
 
         self._indexed = True
+        self.bm25.index(self.documents, text_key="text")
 
         # Save index to cache for instant reload next time
         if cache_file is not None:
@@ -323,23 +329,83 @@ class Corpus:
         self,
         query: str,
         top_k: int = 10,
+        mode: str = "hybrid",
         **kwargs: Any,
     ) -> List[Dict[str, Any]]:
-        """Search the indexed corpus. Calls ``ingest()`` automatically if needed."""
+        """Search the indexed corpus.
+
+        Parameters
+        ----------
+        query : str
+            Search query.
+        top_k : int
+            Number of results to return.
+        mode : str
+            ``"hybrid"`` (default) — reciprocal rank fusion of BM25 + vector.
+            ``"vector"`` — embedding similarity only.
+            ``"bm25"`` — keyword matching only.
+        """
         if not self._indexed:
             self.ingest()
-        return self.vector_search.search(query, top_k=top_k, **kwargs)
+
+        if mode == "vector":
+            return self.vector_search.search(query, top_k=top_k, **kwargs)
+        if mode == "bm25":
+            return self.bm25.search(query, top_k=top_k)
+        # Hybrid: reciprocal rank fusion
+        return self._hybrid_search(query, top_k=top_k, **kwargs)
+
+    def _hybrid_search(
+        self,
+        query: str,
+        top_k: int = 10,
+        rrf_k: int = 60,
+        **kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        """Combine BM25 and vector search with reciprocal rank fusion."""
+        # Fetch more candidates from each source for better fusion
+        n_candidates = min(top_k * 3, len(self.documents))
+        vec_results = self.vector_search.search(query, top_k=n_candidates, **kwargs)
+        bm25_results = self.bm25.search(query, top_k=n_candidates)
+
+        # Build RRF scores keyed by (source, chunk_index) to deduplicate
+        rrf_scores: Dict[tuple, float] = {}
+        doc_map: Dict[tuple, Dict[str, Any]] = {}
+
+        for rank, result in enumerate(vec_results):
+            key = (result.get("source", ""), result.get("chunk_index", 0))
+            rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (rrf_k + rank + 1)
+            doc_map[key] = result
+
+        for rank, result in enumerate(bm25_results):
+            key = (result.get("source", ""), result.get("chunk_index", 0))
+            rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (rrf_k + rank + 1)
+            if key not in doc_map:
+                doc_map[key] = result
+
+        # Sort by fused score
+        ranked = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+
+        results = []
+        for key, score in ranked:
+            result = dict(doc_map[key])
+            result["score"] = score
+            results.append(result)
+        return results
 
     def batch_search(
         self,
         queries: Sequence[str],
         top_k: int = 10,
+        mode: str = "hybrid",
         **kwargs: Any,
     ) -> List[List[Dict[str, Any]]]:
-        """Run multiple searches in one vectorised pass."""
+        """Run multiple searches."""
         if not self._indexed:
             self.ingest()
-        return self.vector_search.batch_search(queries, top_k=top_k, **kwargs)
+        if mode == "vector":
+            return self.vector_search.batch_search(queries, top_k=top_k, **kwargs)
+        return [self.search(q, top_k=top_k, mode=mode, **kwargs) for q in queries]
 
     @property
     def num_documents(self) -> int:

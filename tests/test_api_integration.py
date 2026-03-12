@@ -115,13 +115,16 @@ def test_agent_load_supports_local_inference_via_lazy_engine_init(tmp_path, monk
     doc_dir.mkdir()
     (doc_dir / "alpha.txt").write_text("alpha facts live here")
 
+    corpus = Corpus(doc_dir)
+    corpus.ingest()
+
     def fake_get_model_engine(self):
         self._model_engine = StubLocalEngine()
         return self._model_engine
 
     monkeypatch.setattr(Agent, "_get_model_engine", fake_get_model_engine)
 
-    agent = Agent.load(str(project_dir), corpus=str(doc_dir))
+    agent = Agent.load(str(project_dir), corpus=corpus)
 
     answer = agent.solve("What is alpha?", max_steps=1)
 
@@ -133,7 +136,9 @@ def test_train_skips_oapl_when_all_examples_are_filtered_out(tmp_path, monkeypat
     doc_dir.mkdir()
     (doc_dir / "alpha.txt").write_text("alpha facts live here")
 
-    agent = Agent(base_model="stub", corpus=str(doc_dir), api_base="http://example", api_key="k")
+    corpus = Corpus(doc_dir)
+    corpus.ingest()
+    agent = Agent(base_model="stub", corpus=corpus, api_base="http://example", api_key="k")
 
     # Patch the synthesizer to avoid network calls — train() calls
     # synthesizer.synthesize() directly in a thread pool.

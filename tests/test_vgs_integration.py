@@ -14,6 +14,13 @@ from konash.inference.value_model import ValueModel
 from konash.inference.value_search import ValueGuidedSearchEngine
 
 
+def _make_corpus(doc_dir):
+    """Create a pre-built Corpus to avoid embedding provider dependencies."""
+    corpus = Corpus(doc_dir)
+    corpus.ingest()
+    return corpus
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -151,7 +158,7 @@ def test_agent_stores_value_model_after_training(tmp_path):
 
     agent = Agent(
         base_model="test-model",
-        corpus=str(doc_dir),
+        corpus=_make_corpus(doc_dir),
         project="test_vgs",
         api_base="https://example/v1",
         api_key="k",
@@ -216,7 +223,7 @@ def test_agent_load_restores_value_model(tmp_path):
     # Load the agent
     loaded = Agent.load(
         str(tmp_path / "project"),
-        corpus=str(doc_dir),
+        corpus=_make_corpus(doc_dir),
         api_base="https://example/v1",
         api_key="k",
     )
@@ -239,7 +246,7 @@ def test_solve_uses_vgs_when_value_model_available(tmp_path):
 
     agent = Agent(
         base_model="test-model",
-        corpus=str(doc_dir),
+        corpus=_make_corpus(doc_dir),
         project="test_vgs",
         api_base="https://example/v1",
         api_key="k",
@@ -286,7 +293,7 @@ def test_solve_falls_back_to_parallel_thinking_without_value_model(tmp_path):
 
     agent = Agent(
         base_model="test-model",
-        corpus=str(doc_dir),
+        corpus=_make_corpus(doc_dir),
         project="test_vgs",
         api_base="https://example/v1",
         api_key="k",
