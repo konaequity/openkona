@@ -135,6 +135,14 @@ def test_train_skips_oapl_when_all_examples_are_filtered_out(tmp_path, monkeypat
 
     agent = Agent(base_model="stub", corpus=str(doc_dir), api_base="http://example", api_key="k")
 
+    # Patch the synthesizer to avoid network calls — train() calls
+    # synthesizer.synthesize() directly in a thread pool.
+    from konash.synthesis.qa import QuestionAnswerSynthesizer
+    monkeypatch.setattr(
+        QuestionAnswerSynthesizer, "synthesize",
+        lambda self, **kwargs: [],
+    )
+
     class StubPipeline:
         def __init__(self, *args, **kwargs):
             self.rollout_groups = [

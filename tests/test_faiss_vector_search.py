@@ -213,11 +213,14 @@ class TestFaissFallback:
         assert len(results) == 5
 
     def test_use_faiss_true_without_install_raises(self):
-        if _FAISS_AVAILABLE:
+        from konash.retrieval.vector_search import _ensure_faiss
+        if _ensure_faiss():
             pytest.skip("FAISS is installed, can't test missing-faiss path")
         with pytest.raises(ImportError, match="faiss is not installed"):
             VectorSearchTool(embed_fn=_dummy_embed_fn, use_faiss=True)
 
     def test_auto_detect_default(self):
+        from konash.retrieval.vector_search import _ensure_faiss
+        faiss_available = _ensure_faiss()
         tool = VectorSearchTool(embed_fn=_dummy_embed_fn)
-        assert tool._use_faiss == _FAISS_AVAILABLE
+        assert tool._use_faiss == faiss_available
