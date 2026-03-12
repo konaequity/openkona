@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
@@ -150,19 +151,28 @@ class ValueGuidedSearchEngine:
         if history:
             expanded_context["conversation_history"] = history
 
-        for i in range(k):
-            if self.agent is not None:
+        if self.agent is not None and k > 1:
+            # Generate k candidates in parallel (KARL Section 5.2)
+            def _gen(i):
                 step = self.agent.generate_step(
-                    history,
-                    candidate_index=i,
-                    context=expanded_context,
+                    history, candidate_index=i, context=expanded_context,
                 )
-                new_state = self._extend_state(state, step)
-            else:
-                new_state = copy.deepcopy(state)
-                steps = new_state.setdefault("steps", [])
-                steps.append({"candidate_index": i, "content": ""})
-            candidates.append(new_state)
+                return self._extend_state(state, step)
+
+            with ThreadPoolExecutor(max_workers=k) as pool:
+                candidates = list(pool.map(_gen, range(k)))
+        else:
+            for i in range(k):
+                if self.agent is not None:
+                    step = self.agent.generate_step(
+                        history, candidate_index=i, context=expanded_context,
+                    )
+                    new_state = self._extend_state(state, step)
+                else:
+                    new_state = copy.deepcopy(state)
+                    steps = new_state.setdefault("steps", [])
+                    steps.append({"candidate_index": i, "content": ""})
+                candidates.append(new_state)
         return candidates
 
     def score_candidates(
@@ -247,13 +257,18 @@ class ValueGuidedSearchEngine:
         trajectory found.
         """
         n = num_trees or self.parallel_searches or 1
-        trees: List[Dict[str, Any]] = []
 
-        for tree_idx in range(n):
-            tree_result = self._run_single_bfs(
+        if n <= 1:
+            return [self._run_single_bfs(query, tree_index=0, context=context)]
+
+        # Run N independent BFS trees in parallel (KARL Section 5.2)
+        def _run_tree(tree_idx):
+            return self._run_single_bfs(
                 query, tree_index=tree_idx, context=context
             )
-            trees.append(tree_result)
+
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            trees = list(pool.map(_run_tree, range(n)))
 
         return trees
 

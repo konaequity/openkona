@@ -5,120 +5,170 @@
 **Knowledge-grounded Off-policy Networks for Agentic System Harnesses**
 
 <p>
-Train knowledge agents that search, retrieve, compress, and reason — on a single GPU.
+Point it at any document corpus — it trains a model that learns <i>how to search</i>, not just facts.
 </p>
 
 [![PRs-Welcome](https://img.shields.io/badge/PRs-welcome-blue.svg)](CONTRIBUTING.md)
+[![PyPI](https://img.shields.io/pypi/v/konash)](https://pypi.org/project/konash/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
-
-[![Join Discord](https://img.shields.io/badge/Join%20Discord-5865F2?style=plastic&logo=discord&logoColor=white)](#)
-[![Documentation](https://img.shields.io/badge/Documentation-orange?style=plastic&logo=gitbook&logoColor=white)](#)
 
 </div>
 
-KONASH trains knowledge agents via reinforcement learning that match or exceed frontier models on grounded reasoning tasks — at a fraction of the cost. **Single-GPU training, open-source models, 1/100th the compute.**
+KONASH trains knowledge agents via reinforcement learning that match or exceed frontier models on grounded reasoning tasks — at a fraction of the cost. 
 
 ---
 
-## Key Benefits
+## Quickstart
 
-- **100x cheaper training** — Single GPU replaces multi-node clusters. ~$100–500 per iteration instead of ~$10K–50K.
-- **Higher quality** — RL-trained agents search more efficiently, retrieve more diversely, and reason more accurately than their base models. The gains are algorithmic, not scale-dependent.
-- **Consistent results** — Parallel thinking (N=10–20 rollouts + aggregation) turns probabilistic search into near-deterministic accuracy. Cheap rollouts on a small model mean you can afford this on every query.
-- **Zero lock-in** — Your model, your weights, your infrastructure. Deploy anywhere with vLLM and LoRA hot-swapping.
+```bash
+pip install konash
+konash setup    # walks you through API keys
+konash train    # pick a corpus, model, and scale — hit go
+```
+
+That's it. Setup takes 2 minutes. Training takes 5 minutes (quick test) to several hours (KARL scale).
+
+### What happens under the hood
+
+1. **Corpus ingestion** — Embeds and indexes your documents for vector search (pre-built indexes ship with supported datasets)
+2. **QA synthesis** — An agentic loop explores the corpus via search and generates grounded, multi-constraint question-answer pairs
+3. **Rollout generation** — The model attempts to answer each question via multi-step search, generating full agent trajectories
+4. **Pass-rate filtering** — Keeps questions at the learning frontier (not too easy, not too hard)
+5. **OAPL training** — Off-policy RL with squared advantage loss trains the model on successful search strategies
+6. **Value-Guided Search** — A learned value model scores partial rollouts to guide test-time tree search
+
+### Ask questions
+
+After training, query your agent:
+
+```bash
+konash ask "Which Nobel physicist was born in the same city as the author of The Trial?"
+```
+
+Or in Python:
 
 ```python
-# Before: Static RAG — one query, hope for the best
-docs = retriever.search(query, top_k=10)
-answer = llm.generate(f"Answer based on: {docs}\n\n{query}")
+import konash
 
-# After: KONASH — RL-trained agent that searches iteratively
-agent = konash.Agent("./checkpoints/iter2", corpus="./my_docs")
-answer = agent.solve(query, parallel_rollouts=10)
-```
-
-[Learn more about KONASH](https://kona.sh)
-
----
-
-## KONASH Overview
-
-KONASH is an open-source RL framework that improves agent reliability by training knowledge agents to search, retrieve, compress, and reason over evidence — all on a single GPU using off-policy RL. For a quick hands-on introduction, run one of the notebooks below. When you're ready to learn more, check out the [docs](https://kona.sh).
-
-### Notebooks
-
-| Agent Task | Example Notebook | Description | Comparative Performance |
-|---|---|---|---|
-| **Trivia Night** | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/konaequity/konash/blob/main/notebooks/trivia_night.ipynb) | Qwen 3 4B learns to answer multi-constraint trivia by searching Wikipedia | [Link coming soon] |
-| **20 Questions** | [Train agent](#) | Qwen 3.5 7B learns to identify a mystery entity in 20 yes/no searches | [Link coming soon] |
-| **GeoGuessr** | [Train agent](#) | Qwen 3.5 7B learns to pinpoint locations from landmark and terrain descriptions | [Link coming soon] |
-
-## KONASH News
-
-Explore our latest research and updates on building SOTA knowledge agents.
-
-- **[OAPL: Off-Policy RL That Actually Works on One GPU](#)** — Train knowledge agents without multi-node clusters using large-batch iterative off-policy reinforcement learning.
-- **[Agentic Data Synthesis: Let Your Model Write Its Own Curriculum](#)** — Generate diverse, grounded training data from any corpus — no manual annotation required.
-- **[Parallel Thinking: How a 7B Model Beats Frontier Single-Shot](#)** — Scale quality at inference time with N parallel rollouts and generative aggregation.
-- **[Compression as an RL Skill: Teaching Models What to Remember](#)** — Train context compression end-to-end with task reward, not as a separate summarization step.
-
-[See all blog posts](https://kona.sh/blog)
-
-## Why KONASH?
-
-- KONASH provides a complete pipeline for training knowledge agents on **existing corpora**. We abstract the training, synthesis, and serving into a modular system that your code doesn't need to interface with.
-- **Train from anywhere.** Run the KONASH client on your laptop and let the server kick off training on a single GPU — local or cloud. No multi-node clusters required.
-- Integrations with hosted platforms like W&B and Langfuse provide flexible observability and **simplify debugging** across the full synthesis-train-eval loop.
-- KONASH is customizable with **intelligent defaults**. You can configure OAPL hyperparameters, compression thresholds, and inference engine settings to meet specific needs, or take advantage of defaults optimized for single-GPU training efficiency and stability.
-
-## Installation
-
-KONASH agents can be trained from any client machine that runs Python. To add to an existing project, run this command:
-
-```
-pip install konash
+agent = konash.Agent(
+    base_model="zai-org/GLM-4.5-Air-FP8",
+    corpus="./my_documents",
+)
+agent.train(iterations=1)
+answer = agent.solve("Your question here", parallel_rollouts=3)
 ```
 
 ---
 
-## Training Loop Overview
+## Requirements
 
-KONASH uses **large-batch iterative off-policy RL** — unlike online RL frameworks, all data is generated upfront and training happens in a single offline pass. Each iteration improves the model, which then generates better data for the next iteration.
+### API Keys (set up via `konash setup`)
 
-1. **Data Synthesis**
+| Service | Purpose | Cost |
+|---------|---------|------|
+| **Together AI** | LLM inference (synthesis, rollouts, solving) | Pay-as-you-go (~$5 for a small run) |
+| **HuggingFace** | Pre-built embedding indexes, model hosting | Free |
+| **Google AI** *(optional)* | Corpus embeddings via Gemini (when no pre-built index) | Free tier available |
 
-   1. KONASH generates training questions from your corpus using an agentic synthesis pipeline — the model explores documents via vector search and proposes grounded QA pairs.
-   2. A deduplication step ensures no overlap with your evaluation set.
-   3. On later iterations, the improved model synthesizes its own curriculum — harder, more diverse questions.
+### Python
 
-2. **Rollout Generation**
+- Python >= 3.11
+- Core dependencies: `numpy`, `rich`, `together`, `google-genai`
+- Optional: `faiss-cpu` (fast vector search), `torch` + `transformers` + `peft` (local training)
 
-   1. The model (or latest checkpoint) generates multiple rollouts per question, interacting with vector search and compression tools.
-   2. Each rollout is a full multi-step agent trajectory: search queries, retrieved documents, context compression, and a final answer.
-   3. Rewards are computed automatically from answer correctness against ground truth.
-   4. Pass-rate filtering keeps questions at the learning frontier — not too easy, not too hard.
+### Hardware
 
-3. **Training**
+- **No GPU required** for API-based training (Together AI handles inference, OAPL runs on their cluster)
+- **Single GPU** (T4+) for local QLoRA training via Unsloth
 
-   1. The full set of trajectories becomes a large offline dataset. Training runs in a single batch — no interleaving with inference.
-   2. The server trains your model using OAPL with QLoRA. Long trajectories are segmented at compression boundaries, and tool outputs are masked from log-prob computation.
-   3. The newly trained LoRA is saved and becomes the starting point for the next iteration.
+---
 
-4. **Iterate**
+## Supported Datasets
 
-   1. The trained checkpoint becomes the new reference policy.
-   2. All rollouts are **regenerated from scratch** with the improved model — this is what makes each iteration progressively better.
-   3. Training runs again on the fresh data. 2–3 iterations yields the best results.
+Datasets download automatically when selected in `konash train`:
+
+| Dataset | Domain | Docs | Size | Pre-built Index |
+|---------|--------|------|------|-----------------|
+| **BrowseComp-Plus** | Web documents (67K articles) | 67,707 | 2.5 GB | Qwen3-Embedding-8B via Tevatron |
+| **FinanceBench** | SEC filings, financial reports | ~150 | Varies | — |
+| **QAMPARI** | Encyclopedic entity search | 250K+ chunks | Varies | — |
+| **FreshStack** | Technical documentation | Varies | Varies | — |
+| **Local folder** | Your own documents | Any | Any | Built on first run |
+
+### Supported file formats (local folders)
+
+`.txt` `.md` `.rst` `.csv` `.log` `.json` `.html` `.htm` `.py` `.js` `.ts` `.java` `.go` `.rs` `.c` `.cpp` `.h`
+
+---
 
 ## Supported Models
 
-KONASH should work with most vLLM/HuggingFace-transformers compatible causal language models, or at least the ones supported by [Unsloth](https://docs.unsloth.ai/get-started/all-our-models). If any model isn't working for you, please let us know on [Discord](#) or open an issue on [GitHub](https://github.com/konaequity/konash/issues)!
+Any model available on [Together AI](https://api.together.xyz/models):
+
+| Model | Type | Notes |
+|-------|------|-------|
+| **GLM 4.5 Air** | Frontier MoE | Default — best for KARL, fast + cheap |
+| **Qwen3 80B-A3B** | MoE | Good value |
+| **Llama 3.3 70B Turbo** | Dense | Strong general-purpose |
+| **DeepSeek R1** | MoE | Reasoning-focused |
+| **Mixtral 8x22B** | MoE | Balanced |
+| Custom | Any | Enter any Together AI model ID |
+
+---
+
+## Notebooks
+
+| Agent Task | Notebook | Description |
+|---|---|---|
+| **Trivia Night** | *Coming soon* | Train a model to answer multi-constraint trivia by searching Wikipedia |
+| **20 Questions** | *Coming soon* | Train a model to identify a mystery entity in 20 yes/no searches |
+| **GeoGuessr** | *Coming soon* | Train a model to pinpoint locations from landmark and terrain descriptions |
+
+---
+
+## Agent Harness + Reinforcement Learning
+
+KONASH wraps each model in an **agent harness** — an environment where the model interacts with tools (vector search, context compression) across multi-step episodes. The harness records full trajectories: what the model searched for, what it retrieved, how it reasoned, and whether it got the right answer.
+
+These trajectories become training data for **off-policy RL (OAPL)**. The model learns from both successes and failures:
+
+- **What to search for** — query generation improves with reward signal
+- **When to search again** — the model learns multi-step retrieval strategies
+- **How to reason** over retrieved evidence — cross-document synthesis emerges from training
+- **Generalization** — the trained search policy transfers to new corpora the model hasn't seen
+
+Test-time compute scaling (parallel rollouts or Value-Guided Search) further amplifies the trained model's capabilities.
+
+---
+
+## Training Pipeline
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   Agentic    │     │   Rollout    │     │  Pass-rate   │     │     OAPL     │
+│  QA Synthesis│────▶│  Generation  │────▶│  Filtering   │────▶│   Training   │
+│  (parallel)  │     │  (parallel)  │     │  [0.1, 0.9]  │     │  (off-policy)│
+└──────────────┘     └──────────────┘     └──────────────┘     └──────┬───────┘
+                                                                      │
+                                                              ┌───────▼───────┐
+                                                              │ Value Model   │
+                                                              │   Training    │
+                                                              └───────┬───────┘
+                                                                      │
+                                                              ┌───────▼───────┐
+                                                              │  Value-Guided │
+                                                              │    Search     │
+                                                              │   (VGS)       │
+                                                              └───────────────┘
+```
+
+Each iteration: synthesize → rollout → filter → train → repeat with improved model.
 
 ---
 
 ## Contributing
 
-KONASH is in active development and contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for more information.
+Contributions are welcome! Please open an issue or PR on [GitHub](https://github.com/konaequity/konash/issues).
 
 ---
 
@@ -127,7 +177,7 @@ KONASH is in active development and contributions are welcome! Please see [CONTR
 ```bibtex
 @misc{konaequity2026konash,
   author = {Kona Equity},
-  title = {KONASH: Knowledge-grounded Off-policy Networks for Agentic System Harnesses},
+  title = {KONASH: Knowledge Agents via Reinforcement Learning},
   year = {2026},
   publisher = {GitHub},
   journal = {GitHub repository},
@@ -137,18 +187,16 @@ KONASH is in active development and contributions are welcome! Please see [CONTR
 
 ---
 
-## License
-
-This repository's source code is available under the [Apache-2.0 License](LICENSE).
-
----
-
 ## Credits
 
-KONASH builds directly on the research and open-source work of:
+KONASH builds directly on:
 
-- [KARL: Knowledge Agent trained via Reinforcement Learning](https://www.databricks.com/sites/default/files/2026-03/karl.pdf) — Databricks, 2026. The architecture, training pipeline, and evaluation methodology that KONASH implements. KARL introduced agentic data synthesis, off-policy RL for knowledge agents, end-to-end compression training, and the KARLBench evaluation suite.
+- [KARL: Knowledge Agents via Reinforcement Learning](https://www.databricks.com/sites/default/files/2026-03/karl.pdf) — Databricks, 2026. The architecture, training pipeline, and evaluation methodology that KONASH implements.
 - [OAPL](https://arxiv.org/abs/2602.19362) — Ritter et al., 2026 (the RL algorithm)
-- [Unsloth](https://github.com/unslothai/unsloth) — Parameter-efficient training backend
-- [vLLM](https://github.com/vllm-project/vllm) — High-throughput inference engine
+- [Tevatron](https://huggingface.co/Tevatron) — Pre-built BrowseComp-Plus embedding indexes
+- [Unsloth](https://github.com/unslothai/unsloth) — Parameter-efficient training
 - [FAISS](https://github.com/facebookresearch/faiss) — Vector search
+
+## License
+
+[Apache 2.0](LICENSE)

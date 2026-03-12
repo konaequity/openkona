@@ -591,42 +591,68 @@ class Agent:
 
                     return outer
 
-                with Live(
-                    _build_synth_display(0, synthesis_calls, 0, "", ""),
-                    console=_con, refresh_per_second=4, transient=True,
-                ) as live:
-                    for call_idx in range(synthesis_calls):
-                        try:
-                            batch = synthesizer.synthesize(
-                                documents=None,
-                                num_examples=8,
-                            )
-                            all_raw_examples.extend(batch)
-                            latest_q = batch[-1].question or "" if batch else ""
-                            latest_a = batch[-1].answer or "" if batch else ""
-                        except (ValueError, RuntimeError):
-                            latest_q, latest_a = "", ""
-                            continue
-                        live.update(
-                            _build_synth_display(
-                                call_idx, synthesis_calls,
-                                len(all_raw_examples), latest_q, latest_a,
-                            )
-                        )
+                import threading
+                from concurrent.futures import ThreadPoolExecutor as _SynthPool
 
-                _con.print(
-                    f"  [green]✓[/]  {len(all_raw_examples)} QA pairs synthesized"
-                )
-            else:
-                for call_idx in range(synthesis_calls):
+                _synth_lock = threading.Lock()
+                _completed = [0]
+                _latest_q = [""]
+                _latest_a = [""]
+
+                def _synth_one(_call_idx):
                     try:
                         batch = synthesizer.synthesize(
                             documents=None,
                             num_examples=8,
                         )
-                        all_raw_examples.extend(batch)
                     except (ValueError, RuntimeError):
-                        continue
+                        return []
+                    return batch
+
+                synth_workers = min(synthesis_calls, 20)
+                with Live(
+                    _build_synth_display(0, synthesis_calls, 0, "", ""),
+                    console=_con, refresh_per_second=4, transient=True,
+                ) as live:
+                    with _SynthPool(max_workers=synth_workers) as pool:
+                        futures = [
+                            pool.submit(_synth_one, ci)
+                            for ci in range(synthesis_calls)
+                        ]
+                        for fut in futures:
+                            batch = fut.result()
+                            with _synth_lock:
+                                all_raw_examples.extend(batch)
+                                _completed[0] += 1
+                                if batch:
+                                    _latest_q[0] = batch[-1].question or ""
+                                    _latest_a[0] = batch[-1].answer or ""
+                                live.update(
+                                    _build_synth_display(
+                                        _completed[0] - 1, synthesis_calls,
+                                        len(all_raw_examples),
+                                        _latest_q[0], _latest_a[0],
+                                    )
+                                )
+
+                _con.print(
+                    f"  [green]✓[/]  {len(all_raw_examples)} QA pairs synthesized"
+                )
+            else:
+                from concurrent.futures import ThreadPoolExecutor as _SynthPool2
+
+                def _synth_one_quiet(_ci):
+                    try:
+                        return synthesizer.synthesize(
+                            documents=None, num_examples=8,
+                        )
+                    except (ValueError, RuntimeError):
+                        return []
+
+                synth_workers = min(synthesis_calls, 20)
+                with _SynthPool2(max_workers=synth_workers) as pool:
+                    for batch in pool.map(_synth_one_quiet, range(synthesis_calls)):
+                        all_raw_examples.extend(batch)
 
             if not all_raw_examples:
                 if verbose:
