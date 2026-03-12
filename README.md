@@ -71,8 +71,8 @@ answer = agent.solve("Your question here", parallel_rollouts=3)
 
 ## Features
 
-| | Feature | Description |
-|---|---|---|
+| Feature | Description |
+|---|---|
 | **Agentic QA Synthesis** | Multi-turn agent loop explores your corpus via search, generates grounded multi-constraint question-answer pairs |
 | **OAPL Training** | Off-policy RL with squared advantage loss trains on successful search trajectories |
 | **Value-Guided Search** | Learned value model scores partial rollouts, parallel BFS tree search at inference time |
