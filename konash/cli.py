@@ -266,6 +266,8 @@ def cmd_default() -> None:
     grid.add_row("konash download browsecomp-plus", "Download benchmark corpus")
     grid.add_row('konash ask "Q"', "Ask a question")
     grid.add_row("konash search --corpus ./docs Q", "Search documents")
+    grid.add_row("konash cloud launch", "Train on cloud GPUs")
+    grid.add_row("konash cloud gpus", "Show available GPUs")
     grid.add_row("konash projects", "List trained projects")
     grid.add_row("konash status", "Check configuration")
     console.print(grid)
@@ -1080,6 +1082,71 @@ def cmd_projects(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# konash cloud
+# ---------------------------------------------------------------------------
+
+def cmd_cloud(args: argparse.Namespace) -> None:
+    try:
+        from konash.cloud import launch, status, logs, stop, down, show_gpus
+    except SystemExit as e:
+        console.print(f"\n[red]{e}[/]\n")
+        return
+
+    action = args.cloud_action
+
+    if action == "launch":
+        console.print()
+        console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Cloud Training")
+        console.print()
+        console.rule(style="dim")
+        console.print()
+
+        gpu = args.gpu or "H100:1"
+        cloud = args.cloud_provider
+        corpus = args.corpus or "financebench"
+
+        console.print(f"    [bold]GPU[/]          {gpu}")
+        console.print(f"    [bold]Cloud[/]        {cloud or 'auto (cheapest)'}")
+        console.print(f"    [bold]Corpus[/]       {corpus}")
+        console.print(f"    [bold]Iterations[/]   {args.iterations}")
+        console.print(f"    [bold]Cluster[/]      {args.cluster}")
+        if args.spot:
+            console.print(f"    [bold]Spot[/]         yes (cheaper, may be preempted)")
+        console.print()
+
+        launch(
+            corpus=corpus,
+            cluster_name=args.cluster,
+            cloud=cloud,
+            gpu=gpu,
+            iterations=args.iterations,
+            rollouts_per_example=args.rollouts,
+            learning_rate=args.lr,
+            push_to_hub=args.push_to_hub,
+            use_spot=args.spot,
+        )
+
+    elif action == "status":
+        status()
+
+    elif action == "logs":
+        logs(args.cluster)
+
+    elif action == "stop":
+        stop(args.cluster)
+
+    elif action == "down":
+        down(args.cluster)
+
+    elif action == "gpus":
+        show_gpus(args.cloud_provider)
+
+    else:
+        console.print(f"[red]Unknown action:[/] {action}")
+        console.print("Available: launch, status, logs, stop, down, gpus")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -1203,6 +1270,43 @@ def main(argv: list[str] | None = None) -> None:
         "--chunk-size", type=int, default=512, help="Chunk size."
     )
     p_search.set_defaults(func=cmd_search)
+
+    # --- cloud ---
+    p_cloud = subparsers.add_parser(
+        "cloud", help="Train on cloud GPUs via SkyPilot.",
+    )
+    p_cloud.add_argument(
+        "cloud_action",
+        choices=["launch", "status", "logs", "stop", "down", "gpus"],
+        help="Action: launch, status, logs, stop, down, gpus.",
+    )
+    p_cloud.add_argument("--cluster", default="konash", help="Cluster name.")
+    p_cloud.add_argument(
+        "--cloud", dest="cloud_provider", default=None,
+        help="Cloud provider (runpod, lambda, aws, gcp). Auto if omitted.",
+    )
+    p_cloud.add_argument(
+        "--gpu", default=None,
+        help="GPU type (default: H100:1). Examples: A100-80GB:2, H100:1.",
+    )
+    p_cloud.add_argument("--corpus", default=None, help="Corpus name or path.")
+    p_cloud.add_argument(
+        "--iterations", type=int, default=1, help="Training iterations.",
+    )
+    p_cloud.add_argument(
+        "--rollouts", type=int, default=8, help="Rollouts per example.",
+    )
+    p_cloud.add_argument(
+        "--lr", type=float, default=1e-6, help="Learning rate.",
+    )
+    p_cloud.add_argument(
+        "--push-to-hub", default=None,
+        help="Push trained adapter to HuggingFace (e.g. your-org/konash-lora).",
+    )
+    p_cloud.add_argument(
+        "--spot", action="store_true", help="Use spot instances (cheaper).",
+    )
+    p_cloud.set_defaults(func=cmd_cloud)
 
     # --- projects ---
     p_projects = subparsers.add_parser("projects", help="List trained projects.")

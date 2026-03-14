@@ -1,0 +1,79 @@
+# KONASH OAPL Training — SkyPilot Task
+#
+# Launches on any cloud with an available H100 (RunPod, Lambda, AWS, GCP, etc.)
+# SkyPilot automatically picks the cheapest provider.
+#
+# Usage:
+#   konash cloud launch                     # launch training
+#   konash cloud launch --cloud runpod      # force a specific provider
+#   konash cloud launch --gpu A100-80GB:2   # use different GPUs
+#   konash cloud status                     # check cluster status
+#   konash cloud logs                       # stream training logs
+#   konash cloud down                       # tear down cluster
+
+name: konash-train
+
+resources:
+  accelerators: H100:1
+  disk_size: 200
+
+envs:
+  TOGETHER_API_KEY:
+  HF_TOKEN: ""
+  CORPUS_PATH: financebench
+  ROLLOUTS_PATH: ""
+  ITERATIONS: "1"
+  ROLLOUTS_PER_EXAMPLE: "8"
+  LEARNING_RATE: "1e-6"
+  PUSH_TO_HUB: ""
+
+workdir: .
+
+setup: |
+  echo "=== KONASH Training Setup ==="
+  pip install -e ".[unsloth,search,data]" 2>&1 | tail -5
+  echo 'export UNSLOTH_VLLM_STANDBY=1' >> ~/.bashrc
+
+  if [ "$CORPUS_PATH" = "financebench" ]; then
+    python -c "from konash.download import download_financebench; download_financebench()"
+  fi
+
+  echo "=== Setup complete ==="
+
+run: |
+  set -e
+  export UNSLOTH_VLLM_STANDBY=1
+
+  echo "=== KONASH OAPL Training ==="
+  echo "GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
+
+  if [ "$CORPUS_PATH" = "financebench" ]; then
+    RESOLVED_CORPUS="$HOME/.konash/corpora/financebench/documents"
+  else
+    RESOLVED_CORPUS="$CORPUS_PATH"
+  fi
+
+  if [ -n "$ROLLOUTS_PATH" ]; then
+    CMD="python scripts/train_oapl_unsloth.py \
+      --rollouts $ROLLOUTS_PATH \
+      --lr $LEARNING_RATE \
+      --output ./checkpoints"
+  else
+    CMD="python scripts/train_oapl_unsloth.py \
+      --corpus $RESOLVED_CORPUS \
+      --iterations $ITERATIONS \
+      --rollouts-per-example $ROLLOUTS_PER_EXAMPLE \
+      --lr $LEARNING_RATE \
+      --output ./checkpoints"
+  fi
+
+  if [ -n "$PUSH_TO_HUB" ]; then
+    CMD="$CMD --push-to-hub $PUSH_TO_HUB"
+  fi
+
+  echo "Running: $CMD"
+  eval $CMD
+
+  echo ""
+  echo "=== Training complete ==="
+  ls -la ./checkpoints/

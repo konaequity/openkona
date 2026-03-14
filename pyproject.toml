@@ -34,6 +34,9 @@ data = [
 search = [
     "faiss-cpu>=1.7",
 ]
+cloud = [
+    "skypilot-nightly[all]",
+]
 quant = [
     "bitsandbytes>=0.41",
 ]
@@ -53,6 +56,9 @@ konash = "konash.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["konash*"]
+
+[tool.setuptools.package-data]
+konash = ["sky/*.yaml"]
 
 [tool.pytest.ini_options]
 minversion = "7.4"
