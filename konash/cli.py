@@ -264,8 +264,9 @@ def cmd_default() -> None:
     grid.add_row("konash setup", "Configure API keys")
     grid.add_row("konash train", "Train an agent")
     grid.add_row("konash download browsecomp-plus", "Download benchmark corpus")
-    grid.add_row('konash ask --corpus ./docs "Q"', "Ask a question")
+    grid.add_row('konash ask "Q"', "Ask a question")
     grid.add_row("konash search --corpus ./docs Q", "Search documents")
+    grid.add_row("konash projects", "List trained projects")
     grid.add_row("konash status", "Check configuration")
     console.print(grid)
     console.print()
@@ -711,11 +712,17 @@ def cmd_train(args: argparse.Namespace) -> None:
     while True:
         synthesis_calls = max(1, qa_pairs // 8)
 
-        # Cost estimate: ~2K tokens per synthesis call, ~500 tokens per
-        # rollout step. Together AI GLM 4.5 Air ≈ $0.10/M tokens.
-        synth_tokens = synthesis_calls * iterations * 2000
-        rollout_tokens = qa_pairs * rollouts * rollout_steps * 500
-        est_cost = (synth_tokens + rollout_tokens) / 1_000_000 * 0.10
+        # Cost estimate: Together AI GLM 4.5 Air — $0.20/M in, $1.10/M out.
+        # Synthesis: ~2K input + ~1K output tokens per call.
+        # Rollouts: ~500 input + ~200 output tokens per step.
+        synth_in = synthesis_calls * iterations * 2000
+        synth_out = synthesis_calls * iterations * 1000
+        rollout_in = qa_pairs * rollouts * rollout_steps * 500
+        rollout_out = qa_pairs * rollouts * rollout_steps * 200
+        est_cost = (
+            (synth_in + rollout_in) / 1_000_000 * 0.20
+            + (synth_out + rollout_out) / 1_000_000 * 1.10
+        )
 
         # ETA estimate: ~2s per synthesis call, ~3s per rollout group
         est_synth_secs = synthesis_calls * iterations * 2
@@ -849,9 +856,26 @@ def cmd_ask(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
+    # Resolve corpus: explicit flag > training metadata > error
+    corpus = args.corpus
+    if not corpus:
+        meta_path = os.path.join(".konash", args.project, "checkpoints", "training_meta.json")
+        if os.path.exists(meta_path):
+            with open(meta_path) as f:
+                meta = json.load(f)
+            corpus = meta.get("corpus")
+            if corpus:
+                console.print(f"[dim]Using corpus from project \"{args.project}\": {corpus}[/]")
+        if not corpus:
+            console.print(
+                "\n[red]No corpus specified.[/] Use [cyan]--corpus[/] or train first "
+                "with [cyan]konash train[/].\n"
+            )
+            sys.exit(1)
+
     agent = Agent(
         base_model=args.model,
-        corpus=args.corpus,
+        corpus=corpus,
         project=args.project,
         api_base=TOGETHER_API_BASE,
         api_key=api_key,
@@ -902,7 +926,8 @@ def cmd_search(args: argparse.Namespace) -> None:
     except ModuleNotFoundError as exc:
         _dependency_error(exc)
 
-    corpus = Corpus(args.corpus, chunk_size=args.chunk_size)
+    _cache_dir = os.path.join(".konash", "search", "index_cache")
+    corpus = Corpus(args.corpus, chunk_size=args.chunk_size, cache_dir=_cache_dir)
 
     _status_msg = console.status("[cyan]Indexing corpus...", spinner="dots")
     _status_msg.start()
@@ -1002,6 +1027,59 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# konash projects
+# ---------------------------------------------------------------------------
+
+def cmd_projects(args: argparse.Namespace) -> None:
+    console.print()
+    console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Projects")
+    console.print()
+    console.rule(style="dim")
+    console.print()
+
+    konash_dir = ".konash"
+    if not os.path.isdir(konash_dir):
+        console.print("    [dim]No projects found. Run [cyan]konash train[/] to get started.[/]")
+        console.print()
+        return
+
+    rows = []
+    for name in sorted(os.listdir(konash_dir)):
+        meta_path = os.path.join(konash_dir, name, "checkpoints", "training_meta.json")
+        if not os.path.exists(meta_path):
+            continue
+        with open(meta_path) as f:
+            meta = json.load(f)
+        model = meta.get("base_model", "?")
+        # Shorten model ID: "zai-org/GLM-4.5-Air-FP8" → "GLM-4.5-Air-FP8"
+        if "/" in model:
+            model = model.split("/", 1)[1]
+        corpus_path = meta.get("corpus", "?")
+        iters = meta.get("iterations", 0)
+        has_vgs = meta.get("value_model", False)
+        rows.append((name, model, corpus_path, iters, has_vgs))
+
+    if not rows:
+        console.print("    [dim]No trained projects found. Run [cyan]konash train[/] to get started.[/]")
+        console.print()
+        return
+
+    table = Table(box=box.SIMPLE_HEAVY, pad_edge=False, padding=(0, 2))
+    table.add_column("Project", style="bold")
+    table.add_column("Model", style="cyan")
+    table.add_column("Corpus")
+    table.add_column("Iters", justify="right")
+    table.add_column("VGS", justify="center")
+
+    for name, model, corpus_path, iters, has_vgs in rows:
+        vgs_marker = "[green]✓[/]" if has_vgs else "[dim]–[/]"
+        table.add_row(name, model, corpus_path, str(iters), vgs_marker)
+
+    console.print(table)
+    console.print()
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -1096,7 +1174,7 @@ def main(argv: list[str] | None = None) -> None:
     # --- ask ---
     p_ask = subparsers.add_parser("ask", help="Ask your knowledge agent.")
     p_ask.add_argument("query", help="Your question.")
-    p_ask.add_argument("--corpus", required=True, help="Path to documents folder.")
+    p_ask.add_argument("--corpus", default=None, help="Path to documents folder (auto-detected from training).")
     p_ask.add_argument("--model", default=DEFAULT_MODEL, help="Model ID.")
     p_ask.add_argument("--project", default="default", help="Project name.")
     p_ask.add_argument(
@@ -1125,6 +1203,10 @@ def main(argv: list[str] | None = None) -> None:
         "--chunk-size", type=int, default=512, help="Chunk size."
     )
     p_search.set_defaults(func=cmd_search)
+
+    # --- projects ---
+    p_projects = subparsers.add_parser("projects", help="List trained projects.")
+    p_projects.set_defaults(func=cmd_projects)
 
     # --- status ---
     p_status = subparsers.add_parser("status", help="Show setup status.")

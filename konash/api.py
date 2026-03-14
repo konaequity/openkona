@@ -832,6 +832,7 @@ class Agent:
         with open(meta_path, "w") as f:
             json.dump({
                 "base_model": self.base_model,
+                "corpus": str(self.corpus.path),
                 "project": self.project,
                 "iterations": self._iteration,
                 "stats": stats,
