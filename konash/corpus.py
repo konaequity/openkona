@@ -134,6 +134,8 @@ class Corpus:
         )
         self.bm25 = BM25()
         self._indexed = False
+        self._lazy_text = False  # True for prebuilt indexes (text loaded on demand)
+        self._docs_dir: Optional[Path] = None  # base dir for lazy text loading
 
     # ------------------------------------------------------------------
     # Public API
@@ -176,16 +178,21 @@ class Corpus:
             doc_ids = data["doc_ids"].tolist()
             docs_dir = self.path if self.path.is_dir() else self.path.parent
 
+            # Check if documents live in a subdirectory
+            sub_dir = docs_dir / "documents"
+            use_sub = sub_dir.is_dir()
+            self._docs_dir = sub_dir if use_sub else docs_dir
+
+            # Create lightweight stub documents (no file I/O — text loaded on demand)
             documents = []
             for docid in doc_ids:
-                fpath = docs_dir / f"{docid}.txt"
-                text = fpath.read_text(errors="replace") if fpath.exists() else ""
-                documents.append({"text": text, "source": str(fpath), "chunk_index": 0})
+                fpath = self._docs_dir / f"{docid}.txt"
+                documents.append({"text": "", "source": str(fpath), "chunk_index": 0})
 
             self.documents = documents
             self.vector_search.index(documents, embeddings=vectors, text_key="text")
             self._indexed = True
-            self.bm25.index(documents, text_key="text")
+            self._lazy_text = True  # Skip BM25, load text on search
             self._align_embed_fn(index_path)
             if progress_callback:
                 progress_callback("embedding", len(documents), len(documents))
@@ -348,6 +355,12 @@ class Corpus:
         if not self._indexed:
             self.ingest()
 
+        # Prebuilt indexes use vector-only search (no BM25 text loaded)
+        if self._lazy_text:
+            results = self.vector_search.search(query, top_k=top_k, **kwargs)
+            self._resolve_text(results)
+            return results
+
         if mode == "vector":
             return self.vector_search.search(query, top_k=top_k, **kwargs)
         if mode == "bm25":
@@ -418,6 +431,24 @@ class Corpus:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _resolve_text(self, results: List[Dict[str, Any]]) -> None:
+        """Lazy-load document text for search results only.
+
+        For prebuilt indexes, documents are stored as stubs (no text).
+        This reads the actual file content on demand for just the
+        returned results (~10 files instead of 67K).
+        """
+        for r in results:
+            if r.get("text"):
+                continue
+            source = r.get("source", "")
+            if source:
+                try:
+                    with open(source, errors="replace") as f:
+                        r["text"] = f.read(2048)
+                except OSError:
+                    r["text"] = ""
 
     def _read_all(
         self,

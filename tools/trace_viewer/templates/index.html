@@ -1,0 +1,1234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KONASH Trace Viewer</title>
+<style>
+/* ================================================================
+   CSS Variables — Color System
+   ================================================================ */
+:root {
+  /* Backgrounds */
+  --bg-primary: #0D1117;
+  --bg-secondary: #161B22;
+  --bg-tertiary: #1C2128;
+  --bg-card: #21262D;
+  --bg-card-hover: #282E36;
+  --bg-input: #0D1117;
+
+  /* Borders */
+  --border-default: #30363D;
+  --border-muted: #21262D;
+  --border-subtle: #1C2128;
+
+  /* Text */
+  --text-primary: #E6EDF3;
+  --text-secondary: #8B949E;
+  --text-tertiary: #6E7681;
+  --text-link: #58A6FF;
+
+  /* Category colors */
+  --cat-grounding: #3FB950;
+  --cat-grounding-bg: rgba(63, 185, 80, 0.12);
+  --cat-grounding-border: rgba(63, 185, 80, 0.3);
+
+  --cat-discovery: #F0883E;
+  --cat-discovery-bg: rgba(240, 136, 62, 0.12);
+  --cat-discovery-border: rgba(240, 136, 62, 0.3);
+
+  --cat-exploration: #A371F7;
+  --cat-exploration-bg: rgba(163, 113, 247, 0.12);
+  --cat-exploration-border: rgba(163, 113, 247, 0.3);
+
+  --cat-verification: #F778BA;
+  --cat-verification-bg: rgba(247, 120, 186, 0.12);
+  --cat-verification-border: rgba(247, 120, 186, 0.3);
+
+  /* Accent */
+  --accent-blue: #58A6FF;
+  --accent-blue-bg: rgba(88, 166, 255, 0.15);
+  --accent-green: #3FB950;
+  --accent-green-bg: rgba(63, 185, 80, 0.15);
+
+  /* Sizing */
+  --card-width: 300px;
+  --card-min-height: 200px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 100px;
+
+  /* Fonts */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'Fira Mono', 'Roboto Mono', Consolas, monospace;
+}
+
+/* ================================================================
+   Reset & Base
+   ================================================================ */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 14px;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.5;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ================================================================
+   Layout
+   ================================================================ */
+.app-container {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 24px 32px;
+}
+
+/* ================================================================
+   Header
+   ================================================================ */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-default);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.logo {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logo-icon {
+  width: 26px;
+  height: 26px;
+  background: linear-gradient(135deg, var(--accent-blue), #A371F7);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: white;
+  font-weight: 800;
+}
+
+.nav-tabs {
+  display: flex;
+  background: var(--bg-tertiary);
+  border-radius: 9999px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.nav-tab {
+  padding: 6px 16px;
+  border-radius: 9999px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+  text-decoration: none;
+}
+
+.nav-tab.active {
+  background: var(--accent-blue);
+  color: white;
+}
+
+.nav-tab:hover:not(.active) {
+  color: var(--text-primary);
+  background: var(--bg-card);
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.topbar-btn:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+/* ================================================================
+   Session Selector
+   ================================================================ */
+.session-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.session-selector label {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.session-selector select {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 8px 36px 8px 12px;
+  font-size: 0.85rem;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238B949E' d='M6 8.5L1 3.5h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  min-width: 300px;
+}
+
+.session-selector select:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--text-tertiary);
+}
+
+.btn-primary {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: #4A95E8;
+}
+
+/* ================================================================
+   Upload Modal
+   ================================================================ */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-overlay.active {
+  display: flex;
+}
+
+.modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  width: 560px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.modal h2 {
+  font-size: 1.15rem;
+  margin-bottom: 16px;
+}
+
+.modal textarea {
+  width: 100%;
+  height: 300px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  resize: vertical;
+}
+
+.modal textarea:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+/* ================================================================
+   Query Section
+   ================================================================ */
+.query-section {
+  margin-bottom: 32px;
+}
+
+.query-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.query-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 14px;
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue);
+  border-radius: var(--radius-pill);
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.query-text {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.expected-docs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.expected-docs-label {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.doc-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  background: var(--accent-green-bg);
+  color: var(--accent-green);
+  border-radius: var(--radius-pill);
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+/* ================================================================
+   Model Row
+   ================================================================ */
+.model-row {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+
+.model-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border-muted);
+  background: var(--bg-tertiary);
+}
+
+.model-name {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  letter-spacing: -0.01em;
+}
+
+.model-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.trace-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.trace-btn {
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.trace-btn:hover {
+  border-color: var(--text-tertiary);
+  color: var(--text-primary);
+}
+
+.trace-btn.active {
+  background: var(--accent-blue-bg);
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.model-stats {
+  display: flex;
+  gap: 20px;
+  padding: 0 20px;
+}
+
+.stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
+.stat-value {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.stat-value.coverage-high {
+  color: var(--accent-green);
+}
+
+.stat-value.coverage-mid {
+  color: var(--cat-discovery);
+}
+
+.stat-value.coverage-low {
+  color: #F85149;
+}
+
+/* ================================================================
+   Timeline (horizontal scroll)
+   ================================================================ */
+.timeline-container {
+  padding: 16px 20px 20px;
+  overflow-x: auto;
+  overflow-y: hidden;
+
+  /* Styled scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-default) var(--bg-secondary);
+}
+
+.timeline-container::-webkit-scrollbar {
+  height: 8px;
+}
+
+.timeline-container::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+}
+
+.timeline-container::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 4px;
+}
+
+.timeline-container::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+.timeline {
+  display: flex;
+  gap: 12px;
+  padding-bottom: 8px;
+}
+
+/* ================================================================
+   Step Card
+   ================================================================ */
+.step-card {
+  flex-shrink: 0;
+  width: var(--card-width);
+  min-height: var(--card-min-height);
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  position: relative;
+}
+
+.step-card:hover {
+  background: var(--bg-card-hover);
+}
+
+/* Category border accent (left side) */
+.step-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+}
+
+.step-card.cat-grounding { border-color: var(--cat-grounding-border); }
+.step-card.cat-grounding::before { background: var(--cat-grounding); }
+
+.step-card.cat-discovery { border-color: var(--cat-discovery-border); }
+.step-card.cat-discovery::before { background: var(--cat-discovery); }
+
+.step-card.cat-exploration { border-color: var(--cat-exploration-border); }
+.step-card.cat-exploration::before { background: var(--cat-exploration); }
+
+.step-card.cat-verification { border-color: var(--cat-verification-border); }
+.step-card.cat-verification::before { background: var(--cat-verification); }
+
+/* Card top row: step number + category badge */
+.card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.step-badge {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.category-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: capitalize;
+  letter-spacing: 0.03em;
+}
+
+.category-badge.cat-grounding {
+  background: var(--cat-grounding-bg);
+  color: var(--cat-grounding);
+}
+
+.category-badge.cat-discovery {
+  background: var(--cat-discovery-bg);
+  color: var(--cat-discovery);
+}
+
+.category-badge.cat-exploration {
+  background: var(--cat-exploration-bg);
+  color: var(--cat-exploration);
+}
+
+.category-badge.cat-verification {
+  background: var(--cat-verification-bg);
+  color: var(--cat-verification);
+}
+
+/* Query count badge */
+.query-count-badge {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+/* Search query text */
+.card-query {
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  line-height: 1.45;
+  flex: 1;
+}
+
+.card-query .query-line {
+  display: block;
+  margin-bottom: 4px;
+  padding-left: 2px;
+}
+
+.card-query .query-line::before {
+  content: '\201C';
+  color: var(--text-tertiary);
+}
+
+.card-query .query-line::after {
+  content: '\201D';
+  color: var(--text-tertiary);
+}
+
+/* Thought text (collapsed by default, expand on click) */
+.card-thought {
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+  font-style: italic;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.card-thought.expanded {
+  -webkit-line-clamp: unset;
+  color: var(--text-secondary);
+}
+
+/* Card bottom stats */
+.card-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  gap: 8px;
+}
+
+.card-stat {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.card-stat svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  opacity: 0.7;
+}
+
+.found-stat {
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.found-stat.found-all {
+  color: var(--accent-green);
+}
+
+.found-stat.found-some {
+  color: var(--cat-discovery);
+}
+
+.found-stat.found-none {
+  color: var(--text-tertiary);
+}
+
+/* Progress bar */
+.progress-bar-container {
+  width: 100%;
+  height: 4px;
+  background: var(--border-muted);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.progress-bar-fill.progress-full {
+  background: var(--accent-green);
+}
+
+.progress-bar-fill.progress-partial {
+  background: var(--cat-discovery);
+}
+
+.progress-bar-fill.progress-none {
+  background: var(--border-default);
+}
+
+/* ================================================================
+   Loading & Empty States
+   ================================================================ */
+.loading-state, .empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 20px;
+  color: var(--text-tertiary);
+  gap: 12px;
+}
+
+.loading-state svg, .empty-state svg {
+  width: 48px;
+  height: 48px;
+  opacity: 0.4;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+/* ================================================================
+   Legend
+   ================================================================ */
+.legend {
+  display: flex;
+  gap: 20px;
+  padding: 12px 0;
+  flex-wrap: wrap;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.legend-dot.cat-grounding { background: var(--cat-grounding); }
+.legend-dot.cat-discovery { background: var(--cat-discovery); }
+.legend-dot.cat-exploration { background: var(--cat-exploration); }
+.legend-dot.cat-verification { background: var(--cat-verification); }
+
+/* ================================================================
+   Responsive
+   ================================================================ */
+@media (max-width: 900px) {
+  .app-container {
+    padding: 16px;
+  }
+
+  .topbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .session-selector select {
+    min-width: 200px;
+  }
+
+  .query-header {
+    flex-direction: column;
+  }
+
+  :root {
+    --card-width: 260px;
+  }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="logo">
+      <div class="logo-icon">K</div>
+      KONASH
+    </div>
+    <div class="nav-tabs">
+      <a href="/arena/" class="nav-tab">Arena</a>
+      <a href="/traces/" class="nav-tab active">Traces</a>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="session-selector">
+      <label for="session-select">Session:</label>
+      <select id="session-select">
+        <option value="">Loading sessions...</option>
+      </select>
+    </div>
+    <button class="topbar-btn" onclick="openUploadModal()">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M8 0a1 1 0 011 1v6h6a1 1 0 110 2H9v6a1 1 0 11-2 0V9H1a1 1 0 010-2h6V1a1 1 0 011-1z"/>
+      </svg>
+      Upload
+    </button>
+  </div>
+</div>
+
+<div class="app-container">
+
+  <!-- Legend -->
+  <div class="legend">
+    <div class="legend-item"><span class="legend-dot cat-grounding"></span> Grounding</div>
+    <div class="legend-item"><span class="legend-dot cat-discovery"></span> Discovery</div>
+    <div class="legend-item"><span class="legend-dot cat-exploration"></span> Exploration</div>
+    <div class="legend-item"><span class="legend-dot cat-verification"></span> Verification</div>
+  </div>
+
+  <!-- Main Content -->
+  <main id="main-content">
+    <div class="loading-state" id="loading-state">
+      <svg class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
+        <path d="M12 2a10 10 0 019.95 9" stroke-linecap="round"/>
+      </svg>
+      <span>Loading trace data...</span>
+    </div>
+  </main>
+</div>
+
+<!-- Upload Modal -->
+<div class="modal-overlay" id="upload-modal">
+  <div class="modal">
+    <h2>Upload Trace Data</h2>
+    <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 12px;">
+      Paste JSON in either the trace viewer format or KONASH rollout format.
+    </p>
+    <textarea id="upload-json" placeholder='{"question": "...", "expected_documents": [...], "models": [...]}'></textarea>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeUploadModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitUpload()">Upload</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ================================================================
+   State
+   ================================================================ */
+let currentSession = null;
+let sessions = [];
+
+/* ================================================================
+   API Helpers
+   ================================================================ */
+async function fetchJSON(url, opts) {
+  const resp = await fetch(url, opts);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.json();
+}
+
+/* ================================================================
+   Session Loading
+   ================================================================ */
+async function loadSessions() {
+  try {
+    sessions = await fetchJSON('/traces/api/traces');
+    const sel = document.getElementById('session-select');
+    sel.innerHTML = '';
+    if (sessions.length === 0) {
+      sel.innerHTML = '<option value="">No sessions available</option>';
+      showEmpty();
+      return;
+    }
+    sessions.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.session_id;
+      opt.textContent = `Query ${s.query_id} — ${s.question_preview}`;
+      sel.appendChild(opt);
+    });
+    // Load first session by default
+    loadSession(sessions[0].session_id);
+  } catch (err) {
+    console.error('Failed to load sessions:', err);
+    showEmpty('Failed to load sessions. Is the server running?');
+  }
+}
+
+async function loadSession(sessionId) {
+  if (!sessionId) return;
+  showLoading();
+  try {
+    currentSession = await fetchJSON(`/traces/api/trace/${sessionId}`);
+    renderSession(currentSession);
+  } catch (err) {
+    console.error('Failed to load session:', err);
+    showEmpty('Failed to load trace data.');
+  }
+}
+
+/* ================================================================
+   Rendering
+   ================================================================ */
+function renderSession(data) {
+  const main = document.getElementById('main-content');
+  main.innerHTML = '';
+
+  // Query section
+  const qSection = document.createElement('div');
+  qSection.className = 'query-section';
+
+  // Query header
+  const qHeader = document.createElement('div');
+  qHeader.className = 'query-header';
+  qHeader.innerHTML = `
+    <span class="query-badge">Query ${data.query_id}</span>
+    <div class="query-text">${escapeHtml(data.question)}</div>
+  `;
+  qSection.appendChild(qHeader);
+
+  // Expected documents
+  if (data.expected_documents && data.expected_documents.length > 0) {
+    const docsRow = document.createElement('div');
+    docsRow.className = 'expected-docs';
+    docsRow.innerHTML = `<span class="expected-docs-label">Expected Documents</span>`;
+    data.expected_documents.forEach(docId => {
+      docsRow.innerHTML += `<span class="doc-badge">${escapeHtml(docId)}</span>`;
+    });
+    qSection.appendChild(docsRow);
+  }
+
+  main.appendChild(qSection);
+
+  // Model rows
+  data.models.forEach(model => {
+    const row = renderModelRow(model);
+    main.appendChild(row);
+  });
+}
+
+function renderModelRow(model) {
+  const row = document.createElement('div');
+  row.className = 'model-row';
+
+  // Default to first trace
+  const activeTraceIdx = 0;
+  const activeTrace = model.traces[activeTraceIdx];
+
+  // Header
+  const header = document.createElement('div');
+  header.className = 'model-row-header';
+
+  // Left: model name + stats
+  const leftGroup = document.createElement('div');
+  leftGroup.style.cssText = 'display: flex; align-items: center; gap: 20px;';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'model-name';
+  nameEl.textContent = model.name;
+  leftGroup.appendChild(nameEl);
+
+  // Stats
+  const statsEl = document.createElement('div');
+  statsEl.className = 'model-stats';
+  statsEl.dataset.modelName = model.name;
+  statsEl.innerHTML = buildStatsHTML(activeTrace);
+  leftGroup.appendChild(statsEl);
+
+  header.appendChild(leftGroup);
+
+  // Right: trace selector buttons
+  if (model.traces.length > 1) {
+    const controls = document.createElement('div');
+    controls.className = 'model-controls';
+
+    const traceButtons = document.createElement('div');
+    traceButtons.className = 'trace-buttons';
+
+    model.traces.forEach((trace, idx) => {
+      const btn = document.createElement('button');
+      btn.className = 'trace-btn' + (idx === 0 ? ' active' : '');
+      btn.textContent = `Trace ${trace.trace_id}`;
+      btn.onclick = function() {
+        // Update active button
+        traceButtons.querySelectorAll('.trace-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        // Update timeline
+        const timeline = row.querySelector('.timeline');
+        timeline.innerHTML = '';
+        trace.steps.forEach(step => {
+          timeline.appendChild(renderStepCard(step));
+        });
+        // Update stats
+        const statsContainer = row.querySelector('.model-stats');
+        statsContainer.innerHTML = buildStatsHTML(trace);
+      };
+      traceButtons.appendChild(btn);
+    });
+
+    controls.appendChild(traceButtons);
+    header.appendChild(controls);
+  }
+
+  row.appendChild(header);
+
+  // Timeline
+  const timelineContainer = document.createElement('div');
+  timelineContainer.className = 'timeline-container';
+
+  const timeline = document.createElement('div');
+  timeline.className = 'timeline';
+
+  activeTrace.steps.forEach(step => {
+    timeline.appendChild(renderStepCard(step));
+  });
+
+  timelineContainer.appendChild(timeline);
+  row.appendChild(timelineContainer);
+
+  return row;
+}
+
+function buildStatsHTML(trace) {
+  const coveragePct = Math.round(trace.coverage * 100);
+  let coverageClass = 'coverage-low';
+  if (coveragePct >= 80) coverageClass = 'coverage-high';
+  else if (coveragePct >= 40) coverageClass = 'coverage-mid';
+
+  return `
+    <div class="stat">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+        <path d="M8 0a8 8 0 110 16A8 8 0 018 0zm0 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM8 4a.75.75 0 01.75.75v2.5h2.5a.75.75 0 010 1.5h-2.5v2.5a.75.75 0 01-1.5 0v-2.5h-2.5a.75.75 0 010-1.5h2.5v-2.5A.75.75 0 018 4z"/>
+      </svg>
+      Coverage
+      <span class="stat-value ${coverageClass}">${coveragePct}%</span>
+    </div>
+    <div class="stat">
+      Steps
+      <span class="stat-value">${trace.total_steps}</span>
+    </div>
+    ${trace.total_expected > 0 ? `<div class="stat">
+      Found
+      <span class="stat-value">${trace.found_count}/${trace.total_expected}</span>
+    </div>` : ''}
+  `;
+}
+
+function renderStepCard(step) {
+  const card = document.createElement('div');
+  const catClass = 'cat-' + step.category;
+  card.className = `step-card ${catClass}`;
+
+  // Progress calculations
+  const found = step.expected_found || 0;
+  const total = step.total_expected || 1;
+  const progressPct = total > 0 ? (found / total) * 100 : 0;
+  let progressClass = 'progress-none';
+  let foundClass = 'found-none';
+  if (found === total && total > 0) {
+    progressClass = 'progress-full';
+    foundClass = 'found-all';
+  } else if (found > 0) {
+    progressClass = 'progress-partial';
+    foundClass = 'found-some';
+  }
+
+  // Build queries display
+  const queries = step.queries || [];
+  const queryLines = queries.map(q => `<span class="query-line">${escapeHtml(q)}</span>`).join('');
+
+  // Query count text
+  const qCountText = step.num_queries === 1 ? '1 query' : `${step.num_queries} queries`;
+
+  card.innerHTML = `
+    <div class="card-top">
+      <span class="step-badge">Step ${step.step_number}</span>
+      <span class="category-badge ${catClass}">${step.category}</span>
+    </div>
+    <span class="query-count-badge">${qCountText} in this step</span>
+    <div class="card-query">${queryLines}</div>
+    ${step.thought ? `<div class="card-thought" onclick="this.classList.toggle('expanded')">${escapeHtml(step.thought)}</div>` : ''}
+    <div class="card-bottom">
+      <div class="card-stat">
+        <svg viewBox="0 0 16 16">
+          <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0113.25 16h-9.5A1.75 1.75 0 012 14.25V1.75zm1.75-.25a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 00.25-.25V4.664a.25.25 0 00-.073-.177l-2.914-2.914a.25.25 0 00-.177-.073H3.75z"/>
+        </svg>
+        ${step.docs_retrieved} docs
+      </div>
+      ${step.total_expected > 0 ? `<div class="card-stat">
+        <span class="found-stat ${foundClass}">${found}/${total} found</span>
+      </div>` : ''}
+    </div>
+    ${step.total_expected > 0 ? `<div class="progress-bar-container">
+      <div class="progress-bar-fill ${progressClass}" style="width: ${progressPct}%"></div>
+    </div>` : ''}
+  `;
+
+  return card;
+}
+
+/* ================================================================
+   UI Helpers
+   ================================================================ */
+function escapeHtml(str) {
+  if (!str) return '';
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function showLoading() {
+  document.getElementById('main-content').innerHTML = `
+    <div class="loading-state">
+      <svg class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
+        <path d="M12 2a10 10 0 019.95 9" stroke-linecap="round"/>
+      </svg>
+      <span>Loading trace data...</span>
+    </div>
+  `;
+}
+
+function showEmpty(msg) {
+  document.getElementById('main-content').innerHTML = `
+    <div class="empty-state">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span>${msg || 'No trace data available. Upload a trace or check the data directory.'}</span>
+    </div>
+  `;
+}
+
+/* ================================================================
+   Upload Modal
+   ================================================================ */
+function openUploadModal() {
+  document.getElementById('upload-modal').classList.add('active');
+  document.getElementById('upload-json').focus();
+}
+
+function closeUploadModal() {
+  document.getElementById('upload-modal').classList.remove('active');
+  document.getElementById('upload-json').value = '';
+}
+
+async function submitUpload() {
+  const textarea = document.getElementById('upload-json');
+  const raw = textarea.value.trim();
+  if (!raw) return;
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    alert('Invalid JSON: ' + e.message);
+    return;
+  }
+
+  try {
+    const result = await fetchJSON('/traces/api/trace/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    closeUploadModal();
+    // Reload sessions and switch to new one
+    await loadSessions();
+    const sel = document.getElementById('session-select');
+    sel.value = result.session_id;
+    loadSession(result.session_id);
+  } catch (err) {
+    alert('Upload failed: ' + err.message);
+  }
+}
+
+/* ================================================================
+   Event Listeners
+   ================================================================ */
+document.getElementById('session-select').addEventListener('change', function() {
+  loadSession(this.value);
+});
+
+// Close modal on overlay click
+document.getElementById('upload-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeUploadModal();
+});
+
+// Keyboard shortcut: Escape closes modal
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeUploadModal();
+});
+
+/* ================================================================
+   Init
+   ================================================================ */
+loadSessions();
+</script>
+</body>
+</html>

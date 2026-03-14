@@ -22,12 +22,12 @@ KONASH trains knowledge agents via reinforcement learning that match or exceed f
 
 ## Key Benefits
 
-- **100x cheaper training** — Small training clusters. ~$100 per iteration instead of ~$100K–500K.
-- **Higher quality** — RL-trained agents search more efficiently, retrieve more diversely, and reason more accurately than fronteir models. The gains are algorithmic, not scale-dependent.
-- **Consistent results** — Parallel thinking (N=10–20 rollouts + aggregation) turns probabilistic search into near-deterministic accuracy. Cheap rollouts on a small model mean you can afford this on every query.
-- **Zero lock-in** — Your model, your weights, your infrastructure. Deploy anywhere with vLLM and LoRA hot-swapping.
+- 💰 **100x cheaper training** — Small training clusters. ~$100 per iteration instead of ~$100K–500K.
+- 🎯 **Higher quality** — RL-trained agents search more efficiently, retrieve more diversely, and reason more accurately than frontier models. The gains are algorithmic, not scale-dependent.
+- 🔁 **Consistent results** — Parallel thinking (N=10–20 rollouts + aggregation) turns probabilistic search into near-deterministic accuracy. Cheap rollouts on a small model mean you can afford this on every query.
+- 🔓 **Zero lock-in** — Your model, your weights, your infrastructure. Deploy anywhere with vLLM and LoRA hot-swapping.
 
-## Quickstart
+## 🚀 Quickstart
 
 ```bash
 pip install konash
@@ -83,7 +83,7 @@ answer = agent.solve("Your question here", parallel_rollouts=3)
 
 ---
 
-## How It Works
+## 🔍 How It Works
 
 Standard retrieval systems use a frozen model with a single retrieve-then-read pass. KONASH trains the model's **search policy** through reinforcement learning:
 
@@ -92,24 +92,9 @@ Standard retrieval systems use a frozen model with a single retrieve-then-read p
 - The model learns **how to reason** over retrieved evidence (cross-document synthesis)
 - The trained model **generalizes to new corpora** it hasn't seen
 
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Agentic    │     │   Rollout    │     │  Pass-rate   │     │     OAPL     │
-│  QA Synthesis│────▶│  Generation  │────▶│  Filtering   │────▶│   Training   │
-│  (parallel)  │     │  (parallel)  │     │  [0.1, 0.9]  │     │  (off-policy)│
-└──────────────┘     └──────────────┘     └──────────────┘     └──────┬───────┘
-                                                                      │
-                                                              ┌───────▼───────┐
-                                                              │ Value Model   │
-                                                              │   Training    │
-                                                              └───────┬───────┘
-                                                                      │
-                                                              ┌───────▼───────┐
-                                                              │  Value-Guided │
-                                                              │    Search     │
-                                                              │   (VGS)       │
-                                                              └───────────────┘
-```
+<p align="center">
+  <img src="assets/diagram.png" alt="KONASH training pipeline" width="700">
+</p>
 
 Each iteration: synthesize → rollout → filter → train → repeat with improved model.
 
@@ -166,7 +151,7 @@ Any model available on [Together AI](https://api.together.xyz/models):
 
 ---
 
-## Notebooks
+## 📓 Notebooks
 
 | Agent Task | Notebook | Description |
 |---|---|---|
@@ -197,7 +182,7 @@ Contributions are welcome! Please open an issue or PR on [GitHub](https://github
 
 ---
 
-## Credits
+## 🙏 Credits
 
 KONASH builds directly on:
 
