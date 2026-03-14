@@ -9,3 +9,5 @@ build/
 .konash/
 .env
 stage2_training_data.json
+eval_results/
+tools/trace_viewer/data/financebench_*.json

@@ -863,7 +863,8 @@ class Agent:
         use_vgs: Optional[bool] = None,
         vgs_candidate_width: int = 2,
         vgs_max_depth: int = 10,
-    ) -> str:
+        return_trace: bool = False,
+    ) -> str | Dict[str, Any]:
         """Answer a question using the trained (or base) knowledge agent.
 
         Parameters
@@ -886,11 +887,15 @@ class Agent:
             Number of candidate continuations per BFS expansion step.
         vgs_max_depth : int
             Maximum BFS depth per search tree.
+        return_trace : bool
+            If True, return a dict with ``answer`` and ``trajectory``
+            (list of step records) instead of just the answer string.
 
         Returns
         -------
-        str
-            The agent's answer.
+        str | dict
+            The agent's answer, or ``{"answer": str, "trajectory": list}``
+            when *return_trace* is True.
         """
         if not self.corpus.indexed:
             self.corpus.ingest()
@@ -964,7 +969,10 @@ class Agent:
             env = make_environment()
             env.reset(prompt=query)
             result = env.run_episode(agent, max_steps=max_steps)
-            return result.get("final_answer") or ""
+            answer = result.get("final_answer") or ""
+            if return_trace:
+                return {"answer": answer, "trajectory": result.get("trajectory", [])}
+            return answer
 
         # Shared agent wrapper for both VGS and Parallel Thinking
         class _EnvironmentBackedAgent:
@@ -1065,7 +1073,10 @@ class Agent:
                 max_depth=vgs_max_depth,
             )
             result = vgs_engine.run(query)
-            return result.get("answer", "")
+            answer = result.get("answer", "")
+            if return_trace:
+                return {"answer": answer, "trajectory": result.get("trajectories", [])}
+            return answer
 
         # Fallback: Parallel Thinking (no value model)
         engine = ParallelThinkingEngine(
@@ -1077,7 +1088,10 @@ class Agent:
             num_rollouts=parallel_rollouts,
         )
         result = engine.run(query)
-        return result.get("answer", "")
+        answer = result.get("answer", "")
+        if return_trace:
+            return {"answer": answer, "trajectory": result.get("rollouts", [])}
+        return answer
 
     # ------------------------------------------------------------------
     # Search (direct corpus search without LLM)

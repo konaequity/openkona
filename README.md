@@ -35,7 +35,7 @@ konash setup    # walks you through API keys
 konash train    # pick a corpus, model, and scale — hit go
 ```
 
-Setup takes 2 minutes. Training takes 5 minutes (quick test) to several hours (scaled up).
+Setup takes 2 minutes. Training scales from ~1 hour (Quick) to several hours (Exhaustive).
 
 ### What happens under the hood
 
@@ -100,13 +100,44 @@ Each iteration: synthesize → rollout → filter → train → repeat with impr
 
 ---
 
+## Evaluation
+
+### FinanceBench (150 questions, SEC filings)
+
+GLM 4.5 Air on FinanceBench — no training, base model only:
+
+| Mode | Accuracy | Avg Score | Avg Latency |
+|------|----------|-----------|-------------|
+| Single rollout | 48% | 0.487 | 7.7s |
+| Parallel thinking (N=3) | 51% | 0.520 | 30.8s |
+
+Scored with LLM-based nugget evaluation (KARL paper, Appendix D.1). Parallel thinking runs 3 independent rollouts and aggregates answers, improving accuracy by +3%.
+
+The KARL paper reports **76%** on FinanceBench after RL training (2 iterations, 12K synthesized QA pairs). KONASH implements this training pipeline — the gap between 48% (base) and 76% (trained) is what OAPL training closes.
+
+<details>
+<summary>Reproduce these results</summary>
+
+```bash
+pip install konash
+konash setup
+python scripts/eval_financebench.py              # single + parallel
+python scripts/eval_financebench.py --parallel 5  # try N=5
+python scripts/eval_financebench.py --train       # train + eval
+```
+
+Results are saved to `eval_results/financebench_eval.json`. Traces are written to `tools/trace_viewer/data/` for visualization.
+</details>
+
+---
+
 ## Requirements
 
 ### API Keys (set up via `konash setup`)
 
 | Service | Purpose | Cost |
 |---------|---------|------|
-| **Together AI** | LLM inference (synthesis, rollouts, solving) | Pay-as-you-go (~$5 for a small run) |
+| **Together AI** | LLM inference (synthesis, rollouts, solving) | Pay-as-you-go (~$5 for a quick training run) |
 | **HuggingFace** | Pre-built embedding indexes, model hosting | Free |
 | **Google AI** *(optional)* | Corpus embeddings via Gemini (when no pre-built index) | Free tier available |
 
