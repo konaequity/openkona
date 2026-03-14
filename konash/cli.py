@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import webbrowser
 
 from rich import box
@@ -142,15 +143,7 @@ MODELS = [
 # qa_pairs is the user-facing number; internally divided by 8 to get API calls
 SCALE_PRESETS = [
     {
-        "name": "Quick test",
-        "hint": "~24 QA pairs  ·  4 rollouts  ·  ~5 min",
-        "qa_pairs": 24,
-        "rollouts": 4,
-        "rollout_steps": 10,
-        "iterations": 1,
-    },
-    {
-        "name": "Small run",
+        "name": "Quick",
         "hint": "~400 QA pairs  ·  8 rollouts  ·  ~1 hr",
         "qa_pairs": 400,
         "rollouts": 8,
@@ -158,7 +151,7 @@ SCALE_PRESETS = [
         "iterations": 1,
     },
     {
-        "name": "KARL scale",
+        "name": "Recommended",
         "hint": "~12K QA pairs  ·  8 rollouts  ·  2 iterations",
         "qa_pairs": 12000,
         "rollouts": 8,
@@ -166,7 +159,7 @@ SCALE_PRESETS = [
         "iterations": 2,
     },
     {
-        "name": "KARL full",
+        "name": "Exhaustive",
         "hint": "~14K QA pairs  ·  8 rollouts  ·  200 steps  ·  2 iterations",
         "qa_pairs": 13880,
         "rollouts": 8,
@@ -724,6 +717,11 @@ def cmd_train(args: argparse.Namespace) -> None:
         rollout_tokens = qa_pairs * rollouts * rollout_steps * 500
         est_cost = (synth_tokens + rollout_tokens) / 1_000_000 * 0.10
 
+        # ETA estimate: ~2s per synthesis call, ~3s per rollout group
+        est_synth_secs = synthesis_calls * iterations * 2
+        est_rollout_secs = qa_pairs * iterations * 3
+        est_total_secs = est_synth_secs + est_rollout_secs
+
         console.print()
         console.rule(style="dim")
         console.print()
@@ -738,6 +736,7 @@ def cmd_train(args: argparse.Namespace) -> None:
         grid.add_row("Rollout steps", str(rollout_steps))
         grid.add_row("Iterations", str(iterations))
         grid.add_row("Est. cost", f"~${est_cost:,.0f}" if est_cost >= 1 else f"~${est_cost:,.2f}")
+        grid.add_row("Est. time", _format_duration(est_total_secs))
         console.print(grid)
         console.print()
 
@@ -772,6 +771,7 @@ def cmd_train(args: argparse.Namespace) -> None:
         hf_token=_get_hf_token(),
         chunk_size=chunk_size,
     )
+    train_start = time.monotonic()
     agent.train(
         iterations=iterations,
         synthesis_calls=synthesis_calls,
@@ -781,11 +781,14 @@ def cmd_train(args: argparse.Namespace) -> None:
         learning_rate=lr,
         verbose=True,
     )
+    elapsed = time.monotonic() - train_start
 
     console.print()
     console.rule(style="dim")
     console.print()
-    console.print("    [green]✓[/]  Training complete")
+    console.print(
+        f"    [green]✓[/]  Training complete  [dim]{_format_duration(elapsed).lstrip('~')}[/]"
+    )
     console.print()
     console.print("    [bold]What's next?[/]")
     console.print()
@@ -1001,6 +1004,19 @@ def cmd_status(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds as a human-readable string."""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"~{seconds}s"
+    if seconds < 3600:
+        m, s = divmod(seconds, 60)
+        return f"~{m}m {s}s" if s else f"~{m}m"
+    h, remainder = divmod(seconds, 3600)
+    m = remainder // 60
+    return f"~{h}h {m}m" if m else f"~{h}h"
+
 
 def _dependency_error(exc: ModuleNotFoundError) -> None:
     missing = exc.name or "a required package"
