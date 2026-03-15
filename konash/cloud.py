@@ -23,6 +23,9 @@ _CONFIG_FILE = os.path.join(_CONFIG_DIR, "config.json")
 _SSH_KEY_PATH = os.path.join(_CONFIG_DIR, "shadeform_ssh_key")
 _INSTANCE_STATE = os.path.join(_CONFIG_DIR, "active_instance.json")
 _PROJECT_ROOT = Path(__file__).parent.parent
+# Remote paths — use ~ so it resolves to whatever the SSH user's home is
+_REMOTE_DIR = "~/konash"
+_REMOTE_LOG = "~/konash/training.log"
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +71,7 @@ def _shadeform_request(
 
         if error_code == "INSUFFICIENT_FUNDS":
             raise RuntimeError(
-                "Your Shadeform account needs a minimum $5 balance to launch a GPU.\n"
+                "Your Shadeform account needs funds to launch a GPU.\n"
                 "Add funds at: https://platform.shadeform.ai/settings/billing"
             ) from e
 
@@ -154,16 +157,28 @@ def _find_cheapest_gpu(gpu_type: str = "H100", api_key: Optional[str] = None) ->
 def _launch_instance(
     cloud: str, region: str, shade_type: str, name: str,
     ssh_key_id: Optional[str] = None,
+    os_options: Optional[list] = None,
     api_key: Optional[str] = None,
 ) -> str:
     """Launch a GPU instance. Returns instance ID."""
+    # Pick best OS: prefer CUDA shade_os, fall back to ubuntu
+    os_image = "ubuntu22.04_cuda12.8_shade_os"
+    if os_options:
+        for pref in ["ubuntu22.04_cuda12.8_shade_os", "ubuntu22.04_cuda12.2_shade_os",
+                      "ubuntu24.04_cuda12.4_shade_os", "ubuntu22.04", "ubuntu24.04"]:
+            if pref in os_options:
+                os_image = pref
+                break
+        else:
+            os_image = os_options[0]
+
     body: dict[str, Any] = {
         "cloud": cloud,
         "region": region,
         "shade_instance_type": shade_type,
         "shade_cloud": True,
         "name": name,
-        "os": "ubuntu22.04_cuda12.8_shade_os",
+        "os": os_image,
     }
     if ssh_key_id:
         body["ssh_key_id"] = ssh_key_id
@@ -305,7 +320,7 @@ def _upload_codebase(
         "ssh", *_SSH_OPTS,
         "-i", key_path, "-p", str(port),
         f"{user}@{ip}",
-        "mkdir -p /root/konash && tar xzf - -C /root/konash",
+        f"mkdir -p {_REMOTE_DIR} && tar xzf - -C {_REMOTE_DIR}",
     ]
     tar = subprocess.Popen(tar_cmd, stdout=subprocess.PIPE)
     ssh = subprocess.Popen(ssh_cmd, stdin=tar.stdout)
@@ -322,8 +337,9 @@ def _setup_remote(
 ) -> None:
     """Install KONASH dependencies on the remote machine."""
     setup_cmd = (
-        "cd /root/konash && "
-        "pip install -e '.[unsloth,search,data]' 2>&1 | tail -3"
+        f"cd {_REMOTE_DIR} && "
+        "pip3 install numpy sentence-transformers datasets huggingface_hub torch "
+        "unsloth peft accelerate 2>&1 | tail -3"
     )
     result = subprocess.run(
         _ssh_cmd(ip, setup_cmd, key_path, port, user),
@@ -350,9 +366,9 @@ def _run_remote_training(
 
     # Run under nohup so SSH disconnection doesn't kill training
     remote_cmd = (
-        f"cd /root/konash && "
-        f"export UNSLOTH_VLLM_STANDBY=1 {env_str} && "
-        f"nohup bash -c '{training_cmd} > /root/konash/training.log 2>&1' &"
+        f"cd {_REMOTE_DIR} && "
+        f"export PYTHONPATH=. UNSLOTH_VLLM_STANDBY=1 {env_str} && "
+        f"nohup bash -c '{training_cmd} > {_REMOTE_LOG} 2>&1' &"
     )
 
     # Start training in background
@@ -365,7 +381,7 @@ def _run_remote_training(
     time.sleep(2)
 
     # Tail the log file and parse progress markers
-    tail_cmd = f"tail -f /root/konash/training.log"
+    tail_cmd = f"tail -f {_REMOTE_LOG}"
     proc = subprocess.Popen(
         _ssh_cmd(ip, tail_cmd, key_path, port, user),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -530,12 +546,14 @@ def _provision_gpu(
         try:
             instance_id = _launch_instance(
                 provider, region, best["shade_instance_type"],
-                f"konash-{int(time.time())}", _ssh_key_id, api_key,
+                f"konash-{int(time.time())}", _ssh_key_id,
+                best.get("configuration", {}).get("os_options"),
+                api_key,
             )
             break
         except RuntimeError as e:
             msg = str(e)
-            if "minimum $5 balance" in msg:
+            if "needs funds" in msg or "INSUFFICIENT_FUNDS" in msg:
                 _print()
                 _print(f"  [yellow]{e}[/]")
                 _print()
@@ -571,7 +589,9 @@ def _provision_gpu(
         _print(f"  Launching new instance...")
         instance_id = _launch_instance(
             provider, region, best["shade_instance_type"],
-            f"konash-{int(time.time())}", _ssh_key_id, api_key,
+            f"konash-{int(time.time())}", _ssh_key_id,
+            best.get("configuration", {}).get("os_options"),
+            api_key,
         )
         _save_instance_state(instance_id, "", hourly_price=price)
         _print(f"  Waiting for instance to boot...")
@@ -617,15 +637,15 @@ def train_oapl_from_rollouts(
 
         # Upload rollout data
         _print(f"  Uploading rollout data...")
-        _scp_upload(ip, rollouts_path, "/root/konash/rollouts.json", ssh_key, port, user)
+        _scp_upload(ip, rollouts_path, f"{_REMOTE_DIR}/rollouts.json", ssh_key, port, user)
         _print(f"  [green]✓[/]  Rollouts uploaded")
 
         # Run training
         training_cmd = (
-            f"python scripts/train_oapl_unsloth.py "
-            f"--rollouts /root/konash/rollouts.json "
+            f"python3 scripts/train_oapl_unsloth.py "
+            f"--rollouts {_REMOTE_DIR}/rollouts.json "
             f"--lr {learning_rate} "
-            f"--output /root/konash/checkpoints"
+            f"--output {_REMOTE_DIR}/checkpoints"
         )
         env_vars = {"TOGETHER_API_KEY": os.environ.get("TOGETHER_API_KEY", "")}
         together_key = _get_together_key()
@@ -638,7 +658,7 @@ def train_oapl_from_rollouts(
         _print(f"  Downloading trained model...")
         checkpoint_dir = os.path.expanduser(checkpoint_dir)
         os.makedirs(checkpoint_dir, exist_ok=True)
-        _scp_download(ip, "/root/konash/checkpoints/", checkpoint_dir, ssh_key, port, user)
+        _scp_download(ip, f"{_REMOTE_DIR}/checkpoints/", checkpoint_dir, ssh_key, port, user)
         _print(f"  [green]✓[/]  Model downloaded to {checkpoint_dir}")
 
     finally:
@@ -691,7 +711,7 @@ def train_remote(
         # For named corpora, download on remote. For local paths, upload.
         named_corpora = {"financebench", "browsecomp-plus", "qampari", "freshstack"}
         if corpus in named_corpora:
-            dl_cmd = f"cd /root/konash && python -c \"from konash.download import download_{corpus.replace('-', '_')}; download_{corpus.replace('-', '_')}()\""
+            dl_cmd = f"cd {_REMOTE_DIR} && PYTHONPATH=. python3 -c \"from konash.download import download_{corpus.replace('-', '_')}; download_{corpus.replace('-', '_')}()\""
             subprocess.run(
                 _ssh_cmd(ip, dl_cmd, ssh_key, port, user),
                 capture_output=True, timeout=600,
@@ -699,16 +719,16 @@ def train_remote(
             corpus_path = f"/root/.konash/corpora/{corpus}/documents"
         else:
             _print(f"  Uploading corpus...")
-            _scp_upload(ip, corpus, "/root/konash/corpus/", ssh_key, port, user)
-            corpus_path = "/root/konash/corpus"
+            _scp_upload(ip, corpus, f"{_REMOTE_DIR}/corpus/", ssh_key, port, user)
+            corpus_path = f"{_REMOTE_DIR}/corpus"
 
         training_cmd = (
-            f"python scripts/train_oapl_unsloth.py "
+            f"python3 scripts/train_oapl_unsloth.py "
             f"--corpus {corpus_path} "
             f"--iterations {iterations} "
             f"--rollouts-per-example {rollouts_per_example} "
             f"--lr {learning_rate} "
-            f"--output /root/konash/checkpoints"
+            f"--output {_REMOTE_DIR}/checkpoints"
         )
         env_vars = {}
         together_key = _get_together_key()
@@ -720,7 +740,7 @@ def train_remote(
         _print(f"  Downloading trained model...")
         checkpoint_dir = os.path.expanduser(checkpoint_dir)
         os.makedirs(checkpoint_dir, exist_ok=True)
-        _scp_download(ip, "/root/konash/checkpoints/", checkpoint_dir, ssh_key, port, user)
+        _scp_download(ip, f"{_REMOTE_DIR}/checkpoints/", checkpoint_dir, ssh_key, port, user)
         _print(f"  [green]✓[/]  Model downloaded")
 
     finally:
@@ -761,7 +781,7 @@ def stream_logs(verbose: bool = True) -> None:
     user = state.get("ssh_user", "shadeform")
     key_path = state.get("ssh_key_path", _SSH_KEY_PATH)
 
-    tail_cmd = "tail -f /root/konash/training.log 2>/dev/null || echo 'No training log yet.'"
+    tail_cmd = f"tail -f {_REMOTE_LOG} 2>/dev/null || echo 'No training log yet.'"
     try:
         subprocess.run(
             _ssh_cmd(ip, tail_cmd, key_path, port, user),
