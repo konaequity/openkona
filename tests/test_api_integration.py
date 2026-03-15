@@ -148,6 +148,12 @@ def test_train_runs_local_synthesis_then_cloud_oapl(tmp_path, monkeypatch):
         lambda self, **kwargs: [],
     )
 
+    # Patch generate_fn to avoid network calls
+    monkeypatch.setattr(
+        agent, "_get_generate_fn",
+        lambda: (lambda messages, **kw: {"role": "assistant", "content": ""}),
+    )
+
     # train() should complete without calling cloud (no rollout data)
     result = agent.train(iterations=1, synthesis_calls=1, verbose=False)
 

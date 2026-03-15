@@ -316,17 +316,20 @@ def _animate_logo(con: Console) -> None:
 
     con.print()
 
-    # Phase 1: Search beam animation
+    # Phase 1: Search beam animation (bypass Rich to avoid \r conflicts)
+    import sys as _sys
     beam_width = 36
     for i in range(beam_width + 1):
         bar = "━" * i + ("◉" if i < beam_width else "")
         pad = " " * (beam_width - i)
-        con.print(f"    [bright_cyan]{bar}[/]{pad}", end="\r")
+        _sys.stdout.write(f"\r    \033[96m{bar}\033[0m{pad}")
+        _sys.stdout.flush()
         _t.sleep(0.015)
 
     # Phase 2: Beam dissolves into the logo
     _t.sleep(0.15)
-    con.print(" " * 50, end="\r")  # clear beam
+    _sys.stdout.write("\r" + " " * 50 + "\r")
+    _sys.stdout.flush()
 
     # Phase 3: Big letters fade in line by line (gradient white → cyan)
     logo = [

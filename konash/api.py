@@ -435,7 +435,7 @@ class Agent:
         # ── Iteration 1: client-side synthesis + rollouts ──
         if verbose:
             _con.print()
-            _con.rule("[bold]Iteration 1/{iterations}[/]", style="dim")
+            _con.rule(f"[bold]Iteration 1/{iterations}[/]", style="dim")
             _con.print()
             _con.print("  [dim]Phase 1: Synthesis + rollouts (local, via API)[/]")
 
@@ -588,8 +588,11 @@ class Agent:
                 self.corpus.ingest()
 
         # ── Stage 1: Synthesis ──
+        # Try to resume from checkpoint — but ignore empty ones
+        examples = []
+        resumed = False
+
         if latest and latest >= ckpt.Phase.DEDUP:
-            # Already have deduped examples
             examples_data = ckpt.load(
                 self.checkpoint_dir, iteration + 1, ckpt.Phase.DEDUP
             )
@@ -600,12 +603,15 @@ class Agent:
                 )
                 for e in (examples_data or [])
             ]
-            if verbose:
-                _con.print(
-                    f"  [green]✓[/]  {len(examples)} examples (from checkpoint)"
-                )
-        elif latest and latest >= ckpt.Phase.SYNTHESIS:
-            # Have raw synthesis, need dedup
+            if examples:
+                resumed = True
+                if verbose:
+                    _con.print(
+                        f"  [green]✓[/]  {len(examples)} examples (from checkpoint)"
+                    )
+
+        if not resumed and latest and latest >= ckpt.Phase.SYNTHESIS:
+            # Have raw synthesis checkpoint — check it has data
             synth_data = ckpt.load(
                 self.checkpoint_dir, iteration + 1, ckpt.Phase.SYNTHESIS
             )
@@ -616,20 +622,23 @@ class Agent:
                 )
                 for e in (synth_data.get("examples", []) if synth_data else [])
             ]
-            examples = self._run_dedup(raw_examples, max_examples, verbose)
-            ckpt.save(
-                self.checkpoint_dir, iteration + 1, ckpt.Phase.DEDUP,
-                [{"question": e.question, "answer": e.answer} for e in examples],
-            )
-        else:
-            # Run synthesis from scratch
+            if raw_examples:
+                resumed = True
+                examples = self._run_dedup(raw_examples, max_examples, verbose)
+                ckpt.save(
+                    self.checkpoint_dir, iteration + 1, ckpt.Phase.DEDUP,
+                    [{"question": e.question, "answer": e.answer} for e in examples],
+                )
+
+        if not resumed:
+            # No valid checkpoint — run synthesis from scratch
             raw_examples = self._run_synthesis(
                 synthesis_calls, few_shot_examples, iteration, verbose,
             )
             if not raw_examples:
                 if verbose:
                     _con.print("  [yellow]–[/]  No QA pairs synthesized.")
-                return {}
+                return None
 
             examples = self._run_dedup(raw_examples, max_examples, verbose)
             ckpt.save(
@@ -714,9 +723,6 @@ class Agent:
         if remaining <= 0:
             return all_raw
 
-        if verbose:
-            _con.print(f"  Synthesizing QA pairs ({remaining} calls)...")
-
         def _synth_one(_ci):
             try:
                 return synthesizer.synthesize(documents=None, num_examples=8)
@@ -725,28 +731,85 @@ class Agent:
 
         completed = [start_call]
         workers = min(remaining, 20)
-        checkpoint_interval = max(remaining // 10, 10)  # ~10 checkpoints
+        checkpoint_interval = max(remaining // 10, 10)
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_synth_one, ci) for ci in range(remaining)]
-            for fut in futures:
-                batch = fut.result()
-                all_raw.extend(batch)
-                completed[0] += 1
+        if verbose:
+            import threading
+            from rich.live import Live
+            from rich.table import Table as _Table
+            from rich.text import Text
 
-                # Incremental checkpoint
-                if completed[0] % checkpoint_interval == 0:
-                    ckpt.save_synthesis_incremental(
-                        self.checkpoint_dir, iteration + 1,
-                        [{"question": e.question, "answer": e.answer} for e in all_raw],
-                        completed[0], synthesis_calls,
-                    )
+            _synth_lock = threading.Lock()
+            _latest_q = [""]
+            _latest_a = [""]
 
-                if verbose and completed[0] % 10 == 0:
-                    _con.print(
-                        f"    [dim]{completed[0]}/{synthesis_calls} calls, "
-                        f"{len(all_raw)} pairs[/]"
-                    )
+            def _build_display() -> _Table:
+                outer = _Table(
+                    box=None, show_header=False, pad_edge=False,
+                    expand=True, padding=(0, 0),
+                )
+                done = completed[0]
+                pct = done * 100 // synthesis_calls if synthesis_calls else 0
+                bar_w = 32
+                filled = bar_w * done // synthesis_calls if synthesis_calls else 0
+                bar = f"[cyan]{'━' * filled}[/][dim]{'─' * (bar_w - filled)}[/]"
+
+                outer.add_row(Text("  Synthesizing QA pairs", style="bold"))
+                outer.add_row(Text(""))
+                outer.add_row(Text.from_markup(
+                    f"    {bar}  [dim]{done}/{synthesis_calls}[/]  "
+                    f"[bold]{len(all_raw)}[/] pairs  [dim]{pct}%[/]"
+                ))
+
+                if _latest_q[0]:
+                    q = _latest_q[0][:90]
+                    outer.add_row(Text(""))
+                    outer.add_row(Text.from_markup(
+                        f"    [dim]Q:[/]  {q}" + ("[dim]...[/]" if len(_latest_q[0]) > 90 else "")
+                    ))
+                if _latest_a[0]:
+                    a = _latest_a[0][:90]
+                    outer.add_row(Text.from_markup(
+                        f"    [dim]A:[/]  {a}" + ("[dim]...[/]" if len(_latest_a[0]) > 90 else "")
+                    ))
+                return outer
+
+            with Live(
+                _build_display(), console=_con,
+                refresh_per_second=4, transient=True,
+            ) as live:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = [pool.submit(_synth_one, ci) for ci in range(remaining)]
+                    for fut in futures:
+                        batch = fut.result()
+                        with _synth_lock:
+                            all_raw.extend(batch)
+                            completed[0] += 1
+                            if batch:
+                                _latest_q[0] = batch[-1].question or ""
+                                _latest_a[0] = batch[-1].answer or ""
+                            live.update(_build_display())
+
+                        if completed[0] % checkpoint_interval == 0:
+                            ckpt.save_synthesis_incremental(
+                                self.checkpoint_dir, iteration + 1,
+                                [{"question": e.question, "answer": e.answer} for e in all_raw],
+                                completed[0], synthesis_calls,
+                            )
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(_synth_one, ci) for ci in range(remaining)]
+                for fut in futures:
+                    batch = fut.result()
+                    all_raw.extend(batch)
+                    completed[0] += 1
+
+                    if completed[0] % checkpoint_interval == 0:
+                        ckpt.save_synthesis_incremental(
+                            self.checkpoint_dir, iteration + 1,
+                            [{"question": e.question, "answer": e.answer} for e in all_raw],
+                            completed[0], synthesis_calls,
+                        )
 
         # Final checkpoint
         ckpt.save_synthesis_incremental(

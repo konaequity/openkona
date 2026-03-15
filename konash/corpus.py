@@ -186,7 +186,12 @@ class Corpus:
             # Create lightweight stub documents (no file I/O — text loaded on demand)
             documents = []
             for docid in doc_ids:
-                fpath = self._docs_dir / f"{docid}.txt"
+                # Convert URLs to filenames: https://en.wikipedia.org/wiki/To_Let_(film) → To Let (film)
+                name = str(docid)
+                if "/" in name:
+                    name = name.rsplit("/", 1)[-1]
+                name = name.replace("_", " ")
+                fpath = self._docs_dir / f"{name}.txt"
                 documents.append({"text": "", "source": str(fpath), "chunk_index": 0})
 
             self.documents = documents
@@ -227,10 +232,11 @@ class Corpus:
             return
 
         if "0.6B" in model or "0.6b" in model:
-            # Small model — load locally, no API needed
+            # Small model — load on CPU to avoid GPU memory conflicts
+            # (vLLM or FAISS may already be using GPU)
             try:
                 from konash.retrieval.vector_search import load_embedding_model
-                local_fn = load_embedding_model(model)
+                local_fn = load_embedding_model(model, device="cpu")
                 self.vector_search.embed_fn = local_fn
                 self.embed_fn = local_fn
             except Exception:
