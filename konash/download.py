@@ -341,6 +341,38 @@ def download_financebench(
     return output_dir
 
 
+def _download_prebuilt_index_hf(
+    output_dir: str,
+    repo_path: str,
+    console: Optional["Console"] = None,
+) -> None:
+    """Download a pre-built embedding index from HuggingFace.
+
+    For large indexes (QAMPARI, FreshStack) that can't ship in the pip package.
+    """
+    target = os.path.join(output_dir, "prebuilt_index.npz")
+    if os.path.exists(target):
+        return  # Already have it
+
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        _print(console, "    [dim]Skipping pre-built index (needs huggingface_hub).[/]")
+        return
+
+    _print(console, "    Downloading pre-built embedding index...")
+    try:
+        path = hf_hub_download(
+            "konaeq/konash-indexes", repo_path, repo_type="dataset",
+        )
+        import shutil
+        shutil.copy2(path, target)
+        size_mb = os.path.getsize(target) / 1024 / 1024
+        _print(console, f"    [green]✓[/]  Pre-built index installed ({size_mb:.0f} MB)")
+    except Exception as exc:
+        _print(console, f"    [dim]Could not download pre-built index ({exc}). Will embed on first use.[/]")
+
+
 def _install_prebuilt_index(
     output_dir: str,
     index_filename: str,
@@ -386,6 +418,7 @@ def download_qampari(
     if os.path.isdir(docs_dir) and len(os.listdir(docs_dir)) > 10:
         count = len([f for f in os.listdir(docs_dir) if f.endswith(".txt")])
         _print(console, f"    Already downloaded: {count} documents in {docs_dir}")
+        _download_prebuilt_index_hf(output_dir, "qampari/qwen3-0.6b.npz", console)
         return output_dir
 
     os.makedirs(docs_dir, exist_ok=True)
@@ -439,6 +472,9 @@ def download_qampari(
     eval_path = os.path.join(output_dir, "eval_questions.json")
     with open(eval_path, "w", encoding="utf-8") as f:
         json.dump(eval_questions, f, indent=2)
+
+    # Download pre-built Qwen3-0.6B embedding index from HuggingFace
+    _download_prebuilt_index_hf(output_dir, "qampari/qwen3-0.6b.npz", console)
 
     _print(console, f"    [bold green]Done![/]")
     _print(console, f"    Documents:  {doc_count}")
