@@ -884,6 +884,12 @@ def cmd_status(args: argparse.Namespace) -> None:
     else:
         console.print("    [red]✗[/]  Together AI    not set  [dim](run konash setup)[/]")
 
+    # Shadeform (GPU provider)
+    config = _load_config()
+    sf_key = config.get("shadeform_api_key")
+    if sf_key:
+        console.print(f"    [green]✓[/]  Shadeform      {_mask(sf_key)}")
+
     # Optional keys — only show if configured
     google_key = _get_google_key()
     if google_key:
@@ -976,16 +982,11 @@ def cmd_projects(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_logs(args: argparse.Namespace) -> None:
-    import subprocess
     console.print()
-    console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Training Logs")
+    console.print(f"[bold]KONASH[/]  Training Logs")
     console.print()
-    try:
-        subprocess.run(["sky", "logs", "konash-train"], check=True)
-    except FileNotFoundError:
-        console.print("[red]SkyPilot not installed.[/] Run: [cyan]pip install konash[/]")
-    except subprocess.CalledProcessError:
-        console.print("[dim]No active training cluster.[/]")
+    from konash.cloud import stream_logs
+    stream_logs()
 
 
 # ---------------------------------------------------------------------------
@@ -993,17 +994,11 @@ def cmd_logs(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_stop(args: argparse.Namespace) -> None:
-    import subprocess
     console.print()
-    console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Stop Training")
+    console.print(f"[bold]KONASH[/]  Stop Training")
     console.print()
-    try:
-        subprocess.run(["sky", "down", "konash-train", "-y"], check=True)
-        console.print("  [green]✓[/]  GPU cluster torn down")
-    except FileNotFoundError:
-        console.print("[red]SkyPilot not installed.[/] Run: [cyan]pip install konash[/]")
-    except subprocess.CalledProcessError:
-        console.print("[dim]No active training cluster.[/]")
+    from konash.cloud import tear_down
+    tear_down()
     console.print()
 
 

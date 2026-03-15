@@ -12,7 +12,6 @@ dependencies = [
     "rich>=13.0",
     "together>=2.0",
     "google-genai>=1.0",
-    "skypilot-nightly[runpod,lambda,aws,gcp]",
     "datasets>=2.14",
     "huggingface_hub>=0.20",
     "sentence-transformers>=2.2",
@@ -56,7 +55,7 @@ konash = "konash.cli:main"
 include = ["konash*"]
 
 [tool.setuptools.package-data]
-konash = ["sky/*.yaml", "indexes/*.npz"]
+konash = ["indexes/*.npz"]
 
 [tool.pytest.ini_options]
 minversion = "7.4"

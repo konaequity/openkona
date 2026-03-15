@@ -155,22 +155,15 @@ KONASH automatically provisions cloud GPUs when training needs gradient updates.
 
 ```bash
 pip install konash
-
-# Configure a GPU provider (RunPod, Lambda, AWS, GCP, Azure, etc.):
-pip install runpod && runpod config  # or any SkyPilot-supported provider
-sky check                            # verify it's enabled
-
-# Then just train normally — GPU provisioning is automatic:
-konash train
+konash setup    # Together AI key
+konash train    # GPU provisioning is automatic when needed
 ```
 
-When `konash train` reaches the OAPL gradient step, it automatically finds the cheapest available H100 across all configured providers via [SkyPilot](https://skypilot.co), runs training, downloads the adapter, and tears down the GPU.
+When `konash train` reaches the OAPL gradient step, it finds the cheapest available H100 across 20+ cloud providers via [Shadeform](https://shadeform.ai), runs training, downloads the trained model, and tears down the GPU. You just need a Shadeform API key (prompted automatically the first time).
 
-| GPU | Provider | OAPL step cost |
-|-----|----------|----------------|
-| H100 SXM | RunPod | ~$0.50 (minutes, not hours) |
-| H100 PCIe | RunPod | ~$0.40 |
-| H100 | Lambda | ~$0.46 |
+| GPU | Typical price | OAPL step cost |
+|-----|---------------|----------------|
+| H100 | $1.90–2.69/hr | ~$0.50 (minutes, not hours) |
 
 ---
 

@@ -1,11 +1,8 @@
-"""Cloud GPU training via SkyPilot.
+"""Cloud GPU training via Shadeform API.
 
-Provisions a GPU, runs the full KARL pipeline (synthesis + rollouts + OAPL
-training with iterative bootstrapping), and downloads the trained adapter.
-Everything runs on the GPU so the trained model from iteration 1 becomes
-the synthesizer for iteration 2 — matching the KARL paper exactly.
-
-SkyPilot is a core dependency: ``pip install konash``
+Finds the cheapest available GPU across 20+ providers, provisions it,
+runs OAPL training, downloads the trained adapter, and tears down.
+All with a single Shadeform API key — no per-provider accounts needed.
 """
 
 from __future__ import annotations
@@ -13,396 +10,725 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+import urllib.error
+import urllib.parse
+import urllib.request
 
-# SkyPilot task YAML shipped with the package
-_SKY_YAML = Path(__file__).parent / "sky" / "train.yaml"
-
-
-def _has_gpu_provider() -> bool:
-    """Check if at least one GPU cloud provider is enabled in SkyPilot."""
-    result = subprocess.run(
-        ["sky", "check"],
-        capture_output=True, text=True, timeout=30,
-    )
-    # Look for any "enabled" line in the output
-    return "enabled" in result.stdout.lower()
+_SHADEFORM_API = "https://api.shadeform.ai/v1"
+_CONFIG_DIR = os.path.expanduser("~/.konash")
+_CONFIG_FILE = os.path.join(_CONFIG_DIR, "config.json")
+_SSH_KEY_PATH = os.path.join(_CONFIG_DIR, "shadeform_ssh_key")
+_INSTANCE_STATE = os.path.join(_CONFIG_DIR, "active_instance.json")
+_PROJECT_ROOT = Path(__file__).parent.parent
 
 
-def _ensure_gpu_provider(verbose: bool = True) -> None:
-    """If no GPU provider is configured, walk the user through setup."""
-    _print = print if verbose else lambda *a, **k: None
+# ---------------------------------------------------------------------------
+# Shadeform HTTP helpers
+# ---------------------------------------------------------------------------
 
-    if _has_gpu_provider():
-        return
+def _get_shadeform_key() -> Optional[str]:
+    """Resolve Shadeform API key from env or config."""
+    key = os.environ.get("SHADEFORM_API_KEY")
+    if key:
+        return key
+    if os.path.exists(_CONFIG_FILE):
+        with open(_CONFIG_FILE) as f:
+            return json.load(f).get("shadeform_api_key")
+    return None
 
-    _print()
-    _print("  OAPL training needs a GPU. Let's set one up (takes 2 minutes).")
-    _print()
 
-    # Use Rich for the selector if available, otherwise fall back
+def _shadeform_request(
+    method: str, path: str, body: Optional[dict] = None, api_key: Optional[str] = None,
+) -> dict:
+    """Make a Shadeform API request."""
+    key = api_key or _get_shadeform_key()
+    if not key:
+        raise RuntimeError("No Shadeform API key. Run konash train to set one up.")
+
+    url = f"{_SHADEFORM_API}{path}"
+    headers = {"X-API-KEY": key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body else None
+
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        from rich.console import Console
-        from rich.prompt import Prompt
-        _con = Console()
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode() if e.fp else ""
 
-        # Import arrow selector from CLI
-        from konash.cli import _arrow_select
-        idx = _arrow_select(_con, [
-            {"label": "RunPod", "hint": "Easiest setup, good prices ($2.39-2.69/hr H100)"},
-            {"label": "Lambda", "hint": "Often cheapest H100s ($2.76/hr)"},
-            {"label": "AWS", "hint": "Requires existing AWS account"},
-            {"label": "GCP", "hint": "Requires existing GCP account"},
-        ])
-        _con.print()
+        # Handle specific errors with helpful messages
+        try:
+            error_data = json.loads(error_body)
+            error_code = error_data.get("error_code", "")
+        except (json.JSONDecodeError, TypeError):
+            error_code = ""
 
-        providers = ["runpod", "lambda", "aws", "gcp"]
-        provider = providers[idx]
-
-        if provider == "runpod":
-            _con.print("    1. Go to [bold]runpod.io[/] → Settings → API Keys")
-            _con.print("    2. Create a key and copy it")
-            _con.print()
-
-            import webbrowser
-            webbrowser.open("https://www.runpod.io/console/user/settings")
-
-            _con.print()
-            api_key = Prompt.ask("    Paste your RunPod API key", password=True)
-            if api_key:
-                os.makedirs(os.path.expanduser("~/.runpod"), exist_ok=True)
-                with open(os.path.expanduser("~/.runpod/config.toml"), "w") as f:
-                    f.write(f'[default]\napi_key = "{api_key}"\n')
-                _con.print("    [green]✓[/]  RunPod configured")
-            else:
-                raise RuntimeError("No API key provided.")
-
-        elif provider == "lambda":
-            _con.print("    1. Go to [bold]lambdalabs.com[/] → API Keys")
-            _con.print("    2. Create a key and copy it")
-            _con.print()
-            _con.print("    Then run: [cyan]sky check lambda[/]")
-            _con.print()
+        if error_code == "INSUFFICIENT_FUNDS":
             raise RuntimeError(
-                "Lambda setup requires manual configuration.\n"
-                "See: https://docs.skypilot.co/en/latest/getting-started/installation.html"
+                "Your Shadeform account needs a minimum $5 balance to launch a GPU.\n"
+                "Add funds at: https://platform.shadeform.ai/settings/billing"
+            ) from e
+
+        raise RuntimeError(f"Shadeform API error {e.code}: {error_body}") from e
+
+
+# ---------------------------------------------------------------------------
+# SSH key management
+# ---------------------------------------------------------------------------
+
+def _ensure_ssh_key(api_key: str) -> str:
+    """Auto-generate SSH keypair and upload to Shadeform. Returns key path."""
+    if os.path.exists(_SSH_KEY_PATH):
+        return _SSH_KEY_PATH
+
+    os.makedirs(_CONFIG_DIR, exist_ok=True)
+
+    # Generate keypair
+    subprocess.run(
+        ["ssh-keygen", "-t", "ed25519", "-f", _SSH_KEY_PATH, "-N", "", "-q"],
+        check=True,
+    )
+    os.chmod(_SSH_KEY_PATH, 0o600)
+
+    # Upload public key to Shadeform
+    pub_key_path = _SSH_KEY_PATH + ".pub"
+    with open(pub_key_path) as f:
+        public_key = f.read().strip()
+
+    result = _shadeform_request(
+        "POST", "/sshkeys/add",
+        {"name": "konash", "public_key": public_key},
+        api_key=api_key,
+    )
+    key_id = result.get("id", "")
+
+    # Set as default
+    if key_id:
+        try:
+            _shadeform_request(
+                "POST", f"/sshkeys/{key_id}/setdefault", api_key=api_key,
             )
+        except Exception:
+            pass  # Not critical
 
-        else:
-            _con.print(f"    Run: [cyan]sky check {provider}[/]")
-            _con.print(
-                f"    See: https://docs.skypilot.co/en/latest/getting-started/installation.html"
-            )
-            raise RuntimeError(f"{provider.upper()} setup requires manual configuration.")
+    # Save key ID in config
+    config = {}
+    if os.path.exists(_CONFIG_FILE):
+        with open(_CONFIG_FILE) as f:
+            config = json.load(f)
+    config["shadeform_ssh_key_id"] = key_id
+    with open(_CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=2)
 
-    except ImportError:
-        raise RuntimeError(
-            "No GPU provider configured. Set one up:\n"
-            "  pip install runpod && runpod config\n"
-            "  sky check"
-        )
-
-    # Verify it worked
-    if not _has_gpu_provider():
-        raise RuntimeError(
-            "GPU provider setup failed. Try manually:\n"
-            "  sky check"
-        )
-
-    _print("    [green]✓[/]  GPU provider ready")
-    _print()
+    return _SSH_KEY_PATH
 
 
-def train_remote(
-    *,
-    corpus: str = "financebench",
-    base_model: str = "unsloth/GLM-4.5-Air",
-    checkpoint_dir: str = ".konash/default/checkpoints",
-    iterations: int = 1,
-    rollouts_per_example: int = 8,
-    learning_rate: float = 1e-6,
-    cloud: Optional[str] = None,
-    gpu: str = "H100:1",
-    use_spot: bool = False,
-    push_to_hub: Optional[str] = None,
-    keep_alive: bool = False,
-    verbose: bool = True,
+# ---------------------------------------------------------------------------
+# Instance lifecycle
+# ---------------------------------------------------------------------------
+
+def _find_cheapest_gpu(gpu_type: str = "H100", api_key: Optional[str] = None) -> dict:
+    """Find the cheapest available GPU instance."""
+    data = _shadeform_request(
+        "GET",
+        f"/instances/types?gpu_type={gpu_type}&num_gpus=1&available=true&sort=price",
+        api_key=api_key,
+    )
+    instances = data.get("instance_types", [])
+    if not instances:
+        raise RuntimeError(f"No {gpu_type} GPUs available on Shadeform right now.")
+
+    best = instances[0]
+    # Find an available region
+    for avail in best.get("availability", []):
+        if avail.get("available"):
+            best["_region"] = avail["region"]
+            break
+
+    return best
+
+
+def _launch_instance(
+    cloud: str, region: str, shade_type: str, name: str,
+    ssh_key_id: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> str:
+    """Launch a GPU instance. Returns instance ID."""
+    body: dict[str, Any] = {
+        "cloud": cloud,
+        "region": region,
+        "shade_instance_type": shade_type,
+        "shade_cloud": True,
+        "name": name,
+        "os": "ubuntu22.04_cuda12.8_shade_os",
+    }
+    if ssh_key_id:
+        body["ssh_key_id"] = ssh_key_id
+
+    result = _shadeform_request("POST", "/instances/create", body, api_key=api_key)
+    instance_id = result.get("id", "")
+    if not instance_id:
+        raise RuntimeError(f"Failed to launch instance: {result}")
+    return instance_id
+
+
+def _poll_until_active(
+    instance_id: str, timeout: int = 600, api_key: Optional[str] = None,
 ) -> dict:
-    """Run the full KARL training pipeline on a cloud GPU.
-
-    The entire pipeline runs on the GPU — synthesis, rollouts, OAPL
-    training, and iterative bootstrapping (the trained model from
-    iteration N becomes the synthesizer for iteration N+1).
-
-    1. Provisions a cloud GPU via SkyPilot (cheapest available)
-    2. Uploads KONASH codebase
-    3. Runs train_oapl_unsloth.py --corpus (full pipeline)
-    4. Downloads trained LoRA adapter + value model
-    5. Tears down the GPU (unless keep_alive=True)
-
-    Parameters
-    ----------
-    corpus : str
-        Corpus name (``"financebench"``) or path to documents.
-    base_model : str
-        Unsloth model ID.
-    checkpoint_dir : str
-        Where to save the downloaded adapter locally.
-    iterations : int
-        Training iterations (KARL paper uses 2).
-    rollouts_per_example : int
-        Rollouts per QA pair (KARL paper uses 8).
-    learning_rate : float
-        OAPL learning rate.
-    cloud : str | None
-        Force a specific cloud provider. None = cheapest available.
-    gpu : str
-        GPU spec (default: ``"H100:1"``).
-    use_spot : bool
-        Use spot instances (cheaper).
-    push_to_hub : str | None
-        HuggingFace repo to push the trained adapter.
-    verbose : bool
-        Print progress.
-
-    Returns
-    -------
-    dict
-        Training stats from the remote run.
-    """
-    _print = print if verbose else lambda *a, **k: None
-
-    try:
-        import sky  # noqa: F401
-    except ImportError:
-        raise RuntimeError(
-            "SkyPilot not found. Reinstall konash:\n"
-            "  pip install konash"
+    """Poll instance until active. Returns {ip, ssh_port, ssh_user}."""
+    start = time.monotonic()
+    while time.monotonic() - start < timeout:
+        data = _shadeform_request(
+            "GET", f"/instances/{instance_id}/info", api_key=api_key,
         )
+        status = data.get("status", "")
+        if status == "active":
+            return {
+                "ip": data.get("ip", ""),
+                "ssh_port": data.get("ssh_port", 22),
+                "ssh_user": data.get("ssh_user", "shadeform"),
+            }
+        if status in ("error", "failed", "deleted"):
+            raise RuntimeError(f"Instance {instance_id} failed with status: {status}")
+        time.sleep(10)
+    raise RuntimeError(f"Instance {instance_id} did not become active within {timeout}s")
 
-    _ensure_gpu_provider(verbose)
 
-    # Resolve Together AI key
-    together_key = os.environ.get("TOGETHER_API_KEY", "")
-    if not together_key:
-        config_path = os.path.expanduser("~/.konash/config.json")
-        if os.path.exists(config_path):
-            with open(config_path) as f:
-                together_key = json.load(f).get("together_api_key", "")
+def _delete_instance(instance_id: str, api_key: Optional[str] = None) -> None:
+    """Delete a GPU instance."""
+    try:
+        _shadeform_request("POST", f"/instances/{instance_id}/delete", api_key=api_key)
+    except Exception:
+        pass  # Best effort
 
-    # Build SkyPilot launch command
-    cluster_name = "konash-train"
-    cmd = [
-        "sky", "launch", "-c", cluster_name,
-        str(_SKY_YAML),
-        "--env", f"TOGETHER_API_KEY={together_key}",
-        "--env", f"HF_TOKEN={os.environ.get('HF_TOKEN', '')}",
-        "--env", f"CORPUS_PATH={corpus}",
-        "--env", "ROLLOUTS_PATH=",
-        "--env", f"ITERATIONS={iterations}",
-        "--env", f"ROLLOUTS_PER_EXAMPLE={rollouts_per_example}",
-        "--env", f"LEARNING_RATE={learning_rate}",
-        "--env", f"PUSH_TO_HUB={push_to_hub or ''}",
-        "-i", "5",  # auto-stop after 5 min idle
-        "-y",       # skip confirmation
+
+# ---------------------------------------------------------------------------
+# Instance state persistence (for konash logs / konash stop)
+# ---------------------------------------------------------------------------
+
+def _save_instance_state(
+    instance_id: str, ip: str, ssh_port: int = 22, ssh_user: str = "shadeform",
+    hourly_price: float = 0,
+) -> None:
+    """Save active instance info for logs/stop commands."""
+    os.makedirs(_CONFIG_DIR, exist_ok=True)
+    with open(_INSTANCE_STATE, "w") as f:
+        json.dump({
+            "instance_id": instance_id,
+            "ip": ip,
+            "ssh_port": ssh_port,
+            "ssh_user": ssh_user,
+            "ssh_key_path": _SSH_KEY_PATH,
+            "hourly_price": hourly_price,
+            "created_at": time.time(),
+        }, f, indent=2)
+
+
+def _load_instance_state() -> Optional[dict]:
+    """Load active instance info."""
+    if not os.path.exists(_INSTANCE_STATE):
+        return None
+    with open(_INSTANCE_STATE) as f:
+        return json.load(f)
+
+
+def _clear_instance_state() -> None:
+    if os.path.exists(_INSTANCE_STATE):
+        os.remove(_INSTANCE_STATE)
+
+
+# ---------------------------------------------------------------------------
+# SSH / SCP helpers
+# ---------------------------------------------------------------------------
+
+_SSH_OPTS = [
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-o", "ConnectTimeout=10",
+    "-o", "LogLevel=ERROR",
+]
+
+
+def _ssh_cmd(
+    ip: str, command: str, key_path: str = _SSH_KEY_PATH,
+    port: int = 22, user: str = "shadeform",
+) -> list:
+    """Build an SSH command."""
+    return [
+        "ssh", *_SSH_OPTS,
+        "-i", key_path, "-p", str(port),
+        f"{user}@{ip}", command,
     ]
 
-    if cloud:
-        cmd.extend(["--cloud", cloud])
-    if use_spot:
-        cmd.append("--use-spot")
-    if gpu != "H100:1":
-        cmd.extend(["--gpus", gpu])
 
-    _print(f"  Provisioning {gpu} on {cloud or 'cheapest cloud'}...")
-    _print(f"  Full pipeline: synthesis → rollouts → OAPL × {iterations} iterations")
-    _print(f"  Iterative bootstrapping: trained model becomes next synthesizer")
-
-    # Launch and wait for completion
-    result = subprocess.run(cmd, capture_output=not verbose)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Cloud training failed (exit {result.returncode}). "
-            f"Check logs with: sky logs {cluster_name}"
-        )
-
-    # Download checkpoint from remote
-    _print(f"  Downloading trained adapter...")
-    os.makedirs(checkpoint_dir, exist_ok=True)
-
+def _scp_upload(
+    ip: str, local: str, remote: str, key_path: str = _SSH_KEY_PATH,
+    port: int = 22, user: str = "shadeform",
+) -> None:
+    """Upload a file via SCP."""
     subprocess.run(
-        ["rsync", "-avz", f"{cluster_name}:~/sky_workdir/checkpoints/", checkpoint_dir + "/"],
-        capture_output=not verbose,
+        ["scp", *_SSH_OPTS, "-i", key_path, "-P", str(port),
+         local, f"{user}@{ip}:{remote}"],
+        check=True, capture_output=True,
     )
 
-    # Tear down unless caller wants to keep the cluster for more iterations
-    if not keep_alive:
-        _print(f"  Tearing down GPU cluster...")
-        subprocess.run(["sky", "down", cluster_name, "-y"], capture_output=True)
 
-    # Load and return training stats
-    meta_path = os.path.join(checkpoint_dir, "training_meta.json")
-    if os.path.exists(meta_path):
-        with open(meta_path) as f:
-            return json.load(f)
+def _scp_download(
+    ip: str, remote: str, local: str, key_path: str = _SSH_KEY_PATH,
+    port: int = 22, user: str = "shadeform",
+) -> None:
+    """Download files via SCP."""
+    subprocess.run(
+        ["scp", *_SSH_OPTS, "-i", key_path, "-P", str(port),
+         "-r", f"{user}@{ip}:{remote}", local],
+        check=True, capture_output=True,
+    )
 
-    return {"status": "completed"}
+
+def _upload_codebase(
+    ip: str, key_path: str = _SSH_KEY_PATH,
+    port: int = 22, user: str = "shadeform",
+) -> None:
+    """Upload the KONASH codebase via tar pipe."""
+    tar_cmd = [
+        "tar", "czf", "-",
+        "--exclude", ".git",
+        "--exclude", "__pycache__",
+        "--exclude", "*.pyc",
+        "--exclude", ".konash",
+        "-C", str(_PROJECT_ROOT), ".",
+    ]
+    ssh_cmd = [
+        "ssh", *_SSH_OPTS,
+        "-i", key_path, "-p", str(port),
+        f"{user}@{ip}",
+        "mkdir -p /root/konash && tar xzf - -C /root/konash",
+    ]
+    tar = subprocess.Popen(tar_cmd, stdout=subprocess.PIPE)
+    ssh = subprocess.Popen(ssh_cmd, stdin=tar.stdout)
+    tar.stdout.close()
+    ssh.wait()
+    tar.wait()
+    if ssh.returncode != 0:
+        raise RuntimeError("Failed to upload codebase")
 
 
-def train_oapl_from_rollouts(
-    *,
-    rollouts_path: str,
-    base_model: str = "unsloth/GLM-4.5-Air",
-    checkpoint_dir: str = ".konash/default/checkpoints",
-    learning_rate: float = 1e-6,
-    cloud: Optional[str] = None,
-    gpu: str = "H100:1",
-    use_spot: bool = False,
-    keep_alive: bool = False,
+def _setup_remote(
+    ip: str, key_path: str = _SSH_KEY_PATH,
+    port: int = 22, user: str = "shadeform",
+) -> None:
+    """Install KONASH dependencies on the remote machine."""
+    setup_cmd = (
+        "cd /root/konash && "
+        "pip install -e '.[unsloth,search,data]' 2>&1 | tail -3"
+    )
+    result = subprocess.run(
+        _ssh_cmd(ip, setup_cmd, key_path, port, user),
+        capture_output=True, text=True, timeout=600,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Remote setup failed: {result.stderr}")
+
+
+# ---------------------------------------------------------------------------
+# Remote training with progress streaming
+# ---------------------------------------------------------------------------
+
+def _run_remote_training(
+    ip: str, training_cmd: str, env_vars: dict,
+    key_path: str = _SSH_KEY_PATH, port: int = 22, user: str = "shadeform",
     verbose: bool = True,
-) -> dict:
-    """Run OAPL training only (no synthesis) on a cloud GPU.
-
-    Used for iteration 1 where synthesis + rollouts ran locally.
-    Uploads pre-generated rollout data, trains, downloads adapter.
-
-    Parameters
-    ----------
-    rollouts_path : str
-        Local path to the rollout checkpoint JSON.
-    """
+) -> None:
+    """Run training on the remote machine, streaming ##KONASH## progress markers."""
     _print = print if verbose else lambda *a, **k: None
 
-    try:
-        import sky  # noqa: F401
-    except ImportError:
-        raise RuntimeError(
-            "SkyPilot not found. Reinstall konash:\n"
-            "  pip install konash"
-        )
+    # Build env exports
+    env_str = " ".join(f'{k}="{v}"' for k, v in env_vars.items())
 
-    # Check if any GPU provider is configured — if not, walk them through it
-    _ensure_gpu_provider(verbose)
+    # Run under nohup so SSH disconnection doesn't kill training
+    remote_cmd = (
+        f"cd /root/konash && "
+        f"export UNSLOTH_VLLM_STANDBY=1 {env_str} && "
+        f"nohup bash -c '{training_cmd} > /root/konash/training.log 2>&1' &"
+    )
 
-    together_key = os.environ.get("TOGETHER_API_KEY", "")
-    if not together_key:
-        config_path = os.path.expanduser("~/.konash/config.json")
-        if os.path.exists(config_path):
-            with open(config_path) as f:
-                together_key = json.load(f).get("together_api_key", "")
+    # Start training in background
+    subprocess.run(
+        _ssh_cmd(ip, remote_cmd, key_path, port, user),
+        capture_output=True, timeout=30,
+    )
 
-    cluster_name = "konash-train"
-    cmd = [
-        "sky", "launch", "-c", cluster_name,
-        str(_SKY_YAML),
-        "--env", f"TOGETHER_API_KEY={together_key}",
-        "--env", f"HF_TOKEN={os.environ.get('HF_TOKEN', '')}",
-        "--env", f"ROLLOUTS_PATH={rollouts_path}",
-        "--env", "CORPUS_PATH=none",
-        "--env", f"LEARNING_RATE={learning_rate}",
-        "--env", "ITERATIONS=1",
-        "--env", "PUSH_TO_HUB=",
-        "-i", "5",
-        "-y",
-    ]
+    # Wait a moment for the process to start
+    time.sleep(2)
 
-    if cloud:
-        cmd.extend(["--cloud", cloud])
-    if use_spot:
-        cmd.append("--use-spot")
-    if gpu != "H100:1":
-        cmd.extend(["--gpus", gpu])
-
-    _print(f"  Finding cheapest GPU...")
-
-    # Launch SkyPilot (streams output so user sees provisioning progress)
-    import time as _time
-    gpu_start = _time.monotonic()
-
+    # Tail the log file and parse progress markers
+    tail_cmd = f"tail -f /root/konash/training.log"
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        _ssh_cmd(ip, tail_cmd, key_path, port, user),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, bufsize=1,
     )
 
-    # Parse output for KONASH phase markers and show clean status
-    phase_times: dict = {}
-    current_phase = "provisioning"
-    phase_start = gpu_start
-    oapl_loss = None
-    vm_loss = None
+    phase_start = time.monotonic()
 
     for line in proc.stdout:
         line = line.rstrip()
 
         if "##KONASH:" in line:
-            elapsed = _time.monotonic() - phase_start
+            elapsed = time.monotonic() - phase_start
             marker = line.split("##KONASH:")[1].rstrip("#")
 
             if marker == "loading_data":
-                phase_times["provisioning"] = elapsed
-                _print(f"  [green]✓[/]  GPU provisioned  [dim]{elapsed:.0f}s[/]")
-                current_phase = "loading_data"
-                phase_start = _time.monotonic()
+                _print(f"  [green]✓[/]  Instance ready")
+                phase_start = time.monotonic()
 
             elif marker == "loading_model":
-                current_phase = "loading_model"
                 _print(f"  Loading model...")
-                phase_start = _time.monotonic()
+                phase_start = time.monotonic()
 
             elif marker.startswith("model_loaded:"):
                 load_time = marker.split(":")[1]
                 _print(f"  [green]✓[/]  Model loaded  [dim]{load_time}[/]")
 
             elif marker == "oapl_start":
-                current_phase = "oapl"
                 _print(f"  Training OAPL...")
-                phase_start = _time.monotonic()
+                phase_start = time.monotonic()
 
             elif marker.startswith("oapl_done:"):
-                elapsed = _time.monotonic() - phase_start
-                oapl_loss = marker.split("loss=")[1] if "loss=" in marker else "?"
-                _print(f"  [green]✓[/]  OAPL complete  [dim]loss {oapl_loss}  {elapsed:.0f}s[/]")
+                elapsed = time.monotonic() - phase_start
+                loss = marker.split("loss=")[1] if "loss=" in marker else "?"
+                _print(f"  [green]✓[/]  OAPL complete  [dim]loss {loss}  {elapsed:.0f}s[/]")
 
             elif marker == "value_model_start":
-                current_phase = "value_model"
                 _print(f"  Training value model...")
-                phase_start = _time.monotonic()
+                phase_start = time.monotonic()
 
             elif marker.startswith("value_model_done:"):
-                elapsed = _time.monotonic() - phase_start
-                vm_loss = marker.split("loss=")[1] if "loss=" in marker else "?"
-                _print(f"  [green]✓[/]  Value model trained  [dim]loss {vm_loss}  {elapsed:.0f}s[/]")
+                elapsed = time.monotonic() - phase_start
+                loss = marker.split("loss=")[1] if "loss=" in marker else "?"
+                _print(f"  [green]✓[/]  Value model trained  [dim]loss {loss}  {elapsed:.0f}s[/]")
 
             elif marker == "complete":
-                total_gpu = _time.monotonic() - gpu_start
-                _print(f"  [green]✓[/]  GPU training complete  [dim]{total_gpu:.0f}s total[/]")
-
-        elif verbose and not line.startswith("##"):
-            # Show SkyPilot output during provisioning only
-            if current_phase == "provisioning" and line.strip():
-                _print(f"  [dim]{line}[/]")
+                _print(f"  [green]✓[/]  GPU training complete")
+                proc.terminate()
+                break
 
     proc.wait()
-    if proc.returncode != 0:
+
+
+# ---------------------------------------------------------------------------
+# Just-in-time Shadeform setup
+# ---------------------------------------------------------------------------
+
+def _ensure_shadeform(verbose: bool = True) -> str:
+    """Ensure Shadeform API key is configured. Returns the key."""
+    _print = print if verbose else lambda *a, **k: None
+    key = _get_shadeform_key()
+
+    if key:
+        return key
+
+    _print()
+    _print(
+        "  OAPL training needs a GPU. Shadeform gives you access to\n"
+        "  the cheapest GPUs across 20+ providers with a single API key."
+    )
+    _print()
+
+    try:
+        from rich.prompt import Prompt
+        from konash.cli import _arrow_select
+        from rich.console import Console
+        _con = Console()
+
+        idx = _arrow_select(_con, [
+            {"label": "Open shadeform.ai", "hint": "Sign up and grab an API key (free, takes 30 seconds)"},
+            {"label": "I already have a key", "hint": ""},
+        ])
+        _con.print()
+
+        if idx == 0:
+            import webbrowser
+            from konash.auth import SHADEFORM_KEYS_PAGE
+            webbrowser.open(SHADEFORM_KEYS_PAGE)
+            _con.print("    [dim]Settings → API Keys → create a key[/]")
+            _con.print()
+
+        while True:
+            key = Prompt.ask("    Paste your Shadeform API key", password=True)
+
+            if not key:
+                _con.print("    [dim]No key entered. Try again or Ctrl+C to cancel.[/]")
+                continue
+
+            from konash.auth import validate_shadeform_key
+            if validate_shadeform_key(key):
+                break
+            _con.print("    [red]✗[/]  Invalid key — check and try again")
+            _con.print()
+
+        _con.print("    [green]✓[/]  Connected to Shadeform")
+
+        # Save to config
+        config = {}
+        if os.path.exists(_CONFIG_FILE):
+            with open(_CONFIG_FILE) as f:
+                config = json.load(f)
+        config["shadeform_api_key"] = key
+        os.makedirs(_CONFIG_DIR, exist_ok=True)
+        with open(_CONFIG_FILE, "w") as f:
+            json.dump(config, f, indent=2)
+
+    except ImportError:
         raise RuntimeError(
-            f"Cloud OAPL training failed (exit {proc.returncode}). "
-            f"Check logs with: sky logs {cluster_name}"
+            "No Shadeform API key configured.\n"
+            "Set SHADEFORM_API_KEY or run konash train."
         )
 
-    _print(f"  Downloading trained adapter...")
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    subprocess.run(
-        ["rsync", "-avz", f"{cluster_name}:~/sky_workdir/checkpoints/", checkpoint_dir + "/"],
-        capture_output=not verbose,
-    )
+    return key
 
-    if not keep_alive:
-        total_gpu = _time.monotonic() - gpu_start
-        # Rough cost estimate: H100 ~$2.69/hr
-        est_cost = (total_gpu / 3600) * 2.69
-        _print(f"  [green]✓[/]  GPU released  [dim]~${est_cost:.2f} estimated[/]")
-        subprocess.run(["sky", "down", cluster_name, "-y"], capture_output=True)
+
+# ---------------------------------------------------------------------------
+# Public API (same signatures as before)
+# ---------------------------------------------------------------------------
+
+def _provision_gpu(
+    gpu: str, api_key: str, verbose: bool = True,
+) -> tuple:
+    """Find, launch, and wait for a GPU instance.
+
+    Handles insufficient funds by prompting the user to add balance
+    and retrying — without losing their place in the training flow.
+
+    Returns (instance_id, ip, port, user, price, ssh_key).
+    """
+    _print = print if verbose else lambda *a, **k: None
+
+    ssh_key = _ensure_ssh_key(api_key)
+
+    _print(f"  Finding cheapest {gpu}...")
+    best = _find_cheapest_gpu(gpu, api_key)
+    price = best["hourly_price"] / 100
+    provider = best["cloud"]
+    region = best.get("_region", "")
+    _print(f"  [green]✓[/]  {provider}  [dim]${price:.2f}/hr  {region}[/]")
+
+    # Get SSH key ID
+    _config = {}
+    if os.path.exists(_CONFIG_FILE):
+        with open(_CONFIG_FILE) as f:
+            _config = json.load(f)
+    _ssh_key_id = _config.get("shadeform_ssh_key_id")
+
+    # Launch with retry on recoverable errors
+    max_retries = 3
+    for attempt in range(max_retries):
+        _print(f"  Launching instance...")
+        try:
+            instance_id = _launch_instance(
+                provider, region, best["shade_instance_type"],
+                f"konash-{int(time.time())}", _ssh_key_id, api_key,
+            )
+            break
+        except RuntimeError as e:
+            msg = str(e)
+            if "minimum $5 balance" in msg:
+                _print()
+                _print(f"  [yellow]{e}[/]")
+                _print()
+                try:
+                    from rich.prompt import Prompt
+                    Prompt.ask(
+                        "  Press Enter once you've added funds",
+                        default="",
+                    )
+                except (ImportError, EOFError):
+                    input("  Press Enter once you've added funds: ")
+                continue
+            elif attempt < max_retries - 1:
+                _print(f"  [yellow]Launch failed: {msg}[/]")
+                _print(f"  [dim]Retrying with a different provider...[/]")
+                # Try next cheapest GPU
+                best = _find_cheapest_gpu(gpu, api_key)
+                provider = best["cloud"]
+                region = best.get("_region", "")
+                continue
+            raise
+
+    _save_instance_state(instance_id, "", hourly_price=price)
+
+    _print(f"  Waiting for instance to boot...")
+    try:
+        info = _poll_until_active(instance_id, api_key=api_key)
+    except RuntimeError as e:
+        _print(f"  [yellow]Boot failed: {e}[/]")
+        _print(f"  [dim]Cleaning up and retrying...[/]")
+        _delete_instance(instance_id, api_key)
+        # Retry once with a fresh instance
+        _print(f"  Launching new instance...")
+        instance_id = _launch_instance(
+            provider, region, best["shade_instance_type"],
+            f"konash-{int(time.time())}", _ssh_key_id, api_key,
+        )
+        _save_instance_state(instance_id, "", hourly_price=price)
+        _print(f"  Waiting for instance to boot...")
+        info = _poll_until_active(instance_id, api_key=api_key)
+
+    ip = info["ip"]
+    port = info["ssh_port"]
+    user = info["ssh_user"]
+    _save_instance_state(instance_id, ip, port, user, price)
+    _print(f"  [green]✓[/]  Instance active  [dim]{ip}[/]")
+
+    return instance_id, ip, port, user, price, ssh_key
+
+
+def train_oapl_from_rollouts(
+    *,
+    rollouts_path: str,
+    base_model: str = "unsloth/GLM-4.5-Air",
+    checkpoint_dir: str = "~/.konash/projects/default/checkpoints",
+    learning_rate: float = 1e-6,
+    cloud: Optional[str] = None,
+    gpu: str = "H100",
+    use_spot: bool = False,
+    keep_alive: bool = False,
+    verbose: bool = True,
+) -> dict:
+    """Run OAPL training on a cloud GPU from pre-generated rollouts."""
+    _print = print if verbose else lambda *a, **k: None
+
+    api_key = _ensure_shadeform(verbose)
+    instance_id, ip, port, user, price, ssh_key = _provision_gpu(gpu, api_key, verbose)
+
+    try:
+        # Upload codebase
+        _print(f"  Uploading codebase...")
+        _upload_codebase(ip, ssh_key, port, user)
+        _print(f"  [green]✓[/]  Code uploaded")
+
+        # Install dependencies
+        _print(f"  Installing dependencies (this takes a few minutes first time)...")
+        _setup_remote(ip, ssh_key, port, user)
+        _print(f"  [green]✓[/]  Dependencies installed")
+
+        # Upload rollout data
+        _print(f"  Uploading rollout data...")
+        _scp_upload(ip, rollouts_path, "/root/konash/rollouts.json", ssh_key, port, user)
+        _print(f"  [green]✓[/]  Rollouts uploaded")
+
+        # Run training
+        training_cmd = (
+            f"python scripts/train_oapl_unsloth.py "
+            f"--rollouts /root/konash/rollouts.json "
+            f"--lr {learning_rate} "
+            f"--output /root/konash/checkpoints"
+        )
+        env_vars = {"TOGETHER_API_KEY": os.environ.get("TOGETHER_API_KEY", "")}
+        together_key = _get_together_key()
+        if together_key:
+            env_vars["TOGETHER_API_KEY"] = together_key
+
+        _run_remote_training(ip, training_cmd, env_vars, ssh_key, port, user, verbose)
+
+        # Download checkpoints
+        _print(f"  Downloading trained model...")
+        checkpoint_dir = os.path.expanduser(checkpoint_dir)
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        _scp_download(ip, "/root/konash/checkpoints/", checkpoint_dir, ssh_key, port, user)
+        _print(f"  [green]✓[/]  Model downloaded to {checkpoint_dir}")
+
+    finally:
+        if not keep_alive:
+            gpu_time = time.monotonic() - (time.time() - _load_instance_state().get("created_at", time.time()))
+            est_cost = max(gpu_time, 0) / 3600 * price
+            _print(f"  Shutting down GPU...  [dim]~${est_cost:.2f} estimated[/]")
+            _delete_instance(instance_id, api_key)
+            _clear_instance_state()
+            _print(f"  [green]✓[/]  GPU released")
+
+    # Load training stats
+    meta_path = os.path.join(checkpoint_dir, "training_meta.json")
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            return json.load(f)
+    return {"status": "completed"}
+
+
+def train_remote(
+    *,
+    corpus: str = "financebench",
+    base_model: str = "unsloth/GLM-4.5-Air",
+    checkpoint_dir: str = "~/.konash/projects/default/checkpoints",
+    iterations: int = 1,
+    rollouts_per_example: int = 8,
+    learning_rate: float = 1e-6,
+    cloud: Optional[str] = None,
+    gpu: str = "H100",
+    use_spot: bool = False,
+    push_to_hub: Optional[str] = None,
+    keep_alive: bool = False,
+    verbose: bool = True,
+) -> dict:
+    """Run the full KARL training pipeline on a cloud GPU."""
+    _print = print if verbose else lambda *a, **k: None
+
+    api_key = _ensure_shadeform(verbose)
+    instance_id, ip, port, user, price, ssh_key = _provision_gpu(gpu, api_key, verbose)
+
+    try:
+        _print(f"  Uploading codebase...")
+        _upload_codebase(ip, ssh_key, port, user)
+        _print(f"  [green]✓[/]  Code uploaded")
+
+        _print(f"  Installing dependencies...")
+        _setup_remote(ip, ssh_key, port, user)
+        _print(f"  [green]✓[/]  Dependencies installed")
+
+        # For named corpora, download on remote. For local paths, upload.
+        named_corpora = {"financebench", "browsecomp-plus", "qampari", "freshstack"}
+        if corpus in named_corpora:
+            dl_cmd = f"cd /root/konash && python -c \"from konash.download import download_{corpus.replace('-', '_')}; download_{corpus.replace('-', '_')}()\""
+            subprocess.run(
+                _ssh_cmd(ip, dl_cmd, ssh_key, port, user),
+                capture_output=True, timeout=600,
+            )
+            corpus_path = f"/root/.konash/corpora/{corpus}/documents"
+        else:
+            _print(f"  Uploading corpus...")
+            _scp_upload(ip, corpus, "/root/konash/corpus/", ssh_key, port, user)
+            corpus_path = "/root/konash/corpus"
+
+        training_cmd = (
+            f"python scripts/train_oapl_unsloth.py "
+            f"--corpus {corpus_path} "
+            f"--iterations {iterations} "
+            f"--rollouts-per-example {rollouts_per_example} "
+            f"--lr {learning_rate} "
+            f"--output /root/konash/checkpoints"
+        )
+        env_vars = {}
+        together_key = _get_together_key()
+        if together_key:
+            env_vars["TOGETHER_API_KEY"] = together_key
+
+        _run_remote_training(ip, training_cmd, env_vars, ssh_key, port, user, verbose)
+
+        _print(f"  Downloading trained model...")
+        checkpoint_dir = os.path.expanduser(checkpoint_dir)
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        _scp_download(ip, "/root/konash/checkpoints/", checkpoint_dir, ssh_key, port, user)
+        _print(f"  [green]✓[/]  Model downloaded")
+
+    finally:
+        if not keep_alive:
+            _print(f"  Shutting down GPU...")
+            _delete_instance(instance_id, api_key)
+            _clear_instance_state()
+            _print(f"  [green]✓[/]  GPU released")
 
     meta_path = os.path.join(checkpoint_dir, "training_meta.json")
     if os.path.exists(meta_path):
@@ -411,21 +737,50 @@ def train_oapl_from_rollouts(
     return {"status": "completed"}
 
 
-def tear_down(cluster_name: str = "konash-train", verbose: bool = True) -> None:
-    """Tear down the training cluster."""
+def tear_down(verbose: bool = True) -> None:
+    """Tear down the active training instance."""
     _print = print if verbose else lambda *a, **k: None
-    _print(f"  Tearing down GPU cluster...")
-    subprocess.run(["sky", "down", cluster_name, "-y"], capture_output=True)
-
-
-def show_gpus(cloud: Optional[str] = None) -> None:
-    """Show available GPUs across clouds."""
-    try:
-        import sky  # noqa: F401
-    except ImportError:
-        print("SkyPilot not installed. Run: pip install konash")
+    state = _load_instance_state()
+    if not state:
+        _print("  No active training instance.")
         return
-    cmd = ["sky", "show-gpus"]
-    if cloud:
-        cmd.extend(["--cloud", cloud])
-    subprocess.run(cmd)
+    _print(f"  Shutting down {state.get('ip', '?')}...")
+    _delete_instance(state["instance_id"])
+    _clear_instance_state()
+    _print(f"  [green]✓[/]  GPU released")
+
+
+def stream_logs(verbose: bool = True) -> None:
+    """Stream training logs from the active instance."""
+    state = _load_instance_state()
+    if not state:
+        print("  No active training instance.")
+        return
+    ip = state["ip"]
+    port = state.get("ssh_port", 22)
+    user = state.get("ssh_user", "shadeform")
+    key_path = state.get("ssh_key_path", _SSH_KEY_PATH)
+
+    tail_cmd = "tail -f /root/konash/training.log 2>/dev/null || echo 'No training log yet.'"
+    try:
+        subprocess.run(
+            _ssh_cmd(ip, tail_cmd, key_path, port, user),
+            check=True,
+        )
+    except KeyboardInterrupt:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Helper
+# ---------------------------------------------------------------------------
+
+def _get_together_key() -> Optional[str]:
+    """Resolve Together AI key from env or config."""
+    key = os.environ.get("TOGETHER_API_KEY")
+    if key:
+        return key
+    if os.path.exists(_CONFIG_FILE):
+        with open(_CONFIG_FILE) as f:
+            return json.load(f).get("together_api_key")
+    return None

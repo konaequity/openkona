@@ -422,7 +422,7 @@ class Agent:
         #    No GPU needed. Checkpointed after each phase for crash recovery.
         #
         # 2. SERVER (cloud GPU): OAPL gradient updates. Provisioned via
-        #    SkyPilot only when rollouts are ready. Stays alive across
+        #    Shadeform only when rollouts are ready. Stays alive across
         #    iterations for bootstrapping (trained model from iter N
         #    becomes synthesizer for iter N+1).
         #
@@ -462,8 +462,7 @@ class Agent:
             _con.print()
             _con.print("  [dim]Phase 2: OAPL training (cloud GPU)[/]")
             _con.print(
-                "  [cyan]Provisioning GPU "
-                "(H200 → H100 SXM → H100 → A100 fallback)...[/]"
+                "  [cyan]Finding cheapest GPU via Shadeform...[/]"
             )
 
         from konash.cloud import train_oapl_from_rollouts, train_remote, tear_down

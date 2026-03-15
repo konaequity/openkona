@@ -108,6 +108,22 @@ def validate_google_key(key: str) -> bool:
         return False
 
 
+SHADEFORM_KEYS_PAGE = "https://platform.shadeform.ai/settings/api"
+
+
+def validate_shadeform_key(key: str) -> bool:
+    """Validate a Shadeform API key by listing user instances (requires auth)."""
+    try:
+        req = urllib.request.Request(
+            "https://api.shadeform.ai/v1/instances",
+            headers={"X-API-KEY": key},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
 def validate_hf_token(token: str) -> Optional[str]:
     """Validate a HuggingFace token. Returns username or None."""
     try:
