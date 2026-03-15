@@ -308,6 +308,121 @@ def _get_version() -> str:
 # konash setup
 # ---------------------------------------------------------------------------
 
+def _interactive_path_picker(con: Console) -> str:
+    """Interactive path input with live directory suggestions."""
+    import tty
+    import termios
+    import glob as _glob
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+
+    current = os.path.expanduser("~/")
+    selected = -1  # -1 = no suggestion selected, Enter confirms path
+
+    def _get_matches(text):
+        expanded = os.path.expanduser(text)
+        if not expanded:
+            return []
+        matches = _glob.glob(expanded + "*")
+        # Only show directories
+        matches = [m for m in matches if os.path.isdir(m)]
+        matches.sort()
+        return matches[:8]  # max 8 suggestions
+
+    def _render():
+        matches = _get_matches(current)
+        # Display line
+        con.print(f"    Path: [bold]{current}[/]█", end="")
+        con.print()
+        # Suggestions
+        for i, m in enumerate(matches):
+            name = os.path.basename(m) + "/"
+            if i == selected and selected >= 0:
+                con.print(f"      [bold cyan]> {name}[/]")
+            else:
+                con.print(f"      [dim]  {name}[/]")
+        return len(matches)
+
+    def _clear(num_lines):
+        for _ in range(num_lines + 1):  # +1 for the input line
+            sys.stdout.write("\033[A\033[2K")
+        sys.stdout.flush()
+
+    try:
+        # Initial render
+        num_shown = _render()
+
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1)
+
+            if ch == "\r" or ch == "\n":
+                matches = _get_matches(current)
+                if selected >= 0 and selected < len(matches):
+                    # Enter on a suggestion — navigate into it, keep picking
+                    current = matches[selected] + "/"
+                    selected = -1
+                else:
+                    # No suggestion selected — confirm current path
+                    result = os.path.expanduser(current)
+                    break
+
+            elif ch == "\x03":  # Ctrl-C
+                raise KeyboardInterrupt
+
+            elif ch == "\x7f" or ch == "\x08":  # Backspace
+                if current:
+                    current = current[:-1]
+                    selected = 0
+
+            elif ch == "\t":  # Tab — autocomplete selection
+                matches = _get_matches(current)
+                if matches:
+                    idx = selected if selected >= 0 else 0
+                    if idx < len(matches):
+                        current = matches[idx] + "/"
+                    selected = -1
+
+            elif ch == "\x1b":  # Escape sequence
+                ch2 = sys.stdin.read(1)
+                if ch2 == "[":
+                    ch3 = sys.stdin.read(1)
+                    matches = _get_matches(current)
+                    if ch3 == "A":  # Up
+                        selected = max(-1, selected - 1)
+                    elif ch3 == "B":  # Down
+                        selected = min(len(matches) - 1, selected + 1) if matches else -1
+
+            elif ch >= " " and ch <= "~":  # Printable char
+                current += ch
+                selected = -1
+
+            # Re-render
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            _clear(num_shown)
+            num_shown = _render()
+            tty.setraw(fd)
+
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    # Clear suggestions
+    _clear(num_shown)
+    con.print(f"    Path: [bold]{result}[/]")
+
+    # Validate
+    while not os.path.exists(result):
+        con.print(f"    [red]Path not found:[/] {result}")
+        con.print(f"    [dim]Try again or Ctrl+C to cancel.[/]")
+        con.print()
+        result = Prompt.ask("    Path to documents")
+        if result:
+            result = os.path.expanduser(result)
+
+    return result
+
+
 def _animate_logo(con: Console) -> None:
     """Animate the KONASH logo on startup."""
     import time as _t
@@ -367,12 +482,12 @@ def cmd_setup(args: argparse.Namespace) -> None:
     if together_key:
         console.print(f"    Key found: [dim]{_mask(together_key)}[/]")
         with console.status("    Validating...", spinner="dots"):
-            valid = validate_together_key(together_key)
+            valid, err = validate_together_key(together_key)
         if valid:
             console.print("    [green]✓[/]  Connected to Together AI")
             config["together_api_key"] = together_key
         else:
-            console.print("    [red]✗[/]  Key no longer works")
+            console.print(f"    [red]✗[/]  {err}")
             together_key = None
 
     if not together_key:
@@ -387,22 +502,23 @@ def cmd_setup(args: argparse.Namespace) -> None:
             console.print("    [dim]Settings → API Keys → copy the User key (not Legacy)[/]")
             console.print()
 
-        together_key = Prompt.ask("    Paste your API key", password=True)
+        while True:
+            together_key = Prompt.ask("    Paste your API key")
 
-        if together_key:
+            if not together_key:
+                console.print("    [dim]No key entered. Try again or Ctrl+C to cancel.[/]")
+                console.print()
+                continue
+
             with console.status("    Validating...", spinner="dots"):
-                valid = validate_together_key(together_key)
+                valid, err = validate_together_key(together_key)
             if valid:
                 console.print("    [green]✓[/]  Connected to Together AI")
                 config["together_api_key"] = together_key
+                break
             else:
-                console.print("    [red]✗[/]  Invalid key — check and try again")
-                return
-        else:
-            console.print()
-            console.print("    Run [bold]konash setup[/] when you have a key.")
-            console.print()
-            return
+                console.print(f"    [red]✗[/]  {err}")
+                console.print()
 
     # ── Save and go ──────────────────────────────────────────────────
     _save_config(config)
@@ -471,11 +587,11 @@ def cmd_setup_check() -> None:
 
     if together_key:
         with console.status("[cyan]Checking Together AI...", spinner="dots"):
-            valid = validate_together_key(together_key)
+            valid, err = validate_together_key(together_key)
         if valid:
             console.print("[green]✓[/] Together AI key valid")
         else:
-            console.print("[red]✗[/] Together AI key invalid")
+            console.print(f"[red]✗[/] Together AI: {err}")
             all_ok = False
     else:
         console.print("[red]✗[/] Together AI key not found")
@@ -629,7 +745,7 @@ def cmd_train(args: argparse.Namespace) -> None:
             ds = DATASETS[idx]
             corpus = _download_dataset(ds["key"])
         else:
-            corpus = Prompt.ask("    Path to documents")
+            corpus = _interactive_path_picker(console)
 
     if not corpus or not os.path.exists(corpus):
         console.print(f"    [red]Path not found:[/] {corpus}")

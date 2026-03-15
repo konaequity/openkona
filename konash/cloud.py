@@ -474,7 +474,7 @@ def _ensure_shadeform(verbose: bool = True) -> str:
             _con.print()
 
         while True:
-            key = Prompt.ask("    Paste your Shadeform API key", password=True)
+            key = Prompt.ask("    Paste your Shadeform API key")
 
             if not key:
                 _con.print("    [dim]No key entered. Try again or Ctrl+C to cancel.[/]")

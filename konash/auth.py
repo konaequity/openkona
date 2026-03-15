@@ -67,27 +67,38 @@ def detect_hf_token() -> Optional[str]:
     return None
 
 
-def validate_together_key(key: str) -> bool:
-    """Validate a Together AI API key with a 1-token completion."""
+def validate_together_key(key: str) -> tuple:
+    """Validate a Together AI API key. Returns (valid, error_message)."""
     try:
-        payload = json.dumps({
-            "model": "Qwen/Qwen3.5-9B",
-            "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 1,
-        })
+        # Use /v1/models endpoint — only requires auth, no credits needed
         req = urllib.request.Request(
-            "https://api.together.xyz/v1/chat/completions",
-            data=payload.encode("utf-8"),
+            "https://api.together.xyz/v1/models",
             headers={
                 "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
                 "User-Agent": "konash",
             },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
+            return True, ""
+    except urllib.error.HTTPError as e:
+        code = e.code
+        body = ""
+        try:
+            body = e.read().decode()
+        except Exception:
+            pass
+        if code == 401:
+            return False, "Invalid API key"
+        elif code == 403:
+            return False, "Request blocked — try again in a minute"
+        elif code == 429:
+            return False, "Rate limited — wait a moment and try again"
+        else:
+            return False, f"HTTP {code}: {body[:100]}"
+    except urllib.error.URLError as e:
+        return False, f"Network error: {e.reason}"
+    except Exception as e:
+        return False, str(e)
 
 
 def validate_google_key(key: str) -> bool:
