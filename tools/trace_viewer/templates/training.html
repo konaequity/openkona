@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KONASH Training Monitor</title>
+<style>
+:root {
+  --bg-primary: #0D1117;
+  --bg-secondary: #161B22;
+  --bg-tertiary: #1C2128;
+  --bg-card: #21262D;
+  --border-default: #30363D;
+  --text-primary: #E6EDF3;
+  --text-secondary: #8B949E;
+  --text-tertiary: #6E7681;
+  --accent-blue: #58A6FF;
+  --accent-green: #3FB950;
+  --accent-orange: #F0883E;
+  --accent-red: #F85149;
+  --accent-purple: #A371F7;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg-primary); color: var(--text-primary); }
+
+.topbar { display: flex; justify-content: space-between; align-items: center; padding: 8px 20px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-default); position: sticky; top: 0; z-index: 100; }
+.topbar-left { display: flex; align-items: center; gap: 20px; }
+.logo { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+.logo-icon { width: 28px; height: 28px; background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple)); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 800; color: white; }
+.nav-tabs { display: flex; background: var(--bg-tertiary); border-radius: 9999px; padding: 2px; gap: 2px; }
+.nav-tab { padding: 6px 16px; border-radius: 9999px; font-size: 13px; color: var(--text-secondary); text-decoration: none; transition: all 0.15s; }
+.nav-tab:hover { color: var(--text-primary); }
+.nav-tab.active { background: var(--bg-card); color: var(--text-primary); font-weight: 600; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+.project-selector { margin-bottom: 24px; }
+.project-selector select { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-default); border-radius: 6px; padding: 8px 12px; font-size: 14px; }
+
+/* Summary cards */
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.summary-card { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; padding: 16px; }
+.summary-card .label { font-size: 12px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.summary-card .value { font-size: 24px; font-weight: 700; }
+.summary-card .value.green { color: var(--accent-green); }
+.summary-card .value.blue { color: var(--accent-blue); }
+.summary-card .value.orange { color: var(--accent-orange); }
+.summary-card .value.purple { color: var(--accent-purple); }
+
+/* Timeline */
+.timeline { margin-bottom: 24px; }
+.timeline h2 { font-size: 16px; margin-bottom: 12px; color: var(--text-secondary); }
+.timeline-event { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-default); }
+.timeline-event:last-child { border-bottom: none; }
+.timeline-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+.timeline-dot.start { background: var(--accent-blue); }
+.timeline-dot.synthesis { background: var(--accent-green); }
+.timeline-dot.rollouts { background: var(--accent-orange); }
+.timeline-dot.oapl { background: var(--accent-purple); }
+.timeline-dot.value_model { background: var(--accent-red); }
+.timeline-dot.complete { background: var(--accent-green); }
+.timeline-dot.error { background: var(--accent-red); }
+.timeline-content { flex: 1; }
+.timeline-title { font-size: 14px; font-weight: 600; }
+.timeline-detail { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
+.timeline-time { font-size: 12px; color: var(--text-tertiary); white-space: nowrap; }
+
+/* Charts */
+.chart-section { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; padding: 20px; margin-bottom: 24px; }
+.chart-section h3 { font-size: 14px; color: var(--text-secondary); margin-bottom: 12px; }
+.bar-chart { display: flex; align-items: flex-end; gap: 4px; height: 120px; }
+.bar { background: var(--accent-blue); border-radius: 3px 3px 0 0; min-width: 20px; transition: height 0.3s; position: relative; }
+.bar:hover { opacity: 0.8; }
+.bar-label { position: absolute; bottom: -20px; left: 50%; transform: translateX(-50%); font-size: 10px; color: var(--text-tertiary); white-space: nowrap; }
+
+.empty-state { text-align: center; padding: 60px 20px; color: var(--text-tertiary); }
+.empty-state h2 { font-size: 20px; margin-bottom: 8px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="logo">
+      <div class="logo-icon">K</div>
+      KONASH
+    </div>
+    <div class="nav-tabs">
+      <a href="/arena/" class="nav-tab">Arena</a>
+      <a href="/traces/" class="nav-tab">Traces</a>
+      <a href="/training/" class="nav-tab active">Training</a>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+  <div class="project-selector">
+    <select id="project-select" onchange="loadProject(this.value)">
+      <option value="">Select a project...</option>
+    </select>
+  </div>
+
+  <div id="content">
+    <div class="empty-state">
+      <h2>No training runs yet</h2>
+      <p>Run <code>konash train</code> to start a training run.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = '/training/api';
+
+async function loadProjects() {
+  const resp = await fetch(`${API_BASE}/projects`);
+  const data = await resp.json();
+  const select = document.getElementById('project-select');
+
+  data.projects.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p;
+    opt.textContent = p;
+    select.appendChild(opt);
+  });
+
+  if (data.projects.length > 0) {
+    select.value = data.projects[0];
+    loadProject(data.projects[0]);
+  }
+}
+
+async function loadProject(project) {
+  if (!project) return;
+  const resp = await fetch(`${API_BASE}/logs/${project}`);
+  const data = await resp.json();
+  renderTraining(data.events, project);
+}
+
+function renderTraining(events, project) {
+  const content = document.getElementById('content');
+  if (!events || events.length === 0) {
+    content.innerHTML = `<div class="empty-state"><h2>No events for ${project}</h2></div>`;
+    return;
+  }
+
+  // Extract summary stats
+  const synthesis = events.filter(e => e.event === 'synthesis');
+  const rollouts = events.filter(e => e.event === 'rollouts');
+  const oapl = events.filter(e => e.event === 'oapl');
+  const complete = events.find(e => e.event === 'complete');
+  const start = events.find(e => e.event === 'start');
+
+  const totalPairs = synthesis.reduce((s, e) => s + (e.raw_pairs || 0), 0);
+  const totalFiltered = rollouts.reduce((s, e) => s + (e.examples_after_filter || 0), 0);
+  const lastLoss = oapl.length > 0 ? oapl[oapl.length - 1].loss : null;
+  const totalTime = complete ? complete.total_seconds : null;
+
+  let html = '';
+
+  // Summary cards
+  html += '<div class="summary-grid">';
+  html += `<div class="summary-card"><div class="label">QA Pairs</div><div class="value green">${totalPairs}</div></div>`;
+  html += `<div class="summary-card"><div class="label">After Filter</div><div class="value blue">${totalFiltered}</div></div>`;
+  html += `<div class="summary-card"><div class="label">OAPL Loss</div><div class="value purple">${lastLoss !== null ? lastLoss.toFixed(4) : '—'}</div></div>`;
+  html += `<div class="summary-card"><div class="label">Total Time</div><div class="value orange">${totalTime ? formatDuration(totalTime) : 'running...'}</div></div>`;
+  if (start) {
+    html += `<div class="summary-card"><div class="label">Model</div><div class="value" style="font-size:14px">${start.model || '—'}</div></div>`;
+    html += `<div class="summary-card"><div class="label">Iterations</div><div class="value blue">${start.iterations || '—'}</div></div>`;
+  }
+  html += '</div>';
+
+  // Loss chart (if multiple OAPL events)
+  if (oapl.length > 1) {
+    const maxLoss = Math.max(...oapl.map(e => e.loss));
+    html += '<div class="chart-section"><h3>OAPL Loss</h3><div class="bar-chart">';
+    oapl.forEach((e, i) => {
+      const h = (e.loss / maxLoss) * 100;
+      html += `<div class="bar" style="height:${h}%;background:var(--accent-purple)" title="Loss: ${e.loss.toFixed(4)}"><span class="bar-label">${i+1}</span></div>`;
+    });
+    html += '</div></div>';
+  }
+
+  // Timeline
+  html += '<div class="timeline"><h2>Events</h2>';
+  events.forEach(e => {
+    const dotClass = e.event || 'start';
+    const title = formatEventTitle(e);
+    const detail = formatEventDetail(e);
+    const time = e.elapsed_seconds ? formatDuration(e.elapsed_seconds) : '';
+    html += `
+      <div class="timeline-event">
+        <div class="timeline-dot ${dotClass}"></div>
+        <div class="timeline-content">
+          <div class="timeline-title">${title}</div>
+          <div class="timeline-detail">${detail}</div>
+        </div>
+        <div class="timeline-time">${time}</div>
+      </div>`;
+  });
+  html += '</div>';
+
+  content.innerHTML = html;
+}
+
+function formatEventTitle(e) {
+  switch (e.event) {
+    case 'start': return 'Training Started';
+    case 'synthesis': return `Synthesis (Iteration ${e.iteration || '?'})`;
+    case 'rollouts': return `Rollouts (Iteration ${e.iteration || '?'})`;
+    case 'oapl': return `OAPL Training (Iteration ${e.iteration || '?'})`;
+    case 'value_model': return 'Value Model Training';
+    case 'complete': return 'Training Complete';
+    case 'error': return 'Error';
+    case 'phase': return `Phase: ${e.phase || '?'}`;
+    default: return e.event || 'Unknown';
+  }
+}
+
+function formatEventDetail(e) {
+  switch (e.event) {
+    case 'start': return `${e.model || '?'} · ${e.iterations || '?'} iterations · ${e.corpus || '?'}`;
+    case 'synthesis': return `${e.raw_pairs || 0} pairs · ${e.calls_completed || 0}/${e.calls_total || 0} calls · ${e.duration_seconds ? formatDuration(e.duration_seconds) : ''}`;
+    case 'rollouts': return `${e.examples_in || 0} examples · ${e.rollouts_total || 0} rollouts · ${e.examples_after_filter || 0} after filter`;
+    case 'oapl': return `Loss: ${e.loss ? e.loss.toFixed(4) : '?'} · ${e.num_groups || 0} groups · ${e.num_rollouts || 0} rollouts`;
+    case 'value_model': return `Loss: ${e.final_loss ? e.final_loss.toFixed(4) : '?'} · ${e.epochs || 0} epochs`;
+    case 'complete': return `${e.iterations || '?'} iterations in ${formatDuration(e.total_seconds || 0)}`;
+    case 'error': return e.message || 'Unknown error';
+    default: return JSON.stringify(e).substring(0, 100);
+  }
+}
+
+function formatDuration(seconds) {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds/60)}m ${Math.round(seconds%60)}s`;
+  return `${Math.floor(seconds/3600)}h ${Math.floor((seconds%3600)/60)}m`;
+}
+
+loadProjects();
+</script>
+</body>
+</html>

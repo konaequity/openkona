@@ -402,6 +402,31 @@ def index():
     return render_template("index.html")
 
 
+# ---------------------------------------------------------------------------
+# Training monitor
+# ---------------------------------------------------------------------------
+
+@app.route("/training")
+@app.route("/training/")
+def training_index():
+    return render_template("training.html")
+
+
+@app.route("/training/api/projects")
+def training_projects():
+    """List all projects with training logs."""
+    from konash.training.logger import TrainingLogger
+    return jsonify({"projects": TrainingLogger.list_projects()})
+
+
+@app.route("/training/api/logs/<project>")
+def training_logs(project: str):
+    """Get training log events for a project."""
+    from konash.training.logger import TrainingLogger
+    events = TrainingLogger.load(project)
+    return jsonify({"project": project, "events": events})
+
+
 @app.route("/traces/api/traces", methods=["GET"])
 def list_traces():
     """List all available trace sessions.
