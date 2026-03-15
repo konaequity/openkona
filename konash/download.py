@@ -505,6 +505,7 @@ def download_freshstack(
     if os.path.isdir(docs_dir) and len(os.listdir(docs_dir)) > 10:
         count = len([f for f in os.listdir(docs_dir) if f.endswith(".txt")])
         _print(console, f"    Already downloaded: {count} documents in {docs_dir}")
+        _download_prebuilt_index_hf(output_dir, "freshstack/qwen3-0.6b.npz", console)
         return output_dir
 
     os.makedirs(docs_dir, exist_ok=True)
@@ -556,6 +557,9 @@ def download_freshstack(
     eval_path = os.path.join(output_dir, "eval_questions.json")
     with open(eval_path, "w", encoding="utf-8") as f:
         json.dump(eval_questions, f, indent=2)
+
+    # Download pre-built Qwen3-0.6B embedding index from HuggingFace
+    _download_prebuilt_index_hf(output_dir, "freshstack/qwen3-0.6b.npz", console)
 
     _print(console, f"    [bold green]Done![/]")
     _print(console, f"    Documents:  {doc_count}")
