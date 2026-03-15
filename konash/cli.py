@@ -308,11 +308,43 @@ def _get_version() -> str:
 # konash setup
 # ---------------------------------------------------------------------------
 
+def _animate_logo(con: Console) -> None:
+    """Animate the KONASH logo on startup."""
+    import time as _t
+    from rich.text import Text
+    from rich.live import Live
+
+    con.print()
+
+    # Phase 1: Search beam animation
+    beam_width = 36
+    for i in range(beam_width + 1):
+        bar = "━" * i + ("◉" if i < beam_width else "")
+        pad = " " * (beam_width - i)
+        con.print(f"    [bright_cyan]{bar}[/]{pad}", end="\r")
+        _t.sleep(0.015)
+
+    # Phase 2: Beam dissolves into the logo
+    _t.sleep(0.15)
+    con.print(" " * 50, end="\r")  # clear beam
+
+    # Phase 3: Big letters fade in line by line (gradient white → cyan)
+    logo = [
+        "[bold bright_white]█  █  ▄▀▀▄  █▄  █  ▄▀▀▄  ▄▀▀▀  █  █[/]",
+        "[bold bright_white]█▄▀   █  █  █ █ █  █▀▀█  ▀▀▀█  █▀▀█[/]",
+        "[bold bright_cyan]█  █  ▀▄▄▀  █  ▀█  █  █  ▄▄▄▀  █  █[/]",
+    ]
+    for line in logo:
+        con.print(f"    {line}")
+        _t.sleep(0.05)
+    con.print()
+
+
 def cmd_setup(args: argparse.Namespace) -> None:
-    console.print()
-    console.print(f"[bold]Welcome to KONASH[/]  [dim]{_get_version()}[/]")
+    _animate_logo(console)
+    console.print(f"    [bold]Welcome to KONASH[/]  [dim]{_get_version()}[/]")
     console.print(
-        "[dim]Train knowledge agents that search, retrieve, and reason.[/]"
+        "    [dim]Train knowledge agents that search, retrieve, and reason.[/]"
     )
     console.print()
     console.print(
