@@ -228,6 +228,67 @@ def _deploy_to_together(engine, args):
     print(f"  Use model name: {model_name}")
 
 
+def _train_value_model(output_dir: str, num_iterations: int) -> None:
+    """Train a NeuralValueModel (Qwen3-4B) on accumulated rollout data.
+
+    Matches KARL paper Section 5.2: uses a small transformer LM as the value
+    function, trained with binary cross-entropy at the token level.
+    """
+    print("\n  Training value model (NeuralValueModel / Qwen3-4B)...")
+
+    # Collect all rollouts across iterations
+    all_rollouts = []
+    all_rewards = []
+    for i in range(1, num_iterations + 1):
+        rollouts_path = os.path.join(output_dir, f"iter{i}", "rollouts.json")
+        if not os.path.exists(rollouts_path):
+            continue
+        with open(rollouts_path) as f:
+            rollout_dicts = json.load(f)
+        for rd in rollout_dicts:
+            all_rollouts.append(rd.get("rollout", rd.get("steps", [])))
+            all_rewards.append(rd.get("reward", 0.0))
+
+    if not all_rollouts:
+        print("  No rollout data found — skipping value model.")
+        return
+
+    print(f"  Collected {len(all_rollouts)} rollouts across {num_iterations} iterations")
+
+    try:
+        from konash.inference.value_model import NeuralValueModel
+        vm = NeuralValueModel(model_name="Qwen/Qwen3-4B")
+        vm_stats = vm.fit(
+            all_rollouts,
+            all_rewards,
+            lr=1e-4,
+            epochs=3,
+            batch_size=4,
+        )
+        # Save value model checkpoint
+        vm_path = os.path.join(output_dir, "value_model")
+        vm.save(vm_path)
+        print(f"  Value model trained — loss {vm_stats['final_loss']:.4f}")
+        print(f"  Saved to {vm_path}")
+    except (ImportError, RuntimeError) as e:
+        print(f"  NeuralValueModel unavailable ({e}), using lightweight ValueModel")
+        from konash.inference.value_model import ValueModel
+        vm = ValueModel(feature_dim=64)
+        vm_stats = vm.fit(all_rollouts, all_rewards, lr=0.01, epochs=20)
+        vm_path = os.path.join(output_dir, "value_model.json")
+        weights = vm.weights
+        if hasattr(weights, "tolist"):
+            weights = weights.tolist()
+        with open(vm_path, "w") as f:
+            json.dump({
+                "weights": weights,
+                "bias": vm.bias,
+                "feature_dim": vm.feature_dim,
+            }, f)
+        print(f"  Lightweight value model trained — loss {vm_stats['final_loss']:.4f}")
+        print(f"  Saved to {vm_path}")
+
+
 def load_rollouts_from_stage3(path: str):
     """Load pre-generated rollouts from stage3_results.json."""
     from konash.training.dataset import OfflineRolloutDataset
@@ -500,15 +561,32 @@ def train_full_pipeline(args):
 
         # Stage 3: OAPL training
         print("  Training with OAPL...")
+        import time as _time
+        _oapl_start = _time.monotonic()
         stats = trainer.train_epoch_torch(
             dataset=dataset,
             model_engine=engine,
             learning_rate=args.lr,
             max_grad_norm=args.max_grad_norm,
         )
+        _oapl_dur = _time.monotonic() - _oapl_start
         print(f"  Loss: {stats['mean_loss']:.4f}  "
               f"Groups: {stats['num_groups']}  "
               f"Rollouts: {stats['num_rollouts']}")
+
+        # Log OAPL stats
+        try:
+            from konash.training.logger import TrainingLogger
+            _log = TrainingLogger(os.path.basename(args.output) or "default")
+            _log.oapl(
+                iteration=iteration + 1,
+                loss=stats["mean_loss"],
+                num_groups=stats["num_groups"],
+                num_rollouts=stats["num_rollouts"],
+                duration_seconds=_oapl_dur,
+            )
+        except Exception:
+            pass
 
         all_iteration_stats.append({
             "iteration": iteration + 1,
@@ -531,6 +609,9 @@ def train_full_pipeline(args):
             engine.snapshot_reference()
             print("  Snapshotted LoRA as pi_ref for next iteration")
 
+    # Train value model (KARL Section 5.2: Qwen3-4B-Thinking)
+    _train_value_model(args.output, args.iterations)
+
     # Save final meta
     meta_path = os.path.join(args.output, "training_meta.json")
     with open(meta_path, "w") as f:
@@ -538,6 +619,7 @@ def train_full_pipeline(args):
             "model": args.model,
             "iterations": len(all_iteration_stats),
             "stats": all_iteration_stats,
+            "value_model": True,
         }, f, indent=2)
 
     print(f"\n{'='*60}")

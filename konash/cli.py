@@ -104,6 +104,7 @@ TOGETHER_API_BASE = "https://api.together.xyz/v1"
 DEFAULT_MODEL = "zai-org/GLM-4.5-Air-FP8"
 CONFIG_DIR = os.path.expanduser("~/.konash")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+PROJECTS_DIR = os.path.join(CONFIG_DIR, "projects")
 
 # Models available on Together AI
 MODELS = [
@@ -266,8 +267,8 @@ def cmd_default() -> None:
     grid.add_row("konash download browsecomp-plus", "Download benchmark corpus")
     grid.add_row('konash ask "Q"', "Ask a question")
     grid.add_row("konash search --corpus ./docs Q", "Search documents")
-    grid.add_row("konash cloud launch", "Train on cloud GPUs")
-    grid.add_row("konash cloud gpus", "Show available GPUs")
+    grid.add_row("konash logs", "Stream GPU training logs")
+    grid.add_row("konash stop", "Tear down GPU cluster")
     grid.add_row("konash projects", "List trained projects")
     grid.add_row("konash status", "Check configuration")
     console.print(grid)
@@ -861,7 +862,7 @@ def cmd_ask(args: argparse.Namespace) -> None:
     # Resolve corpus: explicit flag > training metadata > error
     corpus = args.corpus
     if not corpus:
-        meta_path = os.path.join(".konash", args.project, "checkpoints", "training_meta.json")
+        meta_path = os.path.join(PROJECTS_DIR, args.project, "checkpoints", "training_meta.json")
         if os.path.exists(meta_path):
             with open(meta_path) as f:
                 meta = json.load(f)
@@ -888,7 +889,7 @@ def cmd_ask(args: argparse.Namespace) -> None:
     _use_vgs = args.vgs
     if _use_vgs:
         import json as _json
-        vm_path = os.path.join(".konash", args.project, "checkpoints", "value_model.json")
+        vm_path = os.path.join(PROJECTS_DIR, args.project, "checkpoints", "value_model.json")
         if os.path.exists(vm_path):
             from konash.inference.value_model import ValueModel
             with open(vm_path) as f:
@@ -928,7 +929,7 @@ def cmd_search(args: argparse.Namespace) -> None:
     except ModuleNotFoundError as exc:
         _dependency_error(exc)
 
-    _cache_dir = os.path.join(".konash", "search", "index_cache")
+    _cache_dir = os.path.join(CONFIG_DIR, "search", "index_cache")
     corpus = Corpus(args.corpus, chunk_size=args.chunk_size, cache_dir=_cache_dir)
 
     _status_msg = console.status("[cyan]Indexing corpus...", spinner="dots")
@@ -1007,7 +1008,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     console.print(f"    [dim]Config  {CONFIG_FILE}[/]")
 
     # Training status
-    project_dir = os.path.join(".konash", "default", "checkpoints")
+    project_dir = os.path.join(PROJECTS_DIR, "default", "checkpoints")
     if os.path.exists(project_dir):
         meta_path = os.path.join(project_dir, "training_meta.json")
         if os.path.exists(meta_path):
@@ -1039,7 +1040,7 @@ def cmd_projects(args: argparse.Namespace) -> None:
     console.rule(style="dim")
     console.print()
 
-    konash_dir = ".konash"
+    konash_dir = PROJECTS_DIR
     if not os.path.isdir(konash_dir):
         console.print("    [dim]No projects found. Run [cyan]konash train[/] to get started.[/]")
         console.print()
@@ -1082,68 +1083,39 @@ def cmd_projects(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# konash cloud
+# konash logs
 # ---------------------------------------------------------------------------
 
-def cmd_cloud(args: argparse.Namespace) -> None:
+def cmd_logs(args: argparse.Namespace) -> None:
+    import subprocess
+    console.print()
+    console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Training Logs")
+    console.print()
     try:
-        from konash.cloud import launch, status, logs, stop, down, show_gpus
-    except SystemExit as e:
-        console.print(f"\n[red]{e}[/]\n")
-        return
+        subprocess.run(["sky", "logs", "konash-train"], check=True)
+    except FileNotFoundError:
+        console.print("[red]SkyPilot not installed.[/] Run: [cyan]pip install konash[/]")
+    except subprocess.CalledProcessError:
+        console.print("[dim]No active training cluster.[/]")
 
-    action = args.cloud_action
 
-    if action == "launch":
-        console.print()
-        console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Cloud Training")
-        console.print()
-        console.rule(style="dim")
-        console.print()
+# ---------------------------------------------------------------------------
+# konash stop
+# ---------------------------------------------------------------------------
 
-        gpu = args.gpu or "H100:1"
-        cloud = args.cloud_provider
-        corpus = args.corpus or "financebench"
-
-        console.print(f"    [bold]GPU[/]          {gpu}")
-        console.print(f"    [bold]Cloud[/]        {cloud or 'auto (cheapest)'}")
-        console.print(f"    [bold]Corpus[/]       {corpus}")
-        console.print(f"    [bold]Iterations[/]   {args.iterations}")
-        console.print(f"    [bold]Cluster[/]      {args.cluster}")
-        if args.spot:
-            console.print(f"    [bold]Spot[/]         yes (cheaper, may be preempted)")
-        console.print()
-
-        launch(
-            corpus=corpus,
-            cluster_name=args.cluster,
-            cloud=cloud,
-            gpu=gpu,
-            iterations=args.iterations,
-            rollouts_per_example=args.rollouts,
-            learning_rate=args.lr,
-            push_to_hub=args.push_to_hub,
-            use_spot=args.spot,
-        )
-
-    elif action == "status":
-        status()
-
-    elif action == "logs":
-        logs(args.cluster)
-
-    elif action == "stop":
-        stop(args.cluster)
-
-    elif action == "down":
-        down(args.cluster)
-
-    elif action == "gpus":
-        show_gpus(args.cloud_provider)
-
-    else:
-        console.print(f"[red]Unknown action:[/] {action}")
-        console.print("Available: launch, status, logs, stop, down, gpus")
+def cmd_stop(args: argparse.Namespace) -> None:
+    import subprocess
+    console.print()
+    console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Stop Training")
+    console.print()
+    try:
+        subprocess.run(["sky", "down", "konash-train", "-y"], check=True)
+        console.print("  [green]✓[/]  GPU cluster torn down")
+    except FileNotFoundError:
+        console.print("[red]SkyPilot not installed.[/] Run: [cyan]pip install konash[/]")
+    except subprocess.CalledProcessError:
+        console.print("[dim]No active training cluster.[/]")
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -1271,42 +1243,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_search.set_defaults(func=cmd_search)
 
-    # --- cloud ---
-    p_cloud = subparsers.add_parser(
-        "cloud", help="Train on cloud GPUs via SkyPilot.",
-    )
-    p_cloud.add_argument(
-        "cloud_action",
-        choices=["launch", "status", "logs", "stop", "down", "gpus"],
-        help="Action: launch, status, logs, stop, down, gpus.",
-    )
-    p_cloud.add_argument("--cluster", default="konash", help="Cluster name.")
-    p_cloud.add_argument(
-        "--cloud", dest="cloud_provider", default=None,
-        help="Cloud provider (runpod, lambda, aws, gcp). Auto if omitted.",
-    )
-    p_cloud.add_argument(
-        "--gpu", default=None,
-        help="GPU type (default: H100:1). Examples: A100-80GB:2, H100:1.",
-    )
-    p_cloud.add_argument("--corpus", default=None, help="Corpus name or path.")
-    p_cloud.add_argument(
-        "--iterations", type=int, default=1, help="Training iterations.",
-    )
-    p_cloud.add_argument(
-        "--rollouts", type=int, default=8, help="Rollouts per example.",
-    )
-    p_cloud.add_argument(
-        "--lr", type=float, default=1e-6, help="Learning rate.",
-    )
-    p_cloud.add_argument(
-        "--push-to-hub", default=None,
-        help="Push trained adapter to HuggingFace (e.g. your-org/konash-lora).",
-    )
-    p_cloud.add_argument(
-        "--spot", action="store_true", help="Use spot instances (cheaper).",
-    )
-    p_cloud.set_defaults(func=cmd_cloud)
+    # --- logs ---
+    p_logs = subparsers.add_parser("logs", help="Stream GPU training logs.")
+    p_logs.set_defaults(func=cmd_logs)
+
+    # --- stop ---
+    p_stop = subparsers.add_parser("stop", help="Tear down GPU cluster.")
+    p_stop.set_defaults(func=cmd_stop)
 
     # --- projects ---
     p_projects = subparsers.add_parser("projects", help="List trained projects.")

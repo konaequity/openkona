@@ -9,9 +9,12 @@ import pytest
 
 from konash.retrieval.vector_search import (
     VectorSearchTool,
-    _FAISS_AVAILABLE,
+    _ensure_faiss,
     _normalize,
 )
+
+# Call _ensure_faiss() so the flag is set before skipif evaluates
+_FAISS_AVAILABLE = _ensure_faiss()
 
 
 # ---------------------------------------------------------------------------

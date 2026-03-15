@@ -44,7 +44,6 @@ Bottlenecks and friction points standing between KONASH and open-source traction
 ## P5 — Local training path
 
 - [ ] Validate the Unsloth engine end-to-end: train → save adapter → load → eval → show improvement
-- [ ] Document the single-GPU training path (what hardware, how long, what to expect)
 - [ ] Add vLLM local inference as an alternative to Together AI for rollouts and synthesis
 - [ ] Test on common hardware: T4 (Colab), A100 (cloud), 4090 (consumer)
 

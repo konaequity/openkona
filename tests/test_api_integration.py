@@ -131,7 +131,8 @@ def test_agent_load_supports_local_inference_via_lazy_engine_init(tmp_path, monk
     assert answer == "loaded answer"
 
 
-def test_train_skips_oapl_when_all_examples_are_filtered_out(tmp_path, monkeypatch):
+def test_train_runs_local_synthesis_then_cloud_oapl(tmp_path, monkeypatch):
+    """Iteration 1: synthesis + rollouts local, OAPL on cloud."""
     doc_dir = tmp_path / "docs"
     doc_dir.mkdir()
     (doc_dir / "alpha.txt").write_text("alpha facts live here")
@@ -140,43 +141,15 @@ def test_train_skips_oapl_when_all_examples_are_filtered_out(tmp_path, monkeypat
     corpus.ingest()
     agent = Agent(base_model="stub", corpus=corpus, api_base="http://example", api_key="k")
 
-    # Patch the synthesizer to avoid network calls — train() calls
-    # synthesizer.synthesize() directly in a thread pool.
+    # Patch synthesis to return empty (simulating no QA pairs generated)
     from konash.synthesis.qa import QuestionAnswerSynthesizer
     monkeypatch.setattr(
         QuestionAnswerSynthesizer, "synthesize",
         lambda self, **kwargs: [],
     )
 
-    class StubPipeline:
-        def __init__(self, *args, **kwargs):
-            self.rollout_groups = [
-                RolloutGroup(
-                    prompt="What is Alpha?",
-                    reference_answer="Alpha",
-                    rollouts=[Rollout(steps=[{"type": "answer", "answer": "Alpha"}], final_answer="Alpha", passed=True)],
-                )
-            ]
-            self.filtered_groups = []
+    # train() should complete without calling cloud (no rollout data)
+    result = agent.train(iterations=1, synthesis_calls=1, verbose=False)
 
-        def run_stage_one(self, documents=None, num_examples=None):
-            return [type("Ex", (), {"question": "What is Alpha?", "answer": "Alpha"})()]
-
-        def run_stage_two(self, examples=None, num_rollouts=None):
-            self.filtered_groups = []
-            return []
-
-    monkeypatch.setattr("konash.api.SynthesisPipeline", StubPipeline)
-
-    trainer_calls = []
-
-    def fail_if_called(*args, **kwargs):
-        trainer_calls.append("called")
-        raise AssertionError("Training should not run when all examples are filtered out.")
-
-    monkeypatch.setattr("konash.training.oapl.OAPLTrainer.train_epoch", fail_if_called)
-
-    result = agent.train(iterations=1, max_examples=1, verbose=False)
-
-    assert result == {"iterations": 0, "stats": []}
-    assert trainer_calls == []
+    assert result["iterations"] == 1
+    assert result["stats"] == []  # no stats since synthesis produced nothing

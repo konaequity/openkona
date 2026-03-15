@@ -24,7 +24,7 @@ class LocalModelEngine:
     - Reference policy log-probs (LoRA disabled)
     - LoRA adapter save/load (for checkpointing)
 
-    Requirements: ``pip install konash[train]`` (torch, transformers, peft)
+    Requirements: torch, transformers, peft (installed on the cloud GPU automatically)
 
     Parameters
     ----------
@@ -71,9 +71,8 @@ class LocalModelEngine:
             from transformers import AutoModelForCausalLM, AutoTokenizer
         except ImportError as e:
             raise ImportError(
-                "Local model requires: pip install konash[train]\n"
-                "  (torch, transformers, peft, accelerate)\n"
-                "For 4-bit quantization also: pip install bitsandbytes"
+                "Local model requires torch, transformers, and peft.\n"
+                "These are installed automatically on cloud GPUs during training."
             ) from e
 
         self.model_name = model_name

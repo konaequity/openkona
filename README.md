@@ -151,43 +151,26 @@ Results are saved to `eval_results/financebench_eval.json`. Traces are written t
 
 ## Cloud Training
 
-Train on cloud GPUs with a single command. KONASH uses [SkyPilot](https://skypilot.co) to automatically find the cheapest GPU across providers (RunPod, Lambda, AWS, GCP, Azure, and more).
+KONASH automatically provisions cloud GPUs when training needs gradient updates. Synthesis and rollout generation run locally via API — only the OAPL step (which takes minutes, not hours) uses a GPU.
 
 ```bash
-pip install konash[cloud]
+pip install konash
 
-# Launch training on the cheapest available H100:
-konash cloud launch
+# Configure a GPU provider (RunPod, Lambda, AWS, GCP, Azure, etc.):
+pip install runpod && runpod config  # or any SkyPilot-supported provider
+sky check                            # verify it's enabled
 
-# Use a specific provider:
-konash cloud launch --cloud runpod
-
-# See available GPUs and pricing:
-konash cloud gpus
+# Then just train normally — GPU provisioning is automatic:
+konash train
 ```
 
-Training runs on FinanceBench by default. Point to your own corpus with `--corpus`:
+When `konash train` reaches the OAPL gradient step, it automatically finds the cheapest available H100 across all configured providers via [SkyPilot](https://skypilot.co), runs training, downloads the adapter, and tears down the GPU.
 
-```bash
-konash cloud launch --corpus ./my_docs --iterations 2
-```
-
-Manage your cluster:
-
-```bash
-konash cloud status       # check cluster status
-konash cloud logs         # stream training logs
-konash cloud down         # tear down when done
-```
-
-| GPU | Provider | Cost/hr | Quick training (~3 hrs) |
-|-----|----------|---------|------------------------|
-| H100 SXM | RunPod | $2.69 | ~$8 |
-| H100 PCIe | RunPod | $2.39 | ~$7 |
-| H100 | Lambda | $2.76 | ~$8 |
-| A100 80GB | RunPod | $1.49 | ~$5 (needs INT8, experimental) |
-
-Use `--spot` for spot/preemptible instances at up to 50% off.
+| GPU | Provider | OAPL step cost |
+|-----|----------|----------------|
+| H100 SXM | RunPod | ~$0.50 (minutes, not hours) |
+| H100 PCIe | RunPod | ~$0.40 |
+| H100 | Lambda | ~$0.46 |
 
 ---
 
