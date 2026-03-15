@@ -344,6 +344,7 @@ def _animate_logo(con: Console) -> None:
 
 
 def cmd_setup(args: argparse.Namespace) -> None:
+    _start_web_ui()
     _animate_logo(console)
     console.print(f"    [bold]Welcome to KONASH[/]  [dim]{_get_version()}[/]")
     console.print(
@@ -747,7 +748,7 @@ def cmd_train(args: argparse.Namespace) -> None:
         hf_token=_get_hf_token(),
         chunk_size=chunk_size,
     )
-    _start_web_ui()
+    _start_web_ui()  # no-op if already running from setup
     train_start = time.monotonic()
     agent.train(
         iterations=iterations,
