@@ -186,12 +186,15 @@ class Corpus:
             # Create lightweight stub documents (no file I/O — text loaded on demand)
             documents = []
             for docid in doc_ids:
-                # Convert URLs to filenames: https://en.wikipedia.org/wiki/To_Let_(film) → To Let (film)
                 name = str(docid)
-                if "/" in name:
-                    name = name.rsplit("/", 1)[-1]
-                name = name.replace("_", " ")
-                fpath = self._docs_dir / f"{name}.txt"
+                # Try multiple filename mappings:
+                # 1. Direct: docid with / → _ (FreshStack style)
+                # 2. URL tail: last path segment with _ → space (QAMPARI/Wikipedia style)
+                direct = name.replace("/", "_").replace("\\", "_")[:100]
+                fpath = self._docs_dir / f"{direct}.txt"
+                if not fpath.exists() and "/" in name:
+                    tail = name.rsplit("/", 1)[-1].replace("_", " ")
+                    fpath = self._docs_dir / f"{tail}.txt"
                 documents.append({"text": "", "source": str(fpath), "chunk_index": 0})
 
             self.documents = documents
