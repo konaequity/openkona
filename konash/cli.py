@@ -541,6 +541,43 @@ def cmd_download(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Web UI (auto-started during training)
+# ---------------------------------------------------------------------------
+
+_web_ui_process = None
+
+
+def _start_web_ui() -> None:
+    """Start the trace viewer / training monitor in the background."""
+    global _web_ui_process
+    import subprocess
+
+    if _web_ui_process is not None:
+        return  # Already running
+
+    app_path = os.path.join(os.path.dirname(__file__), "..", "tools", "trace_viewer", "app.py")
+    if not os.path.exists(app_path):
+        return  # Not available (pip install, no tools/)
+
+    try:
+        _web_ui_process = subprocess.Popen(
+            [sys.executable, app_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        console.print("  [dim]Dashboard: http://localhost:5050/training/[/]")
+    except Exception:
+        pass  # Non-critical
+
+
+def _stop_web_ui() -> None:
+    """Stop the background web UI."""
+    global _web_ui_process
+    if _web_ui_process is not None:
+        _web_ui_process.terminate()
+        _web_ui_process = None
+
+
+# ---------------------------------------------------------------------------
 # konash train
 # ---------------------------------------------------------------------------
 
@@ -710,6 +747,7 @@ def cmd_train(args: argparse.Namespace) -> None:
         hf_token=_get_hf_token(),
         chunk_size=chunk_size,
     )
+    _start_web_ui()
     train_start = time.monotonic()
     agent.train(
         iterations=iterations,
