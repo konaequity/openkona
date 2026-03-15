@@ -226,7 +226,16 @@ class Corpus:
         if not model or model == "":
             return
 
-        if "qwen3" in model:
+        if "0.6B" in model or "0.6b" in model:
+            # Small model — load locally, no API needed
+            try:
+                from konash.retrieval.vector_search import load_embedding_model
+                local_fn = load_embedding_model(model)
+                self.vector_search.embed_fn = local_fn
+                self.embed_fn = local_fn
+            except Exception:
+                pass
+        elif "qwen3" in model.lower():
             try:
                 self._set_qwen3_query_fn()
             except Exception:

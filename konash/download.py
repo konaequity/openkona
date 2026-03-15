@@ -330,12 +330,38 @@ def download_financebench(
     with open(eval_path, "w", encoding="utf-8") as f:
         json.dump(eval_questions, f, indent=2)
 
+    # Copy pre-built Qwen3-0.6B embedding index (ships with the package)
+    _install_prebuilt_index(output_dir, "financebench_qwen3_0.6b.npz", console)
+
     _print(console, f"    [bold green]Done![/]")
     _print(console, f"    Documents:  {doc_count}")
     _print(console, f"    Eval Q's:   {len(eval_questions)}")
     _print(console, f"    Saved to:   {output_dir}")
 
     return output_dir
+
+
+def _install_prebuilt_index(
+    output_dir: str,
+    index_filename: str,
+    console: Optional["Console"] = None,
+) -> None:
+    """Copy a pre-built embedding index shipped with the konash package."""
+    import shutil
+
+    target = os.path.join(output_dir, "prebuilt_index.npz")
+    if os.path.exists(target):
+        return  # Already installed
+
+    # Find the index file shipped in the package
+    source = os.path.join(os.path.dirname(__file__), "indexes", index_filename)
+    if not os.path.exists(source):
+        _print(console, f"    [dim]Pre-built index not found in package.[/]")
+        return
+
+    shutil.copy2(source, target)
+    size_kb = os.path.getsize(target) / 1024
+    _print(console, f"    [green]✓[/]  Pre-built embedding index installed ({size_kb:.0f} KB)")
 
 
 def download_qampari(
@@ -364,8 +390,8 @@ def download_qampari(
 
     os.makedirs(docs_dir, exist_ok=True)
 
-    _print(console, "    Downloading from HuggingFace (iohadrubin/qampari)...")
-    ds = load_dataset("iohadrubin/qampari", split="train")
+    _print(console, "    Downloading from HuggingFace (momo4382/QAMPARI)...")
+    ds = load_dataset("momo4382/QAMPARI", split="train")
     _print(console, f"    Loaded {len(ds)} records")
 
     seen: set = set()
@@ -373,43 +399,41 @@ def download_qampari(
     eval_questions: List[Dict] = []
 
     for rec in ds:
-        question = rec.get("question", "")
-        answers = rec.get("answer_list", []) or rec.get("answers", [])
+        question = rec.get("question_text", "") or rec.get("question", "")
+        answers = rec.get("answer_list", []) or []
 
-        # Extract proof/evidence passages
-        proofs = rec.get("proofs", []) or []
-        for proof in proofs:
-            if isinstance(proof, dict):
-                title = proof.get("title", "")
-                text = proof.get("proof", "") or proof.get("text", "")
-            elif isinstance(proof, list):
-                for p in proof:
-                    if isinstance(p, dict):
-                        title = p.get("title", f"doc_{doc_count}")
-                        text = p.get("proof", "") or p.get("text", "")
-                        if text and title not in seen:
-                            seen.add(title)
-                            safe = title.replace("/", "_").replace("\\", "_")[:100]
-                            filepath = os.path.join(docs_dir, f"{safe}.txt")
-                            with open(filepath, "w", encoding="utf-8") as f:
-                                f.write(text)
-                            doc_count += 1
+        # Extract proof passages from each answer's proof field
+        answer_texts = []
+        for answer in answers:
+            if not isinstance(answer, dict):
                 continue
-            else:
-                continue
+            answer_texts.append(answer.get("answer_text", ""))
 
-            if text and title not in seen:
-                seen.add(title)
-                safe = title.replace("/", "_").replace("\\", "_")[:100]
-                filepath = os.path.join(docs_dir, f"{safe}.txt")
-                with open(filepath, "w", encoding="utf-8") as f:
-                    f.write(text)
-                doc_count += 1
+            # Proofs are embedded in each answer as a list of dicts
+            proofs = answer.get("proof", [])
+            if not isinstance(proofs, list):
+                continue
+            for proof in proofs:
+                if not isinstance(proof, dict):
+                    continue
+                text = proof.get("proof_text", "")
+                url = proof.get("found_in_url", "")
+                # Use URL as unique doc ID
+                doc_key = url or f"doc_{doc_count}"
+                if text and doc_key not in seen:
+                    seen.add(doc_key)
+                    # Extract title from URL
+                    title = url.split("/")[-1].replace("_", " ") if url else f"doc_{doc_count}"
+                    safe = title.replace("/", "_").replace("\\", "_")[:100]
+                    filepath = os.path.join(docs_dir, f"{safe}.txt")
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        f.write(text)
+                    doc_count += 1
 
         if question and len(eval_questions) < 20:
             eval_questions.append({
                 "question": question,
-                "answers": answers if isinstance(answers, list) else [answers],
+                "answers": answer_texts,
             })
 
     eval_path = os.path.join(output_dir, "eval_questions.json")

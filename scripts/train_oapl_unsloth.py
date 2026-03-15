@@ -234,6 +234,7 @@ def _train_value_model(output_dir: str, num_iterations: int) -> None:
     Matches KARL paper Section 5.2: uses a small transformer LM as the value
     function, trained with binary cross-entropy at the token level.
     """
+    print("##KONASH:value_model_start##")
     print("\n  Training value model (NeuralValueModel / Qwen3-4B)...")
 
     # Collect all rollouts across iterations
@@ -270,6 +271,7 @@ def _train_value_model(output_dir: str, num_iterations: int) -> None:
         vm.save(vm_path)
         print(f"  Value model trained — loss {vm_stats['final_loss']:.4f}")
         print(f"  Saved to {vm_path}")
+        print(f"##KONASH:value_model_done:loss={vm_stats['final_loss']:.4f}##")
     except (ImportError, RuntimeError) as e:
         print(f"  NeuralValueModel unavailable ({e}), using lightweight ValueModel")
         from konash.inference.value_model import ValueModel
@@ -287,6 +289,7 @@ def _train_value_model(output_dir: str, num_iterations: int) -> None:
             }, f)
         print(f"  Lightweight value model trained — loss {vm_stats['final_loss']:.4f}")
         print(f"  Saved to {vm_path}")
+        print(f"##KONASH:value_model_done:loss={vm_stats['final_loss']:.4f}##")
 
 
 def load_rollouts_from_stage3(path: str):
@@ -343,7 +346,7 @@ def load_rollouts_from_stage3(path: str):
 
     dataset = OfflineRolloutDataset.from_rollouts(rollout_dicts)
     print(f"  Dataset: {len(dataset.prompts)} groups, {len(dataset)} rollouts")
-    return dataset
+    return dataset, rollout_dicts
 
 
 def train_from_rollouts(args):
@@ -365,11 +368,13 @@ def train_from_rollouts(args):
     print()
 
     # Load data
+    print("##KONASH:loading_data##")
     print("Loading rollout data...")
-    dataset = load_rollouts_from_stage3(args.rollouts)
+    dataset, rollout_dicts = load_rollouts_from_stage3(args.rollouts)
 
     # Load model
-    print("\nLoading model via Unsloth...")
+    print("##KONASH:loading_model##")
+    print("Loading model via Unsloth...")
     t0 = time.time()
     engine = UnslothEngine(
         model_name=args.model,
@@ -388,6 +393,8 @@ def train_from_rollouts(args):
             engine.model, args.adapter, is_trainable=True,
         )
 
+    print(f"##KONASH:model_loaded:{time.time() - t0:.1f}s##")
+
     # Snapshot reference policy (pi_ref = current model before training)
     engine.snapshot_reference()
 
@@ -398,6 +405,7 @@ def train_from_rollouts(args):
     )
 
     # Train
+    print("##KONASH:oapl_start##")
     all_stats = []
     for epoch in range(args.epochs):
         print(f"\n{'='*60}")
@@ -429,6 +437,18 @@ def train_from_rollouts(args):
     adapter_path = os.path.join(args.output, "adapter")
     engine.save_adapter(adapter_path)
 
+    print(f"##KONASH:oapl_done:loss={all_stats[-1]['mean_loss']:.4f}##")
+
+    # Save rollouts for value model training
+    iter_dir = os.path.join(args.output, "iter1")
+    os.makedirs(iter_dir, exist_ok=True)
+    rollouts_save_path = os.path.join(iter_dir, "rollouts.json")
+    with open(rollouts_save_path, "w") as f:
+        json.dump(rollout_dicts, f, default=str)
+
+    # Train value model (KARL Section 5.2)
+    _train_value_model(args.output, 1)
+
     meta = {
         "model": args.model,
         "lora_r": args.lora_r,
@@ -439,11 +459,13 @@ def train_from_rollouts(args):
         "fp8": args.fp8 and not args.no_fp8,
         "rollouts_source": args.rollouts,
         "stats": all_stats,
+        "value_model": True,
     }
     meta_path = os.path.join(args.output, "training_meta.json")
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
 
+    print(f"##KONASH:complete##")
     print(f"\n{'='*60}")
     print(f"  Training complete!")
     print(f"  Adapter: {adapter_path}")

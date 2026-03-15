@@ -222,7 +222,7 @@ class Agent:
         hf_token: Optional[str] = None,
         checkpoint_dir: Optional[str] = None,
         chunk_size: int = 512,
-        embedding_provider: str = "gte-large",
+        embedding_provider: str = "local",
         temperature: float = 0.7,
         # LoRA / model config
         lora_r: int = 16,
@@ -928,7 +928,7 @@ class Agent:
         *,
         parallel_rollouts: int = 1,
         max_steps: int = 20,
-        top_k: int = 10,
+        top_k: int = 20,
         use_vgs: Optional[bool] = None,
         vgs_candidate_width: int = 2,
         vgs_max_depth: int = 10,
@@ -1166,7 +1166,7 @@ class Agent:
     # Search (direct corpus search without LLM)
     # ------------------------------------------------------------------
 
-    def search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+    def search(self, query: str, top_k: int = 20) -> List[Dict[str, Any]]:
         """Search the corpus directly without an LLM.
 
         Useful for debugging retrieval quality.

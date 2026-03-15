@@ -56,7 +56,7 @@ konash = "konash.cli:main"
 include = ["konash*"]
 
 [tool.setuptools.package-data]
-konash = ["sky/*.yaml"]
+konash = ["sky/*.yaml", "indexes/*.npz"]
 
 [tool.pytest.ini_options]
 minversion = "7.4"

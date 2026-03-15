@@ -145,7 +145,6 @@ MODELS = [
 SCALE_PRESETS = [
     {
         "name": "Quick",
-        "hint": "~400 QA pairs  ·  8 rollouts  ·  ~1 hr",
         "qa_pairs": 400,
         "rollouts": 8,
         "rollout_steps": 30,
@@ -153,7 +152,6 @@ SCALE_PRESETS = [
     },
     {
         "name": "Recommended",
-        "hint": "~12K QA pairs  ·  8 rollouts  ·  2 iterations",
         "qa_pairs": 12000,
         "rollouts": 8,
         "rollout_steps": 50,
@@ -161,13 +159,36 @@ SCALE_PRESETS = [
     },
     {
         "name": "Exhaustive",
-        "hint": "~14K QA pairs  ·  8 rollouts  ·  200 steps  ·  2 iterations",
         "qa_pairs": 13880,
         "rollouts": 8,
         "rollout_steps": 200,
         "iterations": 2,
     },
 ]
+
+
+def _estimate_training(qa_pairs, rollouts, rollout_steps, iterations):
+    """Compute dynamic cost and time estimates."""
+    synthesis_calls = max(1, qa_pairs // 8)
+
+    # Cost: Together AI GLM 4.5 Air — $0.20/M in, $1.10/M out
+    synth_in = synthesis_calls * iterations * 2000
+    synth_out = synthesis_calls * iterations * 1000
+    rollout_in = qa_pairs * rollouts * rollout_steps * 500
+    rollout_out = qa_pairs * rollouts * rollout_steps * 200
+    cost = (
+        (synth_in + rollout_in) / 1_000_000 * 0.20
+        + (synth_out + rollout_out) / 1_000_000 * 1.10
+    )
+
+    # Time: ~2s per synthesis call (parallelized ~20x → /20),
+    # ~1s per rollout (parallelized ~4x → /4), ~15 min OAPL per iteration
+    synth_secs = (synthesis_calls * iterations * 2) / 20
+    rollout_secs = (qa_pairs * rollouts * iterations * 1) / 4
+    oapl_secs = iterations * 15 * 60
+    total_secs = synth_secs + rollout_secs + oapl_secs
+
+    return cost, total_secs
 
 # Available datasets for the corpus picker
 DATASETS = [
@@ -187,7 +208,7 @@ DATASETS = [
         "name": "QAMPARI",
         "key": "qampari",
         "desc": "Multi-answer QA  ·  Wikipedia  ·  entity-rich",
-        "source": "samsam3232/qampari",
+        "source": "momo4382/QAMPARI",
     },
     {
         "name": "FreshStack",
@@ -289,21 +310,22 @@ def _get_version() -> str:
 
 def cmd_setup(args: argparse.Namespace) -> None:
     console.print()
-    console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Setup")
+    console.print(f"[bold]Welcome to KONASH[/]  [dim]{_get_version()}[/]")
+    console.print(
+        "[dim]Train knowledge agents that search, retrieve, and reason.[/]"
+    )
+    console.print()
+    console.print(
+        "    KONASH uses Together AI to run large language models.\n"
+        "    You'll need a free API key to get started."
+    )
     console.print()
     console.rule(style="dim")
-    console.print()
-    console.print("    [dim]Together AI[/]  — runs the model  (free tier)")
-    console.print("    [dim]Google AI[/]    — corpus embeddings  (free tier)")
-    console.print("    [dim]HuggingFace[/]  — stores trained models  (free)")
     console.print()
 
     config = _load_config()
 
-    # ── 1 · Together AI ──────────────────────────────────────────────
-    console.rule("[bold]1[/]  Together AI", style="dim")
-    console.print()
-
+    # ── Together AI (the only required key) ───────────────────────────
     together_key = _get_together_key()
 
     if together_key:
@@ -311,194 +333,65 @@ def cmd_setup(args: argparse.Namespace) -> None:
         with console.status("    Validating...", spinner="dots"):
             valid = validate_together_key(together_key)
         if valid:
-            console.print("    [green]✓[/]  Valid")
-            if not Confirm.ask("    Keep this key?", default=True):
-                together_key = None
+            console.print("    [green]✓[/]  Connected to Together AI")
+            config["together_api_key"] = together_key
         else:
             console.print("    [red]✗[/]  Key no longer works")
             together_key = None
 
     if not together_key:
-        console.print("    Get your free User API Key:")
-        console.print("    [dim]Settings → API Keys → copy the User key (not Legacy)[/]")
+        idx = _arrow_select(console, [
+            {"label": "Open together.ai", "hint": "Sign up and grab a free API key (takes 30 seconds)"},
+            {"label": "I already have a key", "hint": ""},
+        ])
         console.print()
 
-        if Confirm.ask("    Open together.ai?", default=True):
+        if idx == 0:
             webbrowser.open(TOGETHER_KEYS_PAGE)
+            console.print("    [dim]Settings → API Keys → copy the User key (not Legacy)[/]")
+            console.print()
 
-        console.print()
-        together_key = Prompt.ask("    Paste your User API Key", password=True)
+        together_key = Prompt.ask("    Paste your API key", password=True)
 
         if together_key:
             with console.status("    Validating...", spinner="dots"):
                 valid = validate_together_key(together_key)
             if valid:
-                console.print("    [green]✓[/]  Valid")
+                console.print("    [green]✓[/]  Connected to Together AI")
                 config["together_api_key"] = together_key
             else:
-                console.print("    [red]✗[/]  Invalid — check and try again")
+                console.print("    [red]✗[/]  Invalid key — check and try again")
                 return
         else:
-            console.print("    [dim]Skipped. Set TOGETHER_API_KEY later.[/]")
-    else:
-        config["together_api_key"] = together_key
-
-    # ── 2 · Google AI (Gemini Embeddings) ──────────────────────────────
-    console.print()
-    console.rule("[bold]2[/]  Google AI", style="dim")
-    console.print()
-
-    google_key = _get_google_key()
-
-    if google_key:
-        console.print(f"    Key found: [dim]{_mask(google_key)}[/]")
-        with console.status("    Validating...", spinner="dots"):
-            valid = validate_google_key(google_key)
-        if valid:
-            console.print("    [green]✓[/]  Valid")
-            if not Confirm.ask("    Keep this key?", default=True):
-                google_key = None
-        else:
-            console.print("    [red]✗[/]  Key no longer works")
-            google_key = None
-
-    if not google_key:
-        console.print("    Get a free API key from Google AI Studio:")
-        console.print("    [dim]Click 'Create API key' → copy[/]")
-        console.print()
-
-        if Confirm.ask("    Open aistudio.google.com?", default=True):
-            webbrowser.open(GOOGLE_AI_KEYS_PAGE)
-
-        console.print()
-        google_key = Prompt.ask("    Paste your Google API key", password=True)
-
-        if google_key:
-            with console.status("    Validating...", spinner="dots"):
-                valid = validate_google_key(google_key)
-            if valid:
-                console.print("    [green]✓[/]  Valid")
-                config["google_api_key"] = google_key
-            else:
-                console.print("    [red]✗[/]  Invalid — check and try again")
-                return
-        else:
-            console.print("    [dim]Skipped. Set GOOGLE_API_KEY later.[/]")
-    else:
-        config["google_api_key"] = google_key
-
-    # Google tier selection (determines embedding speed)
-    if config.get("google_api_key"):
-        console.print()
-        console.print("    [dim]Embedding speed depends on your Google billing tier.[/]")
-        console.print("    [dim]Check at: console.cloud.google.com → APIs → Quotas[/]")
-        console.print()
-        tier_opts = [
-            {"label": "Free", "hint": "100 RPM  ·  slow"},
-            {"label": "Tier 1", "hint": "3K RPM  ·  ~5 min for BCP"},
-            {"label": "Tier 2", "hint": "5K RPM  ·  ~3 min for BCP"},
-            {"label": "Tier 3", "hint": "20K RPM  ·  <1 min for BCP"},
-        ]
-        tier_keys = ["free", "tier-1", "tier-2", "tier-3"]
-        console.print("    [dim]Use arrow keys, press Enter to select[/]")
-        console.print()
-        tier_idx = _arrow_select(console, tier_opts)
-        config["google_tier"] = tier_keys[tier_idx]
-        console.print(f"    Set to [bold]{tier_opts[tier_idx]['label']}[/]")
-
-    # ── 3 · HuggingFace ──────────────────────────────────────────────
-    console.print()
-    console.rule("[bold]3[/]  HuggingFace", style="dim")
-    console.print()
-
-    hf_token = _get_hf_token()
-
-    if hf_token:
-        console.print(f"    Token found: [dim]{_mask(hf_token)}[/]")
-        with console.status("    Validating...", spinner="dots"):
-            username = validate_hf_token(hf_token)
-        if username:
-            console.print(f"    [green]✓[/]  {username}")
-            if not Confirm.ask("    Keep this token?", default=True):
-                hf_token = None
-        else:
-            console.print("    [red]✗[/]  Token no longer works")
-            hf_token = None
-
-    if not hf_token:
-        hf_token = hf_device_flow(console)
-
-        if hf_token:
-            console.print("    [green]✓[/]  Authorized via OAuth")
-        else:
-            console.print("    Create a token with Write access:")
-            console.print("    [dim]Settings → Access Tokens → New token[/]")
             console.print()
-
-            if Confirm.ask("    Open huggingface.co?", default=True):
-                webbrowser.open(HF_TOKENS_PAGE)
-
+            console.print("    Run [bold]konash setup[/] when you have a key.")
             console.print()
-            hf_token = Prompt.ask("    Paste your token", password=True)
+            return
 
-        if hf_token:
-            config["hf_token"] = hf_token
-        else:
-            console.print("    [dim]Skipped — only needed to deploy models.[/]")
-    else:
-        config["hf_token"] = hf_token
-
-    # ── Summary ──────────────────────────────────────────────────────
+    # ── Save and go ──────────────────────────────────────────────────
     _save_config(config)
 
     console.print()
     console.rule(style="dim")
     console.print()
-
-    if config.get("together_api_key"):
-        console.print(
-            f"    [green]✓[/]  Together AI    {_mask(config['together_api_key'])}"
-        )
-    else:
-        console.print("    [red]✗[/]  Together AI    not set")
-
-    if config.get("google_api_key"):
-        console.print(
-            f"    [green]✓[/]  Google AI      {_mask(config['google_api_key'])}"
-        )
-    else:
-        console.print("    [red]✗[/]  Google AI      not set")
-
-    if config.get("hf_token"):
-        console.print(
-            f"    [green]✓[/]  HuggingFace    {_mask(config['hf_token'])}"
-        )
-    else:
-        console.print("    [dim]–[/]  HuggingFace    skipped")
-
-    console.print(f"    [dim]Config saved to {CONFIG_FILE}[/]")
+    console.print("    [green]✓[/]  You're all set. Let's train your first agent.")
+    console.print()
 
     # ── Flow directly into training ─────────────────────────────────
-    if config.get("together_api_key"):
-        console.print()
-        train_args = argparse.Namespace(
-            corpus=None,
-            model=DEFAULT_MODEL,
-            project="default",
-            iterations=2,
-            qa_pairs=12000,
-            rollouts=8,
-            rollout_steps=50,
-            max_examples=None,
-            lr=1e-5,
-            chunk_size=512,
-            api_key=None,
-        )
-        cmd_train(train_args)
-    else:
-        console.print()
-        console.print("    Run [bold]konash setup[/] again to add your API key.")
-        console.print()
+    train_args = argparse.Namespace(
+        corpus=None,
+        model=DEFAULT_MODEL,
+        project="default",
+        iterations=2,
+        qa_pairs=12000,
+        rollouts=8,
+        rollout_steps=50,
+        max_examples=None,
+        lr=1e-5,
+        chunk_size=512,
+        api_key=None,
+    )
+    cmd_train(train_args)
 
 
 def _download_dataset(key: str) -> str:
@@ -631,8 +524,11 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     # ── Interactive wizard ───────────────────────────────────────────
     console.print()
-    console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Train")
-    console.print("[dim]Press Enter to accept defaults.[/]")
+    console.print(
+        "    Pick a document corpus to train on. KONASH will synthesize\n"
+        "    questions from these documents, then train your model to\n"
+        "    search and reason over them."
+    )
     console.print()
     console.rule(style="dim")
 
@@ -693,7 +589,19 @@ def cmd_train(args: argparse.Namespace) -> None:
         console.print()
         console.rule("[bold]Scale[/]", style="dim")
         console.print()
-        opts = [{"label": p["name"], "hint": p["hint"]} for p in SCALE_PRESETS]
+        opts = []
+        for p in SCALE_PRESETS:
+            _, t = _estimate_training(p["qa_pairs"], p["rollouts"], p["rollout_steps"], p["iterations"])
+            time_str = _format_duration(t).lstrip("~")
+            opts.append({
+                "label": p["name"],
+                "hint": (
+                    f"~{p['qa_pairs']:,} QA pairs  ·  "
+                    f"{p['rollouts']} rollouts  ·  "
+                    f"{p['iterations']} iter  ·  "
+                    f"~{time_str}"
+                ),
+            })
         opts.append({"label": "Custom", "hint": "Set each parameter manually"})
         console.print("    [dim]Use arrow keys, press Enter to select[/]")
         console.print()
@@ -714,23 +622,9 @@ def cmd_train(args: argparse.Namespace) -> None:
     # ── Summary + confirm (with go-back loop) ────────────────────────
     while True:
         synthesis_calls = max(1, qa_pairs // 8)
-
-        # Cost estimate: Together AI GLM 4.5 Air — $0.20/M in, $1.10/M out.
-        # Synthesis: ~2K input + ~1K output tokens per call.
-        # Rollouts: ~500 input + ~200 output tokens per step.
-        synth_in = synthesis_calls * iterations * 2000
-        synth_out = synthesis_calls * iterations * 1000
-        rollout_in = qa_pairs * rollouts * rollout_steps * 500
-        rollout_out = qa_pairs * rollouts * rollout_steps * 200
-        est_cost = (
-            (synth_in + rollout_in) / 1_000_000 * 0.20
-            + (synth_out + rollout_out) / 1_000_000 * 1.10
+        est_cost, est_total_secs = _estimate_training(
+            qa_pairs, rollouts, rollout_steps, iterations,
         )
-
-        # ETA estimate: ~2s per synthesis call, ~3s per rollout group
-        est_synth_secs = synthesis_calls * iterations * 2
-        est_rollout_secs = qa_pairs * iterations * 3
-        est_total_secs = est_synth_secs + est_rollout_secs
 
         console.print()
         console.rule(style="dim")
@@ -983,26 +877,21 @@ def cmd_status(args: argparse.Namespace) -> None:
     console.rule(style="dim")
     console.print()
 
-    # Together key
+    # Together key (required)
     together_key = _get_together_key()
     if together_key:
         console.print(f"    [green]✓[/]  Together AI    {_mask(together_key)}")
     else:
-        console.print("    [red]✗[/]  Together AI    not set")
+        console.print("    [red]✗[/]  Together AI    not set  [dim](run konash setup)[/]")
 
-    # Google AI key
+    # Optional keys — only show if configured
     google_key = _get_google_key()
     if google_key:
         console.print(f"    [green]✓[/]  Google AI      {_mask(google_key)}")
-    else:
-        console.print("    [red]✗[/]  Google AI      not set")
 
-    # HF token
     hf_token = _get_hf_token()
     if hf_token:
         console.print(f"    [green]✓[/]  HuggingFace    {_mask(hf_token)}")
-    else:
-        console.print("    [dim]–[/]  HuggingFace    not set")
 
     # Config
     console.print(f"    [dim]Config  {CONFIG_FILE}[/]")

@@ -20,6 +20,100 @@ from typing import Optional
 _SKY_YAML = Path(__file__).parent / "sky" / "train.yaml"
 
 
+def _has_gpu_provider() -> bool:
+    """Check if at least one GPU cloud provider is enabled in SkyPilot."""
+    result = subprocess.run(
+        ["sky", "check"],
+        capture_output=True, text=True, timeout=30,
+    )
+    # Look for any "enabled" line in the output
+    return "enabled" in result.stdout.lower()
+
+
+def _ensure_gpu_provider(verbose: bool = True) -> None:
+    """If no GPU provider is configured, walk the user through setup."""
+    _print = print if verbose else lambda *a, **k: None
+
+    if _has_gpu_provider():
+        return
+
+    _print()
+    _print("  OAPL training needs a GPU. Let's set one up (takes 2 minutes).")
+    _print()
+
+    # Use Rich for the selector if available, otherwise fall back
+    try:
+        from rich.console import Console
+        from rich.prompt import Prompt
+        _con = Console()
+
+        # Import arrow selector from CLI
+        from konash.cli import _arrow_select
+        idx = _arrow_select(_con, [
+            {"label": "RunPod", "hint": "Easiest setup, good prices ($2.39-2.69/hr H100)"},
+            {"label": "Lambda", "hint": "Often cheapest H100s ($2.76/hr)"},
+            {"label": "AWS", "hint": "Requires existing AWS account"},
+            {"label": "GCP", "hint": "Requires existing GCP account"},
+        ])
+        _con.print()
+
+        providers = ["runpod", "lambda", "aws", "gcp"]
+        provider = providers[idx]
+
+        if provider == "runpod":
+            _con.print("    1. Go to [bold]runpod.io[/] → Settings → API Keys")
+            _con.print("    2. Create a key and copy it")
+            _con.print()
+
+            import webbrowser
+            webbrowser.open("https://www.runpod.io/console/user/settings")
+
+            _con.print()
+            api_key = Prompt.ask("    Paste your RunPod API key", password=True)
+            if api_key:
+                os.makedirs(os.path.expanduser("~/.runpod"), exist_ok=True)
+                with open(os.path.expanduser("~/.runpod/config.toml"), "w") as f:
+                    f.write(f'[default]\napi_key = "{api_key}"\n')
+                _con.print("    [green]✓[/]  RunPod configured")
+            else:
+                raise RuntimeError("No API key provided.")
+
+        elif provider == "lambda":
+            _con.print("    1. Go to [bold]lambdalabs.com[/] → API Keys")
+            _con.print("    2. Create a key and copy it")
+            _con.print()
+            _con.print("    Then run: [cyan]sky check lambda[/]")
+            _con.print()
+            raise RuntimeError(
+                "Lambda setup requires manual configuration.\n"
+                "See: https://docs.skypilot.co/en/latest/getting-started/installation.html"
+            )
+
+        else:
+            _con.print(f"    Run: [cyan]sky check {provider}[/]")
+            _con.print(
+                f"    See: https://docs.skypilot.co/en/latest/getting-started/installation.html"
+            )
+            raise RuntimeError(f"{provider.upper()} setup requires manual configuration.")
+
+    except ImportError:
+        raise RuntimeError(
+            "No GPU provider configured. Set one up:\n"
+            "  pip install runpod && runpod config\n"
+            "  sky check"
+        )
+
+    # Verify it worked
+    if not _has_gpu_provider():
+        raise RuntimeError(
+            "GPU provider setup failed. Try manually:\n"
+            "  sky check"
+        )
+
+    _print("    [green]✓[/]  GPU provider ready")
+    _print()
+
+
 def train_remote(
     *,
     corpus: str = "financebench",
@@ -84,11 +178,10 @@ def train_remote(
     except ImportError:
         raise RuntimeError(
             "SkyPilot not found. Reinstall konash:\n"
-            "  pip install konash\n"
-            "Then configure a GPU provider:\n"
-            "  pip install runpod && runpod config\n"
-            "  sky check"
+            "  pip install konash"
         )
+
+    _ensure_gpu_provider(verbose)
 
     # Resolve Together AI key
     together_key = os.environ.get("TOGETHER_API_KEY", "")
@@ -186,11 +279,11 @@ def train_oapl_from_rollouts(
     except ImportError:
         raise RuntimeError(
             "SkyPilot not found. Reinstall konash:\n"
-            "  pip install konash\n"
-            "Then configure a GPU provider:\n"
-            "  pip install runpod && runpod config\n"
-            "  sky check"
+            "  pip install konash"
         )
+
+    # Check if any GPU provider is configured — if not, walk them through it
+    _ensure_gpu_provider(verbose)
 
     together_key = os.environ.get("TOGETHER_API_KEY", "")
     if not together_key:
@@ -221,12 +314,79 @@ def train_oapl_from_rollouts(
     if gpu != "H100:1":
         cmd.extend(["--gpus", gpu])
 
-    _print(f"  Provisioning {gpu} for OAPL training (rollouts already generated)...")
+    _print(f"  Finding cheapest GPU...")
 
-    result = subprocess.run(cmd, capture_output=not verbose)
-    if result.returncode != 0:
+    # Launch SkyPilot (streams output so user sees provisioning progress)
+    import time as _time
+    gpu_start = _time.monotonic()
+
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+    )
+
+    # Parse output for KONASH phase markers and show clean status
+    phase_times: dict = {}
+    current_phase = "provisioning"
+    phase_start = gpu_start
+    oapl_loss = None
+    vm_loss = None
+
+    for line in proc.stdout:
+        line = line.rstrip()
+
+        if "##KONASH:" in line:
+            elapsed = _time.monotonic() - phase_start
+            marker = line.split("##KONASH:")[1].rstrip("#")
+
+            if marker == "loading_data":
+                phase_times["provisioning"] = elapsed
+                _print(f"  [green]✓[/]  GPU provisioned  [dim]{elapsed:.0f}s[/]")
+                current_phase = "loading_data"
+                phase_start = _time.monotonic()
+
+            elif marker == "loading_model":
+                current_phase = "loading_model"
+                _print(f"  Loading model...")
+                phase_start = _time.monotonic()
+
+            elif marker.startswith("model_loaded:"):
+                load_time = marker.split(":")[1]
+                _print(f"  [green]✓[/]  Model loaded  [dim]{load_time}[/]")
+
+            elif marker == "oapl_start":
+                current_phase = "oapl"
+                _print(f"  Training OAPL...")
+                phase_start = _time.monotonic()
+
+            elif marker.startswith("oapl_done:"):
+                elapsed = _time.monotonic() - phase_start
+                oapl_loss = marker.split("loss=")[1] if "loss=" in marker else "?"
+                _print(f"  [green]✓[/]  OAPL complete  [dim]loss {oapl_loss}  {elapsed:.0f}s[/]")
+
+            elif marker == "value_model_start":
+                current_phase = "value_model"
+                _print(f"  Training value model...")
+                phase_start = _time.monotonic()
+
+            elif marker.startswith("value_model_done:"):
+                elapsed = _time.monotonic() - phase_start
+                vm_loss = marker.split("loss=")[1] if "loss=" in marker else "?"
+                _print(f"  [green]✓[/]  Value model trained  [dim]loss {vm_loss}  {elapsed:.0f}s[/]")
+
+            elif marker == "complete":
+                total_gpu = _time.monotonic() - gpu_start
+                _print(f"  [green]✓[/]  GPU training complete  [dim]{total_gpu:.0f}s total[/]")
+
+        elif verbose and not line.startswith("##"):
+            # Show SkyPilot output during provisioning only
+            if current_phase == "provisioning" and line.strip():
+                _print(f"  [dim]{line}[/]")
+
+    proc.wait()
+    if proc.returncode != 0:
         raise RuntimeError(
-            f"Cloud OAPL training failed (exit {result.returncode}). "
+            f"Cloud OAPL training failed (exit {proc.returncode}). "
             f"Check logs with: sky logs {cluster_name}"
         )
 
@@ -238,7 +398,10 @@ def train_oapl_from_rollouts(
     )
 
     if not keep_alive:
-        _print(f"  Tearing down GPU cluster...")
+        total_gpu = _time.monotonic() - gpu_start
+        # Rough cost estimate: H100 ~$2.69/hr
+        est_cost = (total_gpu / 3600) * 2.69
+        _print(f"  [green]✓[/]  GPU released  [dim]~${est_cost:.2f} estimated[/]")
         subprocess.run(["sky", "down", cluster_name, "-y"], capture_output=True)
 
     meta_path = os.path.join(checkpoint_dir, "training_meta.json")
