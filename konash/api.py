@@ -18,7 +18,7 @@ from konash.harness.strategy import (
     StandardStrategy,
     ParallelThinkingStrategy,
 )
-from konash.plugins.compression import CompressionPlugin
+from konash.plugins.compression import RLTrainableCompressionPlugin
 from konash.plugins.control import StepBudgetPlugin
 from konash.inference.parallel import ParallelThinkingEngine
 from konash.inference.aggregation import GenerativeAggregator
@@ -1183,7 +1183,14 @@ class Agent:
             return Environment(
                 tool_executor=tool_executor,
                 plugins=[
-                    CompressionPlugin(threshold_tokens=8000, target_tokens=4000),
+                    # Compress when history exceeds 150K chars, matching
+                    # KARL BrowseCompPlus config. The agent summarizes
+                    # the full history into ~2K chars (~100x compression).
+                    RLTrainableCompressionPlugin(
+                        threshold_chars=150_000,
+                        target_chars=2_000,
+                        agent_fn=agent.generate,
+                    ),
                     StepBudgetPlugin(max_steps=max_steps),
                 ],
                 available_tools=[{

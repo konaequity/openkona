@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 from konash.agent import Agent as BaseAgent
 from konash.harness.environment import Environment
-from konash.plugins.compression import CompressionPlugin
+from konash.plugins.compression import RLTrainableCompressionPlugin
 from konash.plugins.control import StepBudgetPlugin
 
 
@@ -256,10 +256,10 @@ class RolloutGenerator:
         # -- Plugins matching the inference path --
         plugins: List[Any] = [StepBudgetPlugin(max_steps=self.max_steps)]
         if self.compression_trigger_chars:
-            threshold_tokens = self.compression_trigger_chars // 4
-            plugins.append(CompressionPlugin(
-                threshold_tokens=threshold_tokens,
-                target_tokens=threshold_tokens // 2,
+            plugins.append(RLTrainableCompressionPlugin(
+                threshold_chars=self.compression_trigger_chars,
+                target_chars=2_000,
+                agent_fn=self.llm_fn,
             ))
 
         search_tool_schema = [{
@@ -666,8 +666,8 @@ def _episode_to_steps(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "step": step_counter,
                 "type": "compression",
                 "summary": comp.get("summary", ""),
-                "pre_tokens": comp.get("pre_tokens", 0),
-                "post_tokens": comp.get("post_tokens", 0),
+                "pre_chars": comp.get("pre_chars", comp.get("pre_tokens", 0)),
+                "post_chars": comp.get("post_chars", comp.get("post_tokens", 0)),
                 "messages_dropped": comp.get("messages_dropped", 0),
             })
             step_counter += 1

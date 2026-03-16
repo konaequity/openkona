@@ -366,6 +366,16 @@ class UnslothEngine:
     ) -> Dict[str, "torch.Tensor"]:
         """Tokenize a rollout into input_ids and labels.
 
+        Includes the full trajectory: search queries (model-generated,
+        trained on), retrieval results (tool output, masked via control
+        tokens), reasoning thoughts, and answers.
+
+        Tool output is wrapped in ``<|tool_start|>``/``<|tool_end|>``
+        markers so OAPL token masking (Strategy 3) can exclude it from
+        the policy gradient.  The model learns *what* to search for and
+        *how* to reason about results, but isn't penalized for the
+        content of search results it didn't generate.
+
         Prompt tokens are masked (labels = -100) so loss flows only
         through model-generated tokens.
         """
@@ -374,10 +384,42 @@ class UnslothEngine:
         parts: List[str] = []
         for step in rollout_steps:
             stype = step.get("type")
-            if stype == "reasoning" and step.get("thought"):
-                parts.append(step["thought"])
-            elif stype == "answer" and step.get("answer"):
-                parts.append(step["answer"])
+
+            if stype == "retrieval":
+                # Search query is model-generated → include, train on it
+                query = step.get("query", "")
+                if query:
+                    parts.append(f'Search: "{query}"')
+
+                # Results are tool output → wrap in markers, will be masked
+                results_text = _format_tool_results(step)
+                if results_text:
+                    parts.append(
+                        f"<|tool_start|>\n{results_text}\n<|tool_end|>"
+                    )
+
+            elif stype == "reasoning":
+                thought = step.get("thought", "")
+                if thought:
+                    parts.append(thought)
+
+                # Sub-retrieval results within reasoning are tool output
+                sub = step.get("sub_retrieval", {})
+                if sub:
+                    sub_query = sub.get("query", "")
+                    if sub_query:
+                        parts.append(f'Search: "{sub_query}"')
+                    sub_results = _format_tool_results(sub)
+                    if sub_results:
+                        parts.append(
+                            f"<|tool_start|>\n{sub_results}\n<|tool_end|>"
+                        )
+
+            elif stype == "answer":
+                answer = step.get("answer", "") or step.get("thought", "")
+                if answer:
+                    parts.append(answer)
+
             elif stype == "compression" and step.get("summary"):
                 parts.append(
                     f"<|compression|>\n{step['summary']}\n<|/compression|>"
@@ -405,10 +447,26 @@ class UnslothEngine:
         prompt_len = min(len(prompt_ids), len(full_ids))
         labels[:prompt_len] = -100
 
-        return {
+        # Compute exact tool output token ranges from markers.
+        # Primary: use tokenizer offset mapping (fast tokenizers).
+        # Fallback: return decoded_tokens for Strategy 3.
+        tool_output_ranges = _extract_marker_ranges(
+            full_text, full_ids, self.tokenizer,
+        )
+
+        result = {
             "input_ids": full_ids.to(self.model.device),
             "labels": labels.to(self.model.device),
         }
+        if tool_output_ranges is not None:
+            result["tool_output_ranges"] = tool_output_ranges
+        else:
+            # Fallback: provide decoded tokens for marker-based detection
+            result["decoded_tokens"] = self.tokenizer.convert_ids_to_tokens(
+                full_ids.tolist()
+            )
+
+        return result
 
     # ------------------------------------------------------------------
     # Adapter I/O
@@ -430,6 +488,91 @@ class UnslothEngine:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _extract_marker_ranges(
+    text: str,
+    token_ids: "torch.Tensor",
+    tokenizer: Any,
+) -> Optional[List[tuple]]:
+    """Find <|tool_start|>...<|tool_end|> spans and return token ranges.
+
+    Uses the tokenizer's offset_mapping (fast tokenizers) for exact
+    character-to-token alignment.  Returns None if offset mapping is
+    unavailable (falls back to Strategy 3 in oapl.py).
+    """
+    import re
+
+    # Find marker spans in the raw text
+    marker_re = re.compile(
+        r"<\|tool_start\|>(.*?)<\|tool_end\|>", re.DOTALL,
+    )
+    char_spans = [(m.start(), m.end()) for m in marker_re.finditer(text)]
+    if not char_spans:
+        return []  # no tool output — return empty list (not None)
+
+    # Try offset mapping for precise alignment
+    try:
+        encoding = tokenizer(
+            text,
+            return_offsets_mapping=True,
+            add_special_tokens=False,
+        )
+        offsets = encoding["offset_mapping"]
+    except (TypeError, KeyError, Exception):
+        return None  # signal fallback to Strategy 3
+
+    if not offsets:
+        return None
+
+    ranges: List[tuple] = []
+    for char_start, char_end in char_spans:
+        tok_start = None
+        tok_end = None
+        for i, (cs, ce) in enumerate(offsets):
+            if ce > char_start and tok_start is None:
+                tok_start = i
+            if cs >= char_end:
+                tok_end = i
+                break
+        if tok_start is not None:
+            ranges.append((tok_start, tok_end if tok_end else len(offsets)))
+
+    return ranges if ranges else []
+
+
+def _format_tool_results(step: Dict[str, Any]) -> str:
+    """Format retrieval results from a rollout step into readable text.
+
+    Handles both structured results (list of dicts with text/score) and
+    pre-formatted results_text strings.
+    """
+    # Pre-formatted text (from some rollout formats)
+    results_text = step.get("results_text", "")
+    if results_text:
+        return results_text
+
+    # Structured results list
+    results = step.get("results", [])
+    if not results:
+        return ""
+
+    lines = []
+    for i, r in enumerate(results, 1):
+        if isinstance(r, dict):
+            text = r.get("text", str(r))
+            score = r.get("score")
+            source = r.get("source", "")
+            header = f"[{i}]"
+            if score is not None:
+                header += f" (score: {score:.3f})"
+            if source:
+                header += f" {source}"
+            lines.append(f"{header}\n{text}")
+        else:
+            lines.append(f"[{i}] {str(r)}")
+
+    return "\n\n".join(lines)
+
 
 def _format_messages(messages: List[Dict[str, str]]) -> str:
     """Fallback message formatting when no chat template is available."""

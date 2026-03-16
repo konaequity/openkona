@@ -102,13 +102,21 @@ class ValueGuidedSearchEngine:
             query, num_trees=n, context=context
         )
 
-        # Collect the best trajectory from each tree.
+        # Collect the best trajectory from each tree and re-score
+        # the *completed* rollout for aggregation weighting.
+        # During BFS, scores are partial trajectory estimates (good for
+        # steering search). For aggregation, KARL Section 5.2 requires
+        # σ(V(x, y_complete)) — the value of the finished rollout.
         tree_answers: List[str] = []
         tree_scores: List[float] = []
         for tree in search_trees:
             best = tree.get("best_trajectory", {})
             answer = best.get("answer", "")
-            score = best.get("score", 0.0)
+            if self.value_model is not None:
+                steps = best.get("steps", best.get("tokens", []))
+                score = float(self.value_model.score_rollout(steps))
+            else:
+                score = best.get("score", 0.0)
             tree_answers.append(answer)
             tree_scores.append(score)
 

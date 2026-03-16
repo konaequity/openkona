@@ -474,17 +474,32 @@ class OAPLTrainer:
             return ranges if ranges else None
 
         # Strategy 3: marker-based detection in decoded tokens
+        # Markers span multiple BPE tokens, so reconstruct the text
+        # and search for markers in the cumulative string.
         if "decoded_tokens" in tokens:
+            import re as _re
+
             decoded = tokens["decoded_tokens"]
+            # Reconstruct text from tokens, tracking token boundaries
+            full_decoded = ""
+            token_starts = []
+            for tok in decoded:
+                token_starts.append(len(full_decoded))
+                full_decoded += str(tok)
+
+            # Find marker spans in reconstructed text
             ranges = []
-            start = None
-            for i, tok in enumerate(decoded):
-                tok_str = str(tok)
-                if "<|tool_start|>" in tok_str:
-                    start = i
-                if "<|tool_end|>" in tok_str and start is not None:
-                    ranges.append((start, i + 1))
-                    start = None
+            for m in _re.finditer(
+                r"<\|tool_start\|>.*?<\|tool_end\|>",
+                full_decoded,
+                _re.DOTALL,
+            ):
+                # Binary search for token positions
+                import bisect as _bisect
+                start_tok = _bisect.bisect_right(token_starts, m.start()) - 1
+                end_tok = _bisect.bisect_left(token_starts, m.end())
+                if start_tok >= 0:
+                    ranges.append((max(start_tok, 0), min(end_tok, len(decoded))))
             return ranges if ranges else None
 
         # Strategy 4: rollout-structure heuristic

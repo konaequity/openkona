@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from konash.harness.environment import Environment
-from konash.plugins.compression import CompressionPlugin
+from konash.plugins.compression import RLTrainableCompressionPlugin
 from konash.plugins.control import StepBudgetPlugin, ToolGatePlugin
 
 
@@ -39,19 +39,38 @@ def test_environment_compute_reward_uses_final_answer():
 
 
 def test_environment_applies_compression_history_override_before_generation():
-    plugin = CompressionPlugin(threshold_tokens=1, target_tokens=1)
+    def mock_agent_fn(messages):
+        return {"role": "assistant", "content": "Compressed summary of key facts."}
+
+    plugin = RLTrainableCompressionPlugin(
+        threshold_chars=1, target_chars=1, agent_fn=mock_agent_fn,
+        preserve_recent_turns=1,
+    )
     env = Environment(plugins=[plugin])
     agent = StubAgent({"role": "assistant", "content": "done"})
     env.reset(prompt="this prompt is long enough to trigger compression")
+    # Add enough messages so middle section is non-empty after
+    # preserving head (system/user) and tail (preserve_recent_turns=1)
     env.conversation_history.append(
         {"role": "assistant", "content": "older context that should be summarized"}
+    )
+    env.conversation_history.append(
+        {"role": "user", "content": "follow-up question"}
+    )
+    env.conversation_history.append(
+        {"role": "assistant", "content": "recent response to keep"}
     )
 
     env.step(agent)
 
+    # After compression: head (user prompt) + compression summary + tail (recent)
     assert agent.seen_history[0]["role"] == "user"
-    assert agent.seen_history[1]["role"] == "assistant"
-    assert "Compressed:" in agent.seen_history[1]["content"]
+    # The compression summary should be in the history
+    has_compression = any(
+        "<|compression|>" in msg.get("content", "")
+        for msg in agent.seen_history
+    )
+    assert has_compression, f"No compression marker found in {[m.get('content', '')[:50] for m in agent.seen_history]}"
 
 
 def test_environment_resets_plugins_between_episodes():
