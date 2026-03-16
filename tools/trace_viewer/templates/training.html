@@ -114,6 +114,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .step-chip.search { border-color: var(--accent-blue); color: var(--accent-blue); }
 .step-chip.answer { border-color: var(--accent-green); color: var(--accent-green); }
 
+.step-list-detail { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.step-item { display: flex; flex-direction: column; gap: 4px; }
+.step-thought { font-size: 12px; color: var(--text-secondary); background: var(--bg-primary); border-radius: 4px; padding: 8px 10px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+
 .empty-state { text-align: center; padding: 60px 20px; color: var(--text-tertiary); }
 .empty-state h2 { font-size: 20px; margin-bottom: 8px; color: var(--text-secondary); }
 </style>
@@ -273,7 +277,7 @@ function renderRolloutData(data) {
     if (passRate >= 1.0) { badgeClass = 'badge-pass'; badgeText = '100% pass'; }
     else if (passRate <= 0) { badgeClass = 'badge-fail'; badgeText = '0% pass'; }
 
-    const filteredStyle = g.kept ? '' : 'opacity:0.4;display:none';
+    const filteredStyle = g.kept ? '' : 'opacity:0.7;display:none';
     const filteredClass = g.kept ? '' : 'filtered-group';
     const filteredBadge = g.kept ? '' : '<span class="group-badge" style="background:rgba(110,118,129,0.15);color:var(--text-tertiary)">filtered out</span>';
 
@@ -301,12 +305,20 @@ function renderRolloutData(data) {
       if (r.final_answer) {
         html += `<div class="rollout-answer">${escapeHtml(r.final_answer)}</div>`;
       }
-      html += '<div class="step-list">';
+      html += '<div class="step-list-detail">';
       (r.steps || []).forEach((s, si) => {
         const isSearch = s.type === 'search' || s.query;
         const chipClass = isSearch ? 'search' : '';
-        const label = isSearch ? `Search: "${escapeHtml((s.query || '').substring(0, 50))}"` : `Step ${si + 1}: ${s.type || 'reason'}`;
+        const label = isSearch ? `Search: "${escapeHtml((s.query || '').substring(0, 80))}"` : `Step ${si + 1}: ${s.type || 'reason'}`;
+        html += `<div class="step-item">`;
         html += `<span class="step-chip ${chipClass}">${label}</span>`;
+        if (isSearch && s.num_results > 0) {
+          html += `<span style="font-size:11px;color:var(--text-tertiary);margin-left:6px">${s.num_results} results</span>`;
+        }
+        if (s.thought) {
+          html += `<div class="step-thought">${escapeHtml(s.thought)}</div>`;
+        }
+        html += `</div>`;
       });
       html += '</div></div>';
     });
