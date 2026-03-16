@@ -88,6 +88,7 @@ class Environment:
             }
         """
         # --- before_step plugin hooks ---
+        compression_events: List[Dict[str, Any]] = []
         for plugin in self.plugins:
             if hasattr(plugin, "before_step"):
                 override = plugin.before_step(
@@ -105,6 +106,9 @@ class Environment:
                     }
                 if isinstance(override, dict) and override.get("history") is not None:
                     self.conversation_history = list(override["history"])
+                    # Record compression event for the trajectory
+                    if isinstance(override, dict) and override.get("compression_event"):
+                        compression_events.append(override["compression_event"])
 
         # --- Agent generates a step ---
         response = agent.generate_step(
@@ -202,12 +206,16 @@ class Environment:
 
         self._done = done
 
-        return {
+        step_record = {
             "agent_response": response,
             "tool_results": tool_results,
             "done": done,
             "step_index": self._step_count,
         }
+        # Attach compression events that fired before this step
+        if compression_events:
+            step_record["compression_events"] = compression_events
+        return step_record
 
     # ------------------------------------------------------------------
     # Full episode

@@ -649,11 +649,29 @@ def _episode_to_steps(result: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     Preserves the step structure that downstream consumers (OAPL trainer,
     pass-rate filter, serialization) expect.
+
+    Compression events (from ``CompressionPlugin``) are emitted as steps
+    with ``type: "compression"`` so the OAPL trainer can segment rollouts
+    at compression boundaries and train compression end-to-end (KARL
+    Section 3, Table 5).
     """
     steps: List[Dict[str, Any]] = []
     trajectory = result.get("trajectory", [])
+    step_counter = 0
 
     for idx, step_record in enumerate(trajectory):
+        # Emit compression steps that fired BEFORE this agent step
+        for comp in step_record.get("compression_events", []):
+            steps.append({
+                "step": step_counter,
+                "type": "compression",
+                "summary": comp.get("summary", ""),
+                "pre_tokens": comp.get("pre_tokens", 0),
+                "post_tokens": comp.get("post_tokens", 0),
+                "messages_dropped": comp.get("messages_dropped", 0),
+            })
+            step_counter += 1
+
         agent_response = step_record.get("agent_response")
         tool_results = step_record.get("tool_results", [])
 
@@ -661,7 +679,7 @@ def _episode_to_steps(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             # Plugin terminated early (e.g. step budget exhausted)
             continue
 
-        step: Dict[str, Any] = {"step": idx}
+        step: Dict[str, Any] = {"step": step_counter}
 
         if tool_results:
             # Agent made a tool call — this is a retrieval step
@@ -691,6 +709,7 @@ def _episode_to_steps(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             step["thought"] = content
 
         steps.append(step)
+        step_counter += 1
 
     return steps
 

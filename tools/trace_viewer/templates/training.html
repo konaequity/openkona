@@ -113,6 +113,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .step-chip { font-size: 11px; padding: 3px 8px; border-radius: 4px; background: var(--bg-card); border: 1px solid var(--border-default); color: var(--text-secondary); }
 .step-chip.search { border-color: var(--accent-blue); color: var(--accent-blue); }
 .step-chip.answer { border-color: var(--accent-green); color: var(--accent-green); }
+.step-chip.compression { border-color: var(--accent-orange); color: var(--accent-orange); }
 
 .step-list-detail { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
 .step-item { display: flex; flex-direction: column; gap: 4px; }
@@ -307,9 +308,18 @@ function renderRolloutData(data) {
       }
       html += '<div class="step-list-detail">';
       (r.steps || []).forEach((s, si) => {
-        const isSearch = s.type === 'search' || s.query;
-        const chipClass = isSearch ? 'search' : '';
-        const label = isSearch ? `Search: "${escapeHtml((s.query || '').substring(0, 80))}"` : `Step ${si + 1}: ${s.type || 'reason'}`;
+        const isSearch = s.type === 'search' || s.type === 'retrieval' || s.query;
+        const isCompression = s.type === 'compression';
+        let chipClass = isSearch ? 'search' : '';
+        let label = '';
+        if (isCompression) {
+          chipClass = 'compression';
+          label = `Compression: ${s.pre_tokens || '?'} \u2192 ${s.post_tokens || '?'} tokens`;
+        } else if (isSearch) {
+          label = `Search: "${escapeHtml((s.query || '').substring(0, 80))}"`;
+        } else {
+          label = `Step ${si + 1}: ${s.type || 'reason'}`;
+        }
         html += `<div class="step-item">`;
         html += `<span class="step-chip ${chipClass}">${label}</span>`;
         if (isSearch && s.num_results > 0) {
@@ -317,6 +327,9 @@ function renderRolloutData(data) {
         }
         if (s.thought) {
           html += `<div class="step-thought">${escapeHtml(s.thought)}</div>`;
+        }
+        if (isCompression && s.summary) {
+          html += `<div class="step-thought">${escapeHtml(s.summary)}</div>`;
         }
         html += `</div>`;
       });

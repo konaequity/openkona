@@ -74,6 +74,7 @@ class CompressionPlugin:
         # Running accounting
         self._current_tokens: int = 0
         self._compression_count: int = 0
+        self._last_summary: str = ""
 
     # -- public query ---------------------------------------------------------
 
@@ -149,8 +150,10 @@ class CompressionPlugin:
                 "role": "assistant",
                 "content": summary_text,
             }
+            self._last_summary = summary_text
             compressed = head + [summary_message] + tail
         else:
+            self._last_summary = ""
             compressed = head + tail
 
         self._current_tokens = _history_tokens(compressed)
@@ -171,8 +174,18 @@ class CompressionPlugin:
         swap it in.
         """
         if history is not None and self.should_compress(history):
+            pre_compression_history = list(history)
             compressed = self.compress(history)
-            return {"history": compressed}
+            return {
+                "history": compressed,
+                "compression_event": {
+                    "type": "compression",
+                    "summary": self._last_summary,
+                    "pre_tokens": _history_tokens(pre_compression_history),
+                    "post_tokens": _history_tokens(compressed),
+                    "messages_dropped": len(pre_compression_history) - len(compressed),
+                },
+            }
         return None
 
     def after_step(
