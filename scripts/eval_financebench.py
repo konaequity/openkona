@@ -287,10 +287,12 @@ def main():
     console.print(f"  Judge: {judge_model} via {judge_api_base.split('//')[1].split('/')[0]}")
 
     # Step 3: Create agent
+    # Use corpus_dir (not docs_dir) so Corpus finds the prebuilt_index.npz
+    # alongside the documents/ subdirectory — avoids re-embedding 168 files
     from konash.api import Agent
     agent = Agent(
         base_model=args.model,
-        corpus=docs_dir,
+        corpus=corpus_dir,
         project="eval-financebench",
         api_base=TOGETHER_API_BASE,
         api_key=api_key,
