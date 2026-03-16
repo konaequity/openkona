@@ -688,7 +688,7 @@ function formatEventDetail(e) {
     case 'rollouts': return `${e.examples_in || 0} examples \u00B7 ${e.rollouts_total || 0} rollouts \u00B7 ${e.examples_after_filter || 0} after filter`;
     case 'rollout_progress': return `${e.completed} of ${e.total} groups complete (${e.pct}%)`;
     case 'filter_summary': return `${e.input_count} \u2192 ${e.output_count} (${e.reject_count} rejected)`;
-    case 'oapl': return `Loss: ${e.loss ? e.loss.toFixed(4) : '?'} \u00B7 ${e.num_groups || 0} groups \u00B7 ${e.num_rollouts || 0} rollouts`;
+    case 'oapl': return `Loss: ${e.loss ? e.loss.toFixed(4) : '?'} \u00B7 Entropy: ${e.entropy ? e.entropy.toFixed(2) : '?'} \u00B7 ${e.num_groups || 0} groups \u00B7 ${e.num_rollouts || 0} rollouts`;
     case 'value_model': return `Loss: ${e.final_loss ? e.final_loss.toFixed(4) : '?'} \u00B7 ${e.epochs || 0} epochs`;
     case 'complete': return `${e.iterations || '?'} iterations in ${formatDuration(e.total_seconds || 0)}`;
     case 'error': return e.message || 'Unknown error';

@@ -171,6 +171,149 @@ def run_eval(
     }
 
 
+def compute_pass_at_k(n: int, c: int, k: int) -> float:
+    """Unbiased Pass@k estimator (Chen et al., 2021).
+
+    Pass@k = 1 - C(n-c, k) / C(n, k)
+
+    where n = total rollouts, c = number correct, k = sample size.
+    Uses log-space computation for numerical stability.
+
+    Parameters
+    ----------
+    n : int
+        Total number of rollouts generated.
+    c : int
+        Number of correct rollouts.
+    k : int
+        Sample size to compute Pass@k for.
+
+    Returns
+    -------
+    float
+        Estimated probability that at least one of k samples is correct.
+    """
+    if n - c < k:
+        return 1.0
+    if c == 0:
+        return 0.0
+    # 1 - prod_{i=0}^{k-1} (n-c-i)/(n-i)
+    result = 1.0
+    for i in range(k):
+        result *= (n - c - i) / (n - i)
+    return 1.0 - result
+
+
+def run_pass_at_k_eval(
+    agent, questions: list[dict], scorer, policy, label: str,
+    *, n_rollouts: int = 10, workers: int = 4, k_values: list[int] | None = None,
+) -> dict:
+    """Run Pass@k evaluation: N independent rollouts per question.
+
+    Generates n_rollouts independent single-rollout solutions per question,
+    judges each independently, then computes Pass@k for various k.
+
+    Parameters
+    ----------
+    agent : Agent
+        The KONASH agent.
+    questions : list[dict]
+        Eval questions with 'question' and 'answer' fields.
+    scorer : NuggetScorer
+        Scorer with LLM judge.
+    policy : NuggetPolicy
+        Scoring policy.
+    label : str
+        Label for display.
+    n_rollouts : int
+        Number of independent rollouts per question (default 10).
+    workers : int
+        Concurrent threads for rollout generation.
+    k_values : list[int] | None
+        k values to compute Pass@k for. Default [1, 2, 4, 8] up to n_rollouts.
+
+    Returns
+    -------
+    dict
+        Results with per-question rollout scores and Pass@k metrics.
+    """
+    import threading
+
+    if k_values is None:
+        k_values = [k for k in [1, 2, 4, 8, 16, 32, 64] if k <= n_rollouts]
+        if n_rollouts not in k_values:
+            k_values.append(n_rollouts)
+
+    total_start = time.monotonic()
+
+    # For each question, generate n_rollouts independent rollouts
+    per_question_scores: list[list[float]] = []
+    completed = [0]
+    lock = threading.Lock()
+
+    def _eval_question(q_idx: int, q: dict) -> list[float]:
+        """Generate N rollouts for one question, judge each."""
+        rollout_scores = []
+        for r_idx in range(n_rollouts):
+            try:
+                result = agent.solve(
+                    q["question"],
+                    parallel_rollouts=1,
+                    return_trace=False,
+                )
+                answer = result["answer"] if isinstance(result, dict) else result
+                scorer.judge.question_context = q["question"]
+                score_result = scorer.score(answer, q["answer"], policy=policy)
+                rollout_scores.append(score_result["score"])
+            except Exception as e:
+                rollout_scores.append(0.0)
+        return rollout_scores
+
+    # Parallelize across questions (not rollouts — each question's rollouts
+    # are sequential to avoid overwhelming the API)
+    question_scores = [None] * len(questions)
+
+    def _run(idx: int, q: dict):
+        scores = _eval_question(idx, q)
+        question_scores[idx] = scores
+        with lock:
+            completed[0] += 1
+            n = completed[0]
+            n_correct = sum(1 for s in scores if s >= 0.6)
+            console.print(
+                f"  [dim]{n}/{len(questions)}[/]  "
+                f"{n_correct}/{n_rollouts} correct  "
+                f"{q['question'][:60]}..."
+            )
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_run, i, q): i for i, q in enumerate(questions)}
+        for fut in as_completed(futures):
+            fut.result()
+
+    total_time = time.monotonic() - total_start
+
+    # Compute Pass@k for each k value
+    pass_at_k = {}
+    for k in k_values:
+        per_q_pass = []
+        for scores in question_scores:
+            n = len(scores)
+            c = sum(1 for s in scores if s >= 0.6)
+            per_q_pass.append(compute_pass_at_k(n, c, k))
+        pass_at_k[k] = sum(per_q_pass) / len(per_q_pass) if per_q_pass else 0.0
+
+    return {
+        "label": label,
+        "n_rollouts": n_rollouts,
+        "k_values": k_values,
+        "pass_at_k": pass_at_k,
+        "per_question_scores": question_scores,
+        "total_time": total_time,
+        "total_questions": len(questions),
+    }
+
+
 def write_traces(
     eval_results: dict, model_name: str, trace_dir: str,
 ) -> str:
@@ -266,6 +409,8 @@ def main():
     parser.add_argument("--parallel", type=int, default=3, help="Parallel rollouts for PT mode (default: 3)")
     parser.add_argument("--workers", type=int, default=4, help="Concurrent eval threads (default: 4)")
     parser.add_argument("--verbose", action="store_true", help="Print full trace for each question")
+    parser.add_argument("--passk", type=int, default=None, metavar="N",
+                        help="Run Pass@k eval with N rollouts per question (e.g. --passk 10)")
     parser.add_argument("--model", default=None, help="Model ID (auto-detected from provider)")
     parser.add_argument("--provider", default=None, choices=["zhipu", "together"], help="LLM provider (default: auto-detect from available keys)")
     parser.add_argument("--api-key", default=None, help="API key for solver provider")
@@ -412,6 +557,23 @@ def main():
     )
     console.print()
 
+    # Step 5b: Pass@k eval (optional)
+    passk_result = None
+    if args.passk:
+        n = args.passk
+        console.rule(f"[bold]Pass@k[/]  (N={n} rollouts per question)", style="dim")
+        console.print()
+
+        passk_result = run_pass_at_k_eval(
+            agent, questions, scorer, policy, f"Pass@k (N={n})",
+            n_rollouts=n, workers=eval_workers,
+        )
+        console.print()
+        for k, score in sorted(passk_result["pass_at_k"].items()):
+            console.print(f"  Pass@{k:<3d}  {score:.1%}")
+        console.print(f"  [dim]{passk_result['total_time']:.0f}s total[/]")
+        console.print()
+
     # Step 6: Summary table
     console.print()
     console.rule("[bold]Results[/]", style="dim")
@@ -449,6 +611,17 @@ def main():
         style="dim",
     )
 
+    if passk_result:
+        table.add_section()
+        for k, score in sorted(passk_result["pass_at_k"].items()):
+            table.add_row(
+                f"Pass@{k}",
+                f"{score:.1%}",
+                "",
+                "",
+                "",
+            )
+
     console.print(table)
     console.print()
 
@@ -465,6 +638,13 @@ def main():
         "parallel": {k: v for k, v in parallel.items() if k != "results"},
         "parallel_details": parallel["results"],
     }
+    if passk_result:
+        output["pass_at_k"] = {
+            "n_rollouts": passk_result["n_rollouts"],
+            "pass_at_k": {str(k): v for k, v in passk_result["pass_at_k"].items()},
+            "per_question_scores": passk_result["per_question_scores"],
+            "total_time": passk_result["total_time"],
+        }
 
     out_path = os.path.join(results_dir, "financebench_eval.json")
     with open(out_path, "w") as f:

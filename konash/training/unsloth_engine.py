@@ -245,10 +245,18 @@ class UnslothEngine:
     # ------------------------------------------------------------------
 
     def snapshot_reference(self) -> None:
-        """Snapshot current LoRA weights as reference policy pi_ref.
+        """Snapshot current LoRA weights as reference policy π_vllm.
 
-        After each training iteration, call this so the OAPL KL term
-        compares to the previous iteration's policy (KARL Section 4.2).
+        The OAPL loss (Eq. 3 from Ritter et al. 2026) uses
+        ``ln(π / π_vllm)`` where π_vllm is the policy that *generated
+        the rollouts*. Call this BEFORE generating rollouts so the
+        reference matches the data-generating policy.
+
+        - For API-based rollouts (Together AI): call once at init.
+          The base model (no LoRA) matches the API model that generates
+          data. Do NOT re-snapshot after training.
+        - For local rollouts: call before each rollout generation phase
+          so the reference tracks the current policy.
         """
         torch = self._torch
         self._ref_lora_state = {
@@ -266,6 +274,7 @@ class UnslothEngine:
         input_ids: "torch.Tensor",
         labels: "torch.Tensor",
         use_reference: bool = False,
+        return_entropy: bool = False,
     ) -> tuple:
         """Compute per-token log-probabilities.
 
@@ -277,11 +286,16 @@ class UnslothEngine:
             Same shape. Use ``-100`` for positions to ignore.
         use_reference : bool
             If True, use reference policy pi_ref for log-probs.
+        return_entropy : bool
+            If True, also return per-token entropy of the policy
+            distribution (for monitoring distribution collapse).
 
         Returns
         -------
-        (token_log_probs, mask)
-            Both shape ``(seq_len - 1,)``.
+        (token_log_probs, mask) or (token_log_probs, mask, entropy)
+            token_log_probs and mask have shape ``(seq_len - 1,)``.
+            entropy (if requested) has shape ``(seq_len - 1,)`` with
+            per-position entropy H = -sum(p * log(p)) over the vocab.
         """
         torch = self._torch
 
@@ -323,6 +337,12 @@ class UnslothEngine:
 
             mask = shift_labels != -100
             tok_lp = tok_lp * mask.float()
+
+            if return_entropy:
+                # H(t) = -Σ_v p(v) log p(v) per position
+                probs = log_probs.exp()
+                per_token_entropy = -(probs * log_probs).sum(dim=-1)
+                return tok_lp.squeeze(0), mask.squeeze(0), per_token_entropy.squeeze(0)
 
             return tok_lp.squeeze(0), mask.squeeze(0)
         finally:

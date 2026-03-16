@@ -603,6 +603,7 @@ def train_full_pipeline(args):
             _log.oapl(
                 iteration=iteration + 1,
                 loss=stats["mean_loss"],
+                entropy=stats.get("mean_entropy", 0),
                 num_groups=stats["num_groups"],
                 num_rollouts=stats["num_rollouts"],
                 duration_seconds=_oapl_dur,
@@ -626,10 +627,16 @@ def train_full_pipeline(args):
         with open(rollouts_path, "w") as f:
             json.dump(rollout_dicts, f, indent=2, default=str)
 
-        # Snapshot as new reference for next iteration
-        if iteration < args.iterations - 1:
-            engine.snapshot_reference()
-            print("  Snapshotted LoRA as pi_ref for next iteration")
+        # NOTE: Do NOT snapshot here. The OAPL paper (Eq. 3) says π_ref
+        # should be π_vllm — the policy that *generated the rollouts*.
+        # Since rollouts come from the Together API (base model), the
+        # reference must stay as the base model across all iterations.
+        # Updating it to the trained LoRA would make the KL term compare
+        # against a policy that didn't generate the data.
+        #
+        # If/when local rollout generation is added (rollouts from the
+        # trained model), snapshot_reference() should be called BEFORE
+        # generating rollouts — not after training.
 
     # Train value model (KARL Section 5.2: Qwen3-4B-Thinking)
     _train_value_model(args.output, args.iterations)

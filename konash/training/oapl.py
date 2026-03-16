@@ -229,6 +229,8 @@ class OAPLTrainer:
         num_segments = 0
         total_tokens = 0
         masked_tokens = 0
+        entropy_sum = 0.0
+        entropy_count = 0
 
         model_engine.model.train()
 
@@ -272,9 +274,11 @@ class OAPLTrainer:
                     if loss_item is None:
                         continue
 
-                    loss_val, tok_total, tok_masked = loss_item
+                    loss_val, tok_total, tok_masked, seg_entropy = loss_item
                     total_tokens += tok_total
                     masked_tokens += tok_masked
+                    entropy_sum += seg_entropy
+                    entropy_count += 1
                     group_segment_count += 1
                     num_segments += 1
                     group_loss_val += loss_val
@@ -296,9 +300,11 @@ class OAPLTrainer:
         masked_pct = (
             masked_tokens / total_tokens * 100 if total_tokens > 0 else 0.0
         )
+        mean_entropy = entropy_sum / max(entropy_count, 1)
 
         return {
             "mean_loss": float(mean_loss),
+            "mean_entropy": float(mean_entropy),
             "num_groups": num_groups,
             "num_rollouts": num_rollouts,
             "num_segments": num_segments,
@@ -318,8 +324,8 @@ class OAPLTrainer:
     ) -> Optional[tuple]:
         """Compute OAPL loss for a single rollout segment.
 
-        Returns (loss_value, total_tokens, masked_tokens) or None if
-        no valid tokens.
+        Returns (loss_value, total_tokens, masked_tokens, mean_entropy)
+        or None if no valid tokens.
         """
         tokens = model_engine.tokenize_rollout(prompt, rollout_steps)
         input_ids = tokens["input_ids"]
@@ -346,10 +352,15 @@ class OAPLTrainer:
             device=input_ids.device if hasattr(input_ids, "device") else "cpu",
         )
 
-        # Current policy log-probs (with gradient)
-        log_probs, valid_mask = model_engine.compute_log_probs(
-            input_ids, labels, use_reference=False,
+        # Current policy log-probs + entropy (with gradient)
+        result = model_engine.compute_log_probs(
+            input_ids, labels, use_reference=False, return_entropy=True,
         )
+        if len(result) == 3:
+            log_probs, valid_mask, per_token_entropy = result
+        else:
+            log_probs, valid_mask = result
+            per_token_entropy = None
 
         # Reference policy log-probs (no gradient, LoRA disabled)
         with torch.no_grad():
@@ -374,6 +385,14 @@ class OAPLTrainer:
         if valid_count == 0:
             return None
 
+        # Compute mean entropy over valid model-generated tokens
+        mean_entropy = 0.0
+        if per_token_entropy is not None:
+            masked_entropy = per_token_entropy * combined_mask.float()
+            mean_entropy = float(
+                masked_entropy.sum().item() / max(valid_count.item(), 1)
+            )
+
         # Apply mask: zero out tool-output token log-ratios.
         # Use the sequence-level sum (not per-token average) because
         # ln(π(y|x)/π_ref(y|x)) = Σ_t ln(π(y_t|...)/π_ref(y_t|...))
@@ -389,7 +408,7 @@ class OAPLTrainer:
 
         loss_i.backward()
 
-        return (loss_i.item(), tok_total, tok_masked)
+        return (loss_i.item(), tok_total, tok_masked, mean_entropy)
 
     # ------------------------------------------------------------------
     # Tool-output range detection
