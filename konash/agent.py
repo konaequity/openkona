@@ -170,16 +170,11 @@ class Agent:
         and ``reasoning`` as fallbacks for GLM 4.5 Air which puts answers
         in a separate reasoning field instead of ``content``.
         """
+        # First pass: look for a genuine final answer (no tool calls)
         for message in reversed(conversation_history):
             if message.get("role") != "assistant":
                 continue
-            # Skip messages that are purely tool calls with no textual content
-            has_text = (
-                message.get("content")
-                or message.get("reasoning_content")
-                or message.get("reasoning")
-            )
-            if message.get("tool_calls") and not has_text:
+            if message.get("tool_calls"):
                 continue
             content = (
                 message.get("content")
@@ -189,6 +184,26 @@ class Agent:
             )
             if content:
                 return content
+
+        # Second pass: if no non-tool-call answer found (e.g. GLM via Zhipu
+        # always makes tool calls), use the last reasoning content as the
+        # answer — this is better than returning None.
+        # Skip compression placeholders and tool results.
+        for message in reversed(conversation_history):
+            if message.get("role") != "assistant":
+                continue
+            reasoning = (
+                message.get("reasoning_content")
+                or message.get("reasoning")
+                or ""
+            )
+            if not reasoning or len(reasoning) < 50:
+                continue
+            # Skip compression placeholder messages
+            if reasoning.startswith("[Compressed:"):
+                continue
+            return reasoning
+
         return None
 
     # ------------------------------------------------------------------
