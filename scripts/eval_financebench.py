@@ -30,7 +30,9 @@ from rich import box
 console = Console()
 
 TOGETHER_API_BASE = "https://api.together.xyz/v1"
+OPENAI_API_BASE = "https://api.openai.com/v1"
 DEFAULT_MODEL = "zai-org/GLM-4.5-Air-FP8"
+DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
 
 
 def load_eval_questions(corpus_dir: str, limit: int | None = None) -> list[dict]:
@@ -228,9 +230,11 @@ def main():
     parser.add_argument("--workers", type=int, default=4, help="Concurrent eval threads (default: 4)")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Model ID")
     parser.add_argument("--api-key", default=None, help="Together AI API key")
+    parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL, help="Judge model (default: gpt-4o-mini)")
+    parser.add_argument("--judge-key", default=None, help="OpenAI API key for judge (or set OPENAI_API_KEY)")
     args = parser.parse_args()
 
-    # Resolve API key
+    # Resolve Together AI key (for solver)
     api_key = args.api_key or os.environ.get("TOGETHER_API_KEY")
     if not api_key:
         config_path = os.path.expanduser("~/.konash/config.json")
@@ -238,8 +242,20 @@ def main():
             with open(config_path) as f:
                 api_key = json.load(f).get("together_api_key")
     if not api_key:
-        console.print("[red]No API key.[/] Run [cyan]konash setup[/] first.")
+        console.print("[red]No Together AI key.[/] Run [cyan]konash setup[/] first.")
         sys.exit(1)
+
+    # Resolve OpenAI key (for judge) — falls back to Together AI if not set
+    judge_key = args.judge_key or os.environ.get("OPENAI_API_KEY")
+    if judge_key:
+        judge_api_base = OPENAI_API_BASE
+        judge_model = args.judge_model
+    else:
+        console.print("  [yellow]No OpenAI key — using solver model as judge (less accurate)[/]")
+        console.print("  [dim]Set OPENAI_API_KEY for gpt-4o-mini judge (matches KARL paper)[/]")
+        judge_api_base = TOGETHER_API_BASE
+        judge_model = args.model
+        judge_key = api_key
 
     # Step 1: Download FinanceBench
     console.print()
@@ -261,13 +277,14 @@ def main():
 
     from konash.api import _OpenAILLMClient
     judge_client = _OpenAILLMClient(
-        api_base=TOGETHER_API_BASE,
-        api_key=api_key,
-        model=args.model,
+        api_base=judge_api_base,
+        api_key=judge_key,
+        model=judge_model,
         temperature=0.0,
     )
     judge = LLMNuggetJudge(llm_fn=judge_client.generate)
     scorer = NuggetScorer(judge=judge)
+    console.print(f"  Judge: {judge_model} via {judge_api_base.split('//')[1].split('/')[0]}")
 
     # Step 3: Create agent
     from konash.api import Agent
