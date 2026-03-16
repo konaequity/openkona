@@ -249,6 +249,28 @@ class Environment:
             if step_record["done"]:
                 break
 
+        # If the agent exhausted max_steps without terminating (common with
+        # GLM via Zhipu which always makes tool calls), force one final
+        # generation with tool_choice="none" to get an answer.
+        if not self._done and self.conversation_history:
+            try:
+                final_kwargs = dict(kwargs)
+                final_kwargs["tool_choice"] = "none"
+                response = agent.generate_step(
+                    self.conversation_history,
+                    available_tools=self.available_tools,
+                    **final_kwargs,
+                )
+                self.conversation_history.append(response)
+                trajectory.append({
+                    "agent_response": response,
+                    "tool_results": [],
+                    "done": True,
+                    "step_index": self._step_count + 1,
+                })
+            except Exception:
+                pass  # Best-effort; extract_final_answer will still try
+
         # Extract final answer
         final_answer = None
         if hasattr(agent, "extract_final_answer"):

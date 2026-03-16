@@ -27,7 +27,7 @@ root_app = Flask(__name__)
 
 @root_app.route("/")
 def home():
-    return redirect("/arena/")
+    return redirect("/training/")
 
 
 # Combine via WSGI dispatch
@@ -54,9 +54,10 @@ app = PathDispatcher(root_app, {
 })
 
 if __name__ == "__main__":
-    port = int(os.environ.get("KONASH_PORT", 5117))
+    port = int(os.environ.get("KONASH_PORT", 5050))
     print(f"\n  KONASH Eval Tools")
     print(f"  http://localhost:{port}\n")
-    print(f"  /arena   — Model comparison arena")
-    print(f"  /traces  — Rollout trace viewer\n")
+    print(f"  /training — Training monitor")
+    print(f"  /arena    — Model comparison arena")
+    print(f"  /traces   — Rollout trace viewer\n")
     run_simple("0.0.0.0", port, app, use_debugger=True, use_reloader=True, threaded=True)

@@ -6,50 +6,50 @@
 <title>KONASH Arena</title>
 <style>
 /* ================================================================
-   CSS Variables — Dark Theme Color System
+   CSS Variables — Swiss (International Typographic Style) Light Theme
    ================================================================ */
 :root {
-  --bg-primary:    #0D1117;
-  --bg-secondary:  #161B22;
-  --bg-tertiary:   #1C2128;
-  --bg-card:       #21262D;
-  --bg-card-hover: #282E36;
-  --bg-input:      #0D1117;
+  --bg-primary: #FFFFFF;
+  --bg-secondary: #F7F7F7;
+  --bg-tertiary: #EFEFEF;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #FAFAFA;
+  --bg-input: #FFFFFF;
 
-  --border:        #30363D;
-  --border-light:  #3B434B;
+  --border: #DCDCDC;
+  --border-light: #E8E8E8;
 
-  --text-primary:  #E6EDF3;
-  --text-secondary:#8B949E;
-  --text-muted:    #6E7681;
-  --text-link:     #58A6FF;
+  --text-primary: #111111;
+  --text-secondary: #555555;
+  --text-muted: #999999;
+  --text-link: #0055CC;
 
-  --accent-blue:   #388BFD;
-  --accent-blue-dim: #1F6FEB;
-  --accent-yellow: #E3B341;
-  --accent-yellow-dim: #9E6A03;
-  --accent-green:  #3FB950;
-  --accent-green-dim: #238636;
-  --accent-red:    #F85149;
-  --accent-purple: #A371F7;
-  --accent-gray:   #484F58;
+  --accent-blue: #0055CC;
+  --accent-blue-dim: #003D99;
+  --accent-yellow: #CC8800;
+  --accent-yellow-dim: #996600;
+  --accent-green: #1B7A3D;
+  --accent-green-dim: #145C2E;
+  --accent-red: #D50000;
+  --accent-purple: #6B3FA0;
+  --accent-gray: #888888;
 
-  --badge-a-bg:    #E3B341;
-  --badge-a-text:  #0D1117;
-  --badge-b-bg:    #388BFD;
-  --badge-b-text:  #FFFFFF;
+  --badge-a-bg: #CC8800;
+  --badge-a-text: #FFFFFF;
+  --badge-b-bg: #0055CC;
+  --badge-b-text: #FFFFFF;
 
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+  --font-sans: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-mono: 'SF Mono', Monaco, 'Cascadia Mono', Consolas, monospace;
 
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-pill: 9999px;
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
+  --radius-pill: 2px;
 
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
-  --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.06);
+  --shadow-lg: 0 4px 16px rgba(0,0,0,0.08);
 
   --transition-fast: 150ms ease;
   --transition-normal: 250ms ease;
@@ -78,37 +78,44 @@ body {
    Top Bar
    ================================================================ */
 .topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 24px;
-  background: var(--bg-secondary);
+  background: var(--bg-primary);
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
   z-index: 100;
 }
 
+.topbar-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .topbar-left {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 20px;
 }
 
 .logo {
   font-size: 1.15rem;
   font-weight: 700;
   color: var(--text-primary);
-  letter-spacing: -0.02em;
+  letter-spacing: 0.04em;
   display: flex;
   align-items: center;
   gap: 8px;
+  text-transform: uppercase;
 }
 
 .logo-icon {
   width: 26px;
   height: 26px;
-  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+  background: var(--accent-red);
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
@@ -120,18 +127,15 @@ body {
 
 .nav-tabs {
   display: flex;
-  background: var(--bg-tertiary);
-  border-radius: var(--radius-pill);
-  padding: 3px;
-  gap: 2px;
+  gap: 0;
 }
 
 .nav-tab {
   padding: 6px 16px;
-  border-radius: var(--radius-pill);
   border: none;
+  border-bottom: 2px solid transparent;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   font-size: 0.8rem;
   font-weight: 500;
   cursor: pointer;
@@ -141,13 +145,12 @@ body {
 }
 
 .nav-tab.active {
-  background: var(--accent-blue);
-  color: white;
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-red);
 }
 
 .nav-tab:hover:not(.active) {
-  color: var(--text-primary);
-  background: var(--bg-card);
+  color: var(--text-secondary);
 }
 
 .topbar-right {
@@ -160,7 +163,7 @@ body {
   padding: 6px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--bg-tertiary);
+  background: var(--bg-primary);
   color: var(--text-secondary);
   font-size: 0.8rem;
   cursor: pointer;
@@ -172,32 +175,32 @@ body {
 }
 
 .topbar-btn:hover {
-  background: var(--bg-card);
+  background: var(--bg-secondary);
   color: var(--text-primary);
-  border-color: var(--border-light);
+  border-color: var(--border);
 }
 
 /* ================================================================
    Main Layout
    ================================================================ */
 .container {
-  max-width: 1480px;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 20px 24px 120px;
+  padding: 28px 24px 120px;
 }
 
 /* ================================================================
    Question Input
    ================================================================ */
 .question-section {
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .question-bar {
   display: flex;
   align-items: stretch;
   gap: 10px;
-  background: var(--bg-secondary);
+  background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 10px 14px;
@@ -232,7 +235,7 @@ body {
   padding: 8px 20px;
   border-radius: var(--radius-sm);
   border: none;
-  background: var(--accent-blue);
+  background: var(--accent-red);
   color: white;
   font-size: 0.85rem;
   font-weight: 600;
@@ -244,7 +247,7 @@ body {
   gap: 6px;
 }
 
-.btn-run:hover { background: var(--accent-blue-dim); }
+.btn-run:hover { background: #B00000; }
 .btn-run:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -257,7 +260,7 @@ body {
   display: flex;
   align-items: center;
   gap: 16px;
-  margin-top: 10px;
+  margin-top: 12px;
   padding: 0 4px;
   flex-wrap: wrap;
 }
@@ -269,24 +272,24 @@ body {
 }
 
 .config-label {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: var(--text-muted);
-  font-weight: 500;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
 }
 
 .config-select {
   padding: 5px 28px 5px 10px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--bg-secondary);
+  background: var(--bg-primary);
   color: var(--text-primary);
   font-size: 0.8rem;
   font-family: var(--font-sans);
   cursor: pointer;
   appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238B949E'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23999999'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 8px center;
   min-width: 180px;
@@ -301,7 +304,7 @@ body {
   padding: 5px 10px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--bg-secondary);
+  background: var(--bg-primary);
   color: var(--text-primary);
   font-size: 0.8rem;
   font-family: var(--font-mono);
@@ -327,7 +330,7 @@ body {
   position: relative;
   width: 34px;
   height: 18px;
-  background: var(--accent-gray);
+  background: var(--border);
   border-radius: var(--radius-pill);
   transition: background var(--transition-fast);
   cursor: pointer;
@@ -343,10 +346,11 @@ body {
   background: white;
   border-radius: 50%;
   transition: transform var(--transition-fast);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.1);
 }
 
 .toggle-switch.active {
-  background: var(--accent-blue);
+  background: var(--accent-red);
 }
 
 .toggle-switch.active::after {
@@ -366,11 +370,11 @@ body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .column {
-  background: var(--bg-secondary);
+  background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
@@ -384,7 +388,7 @@ body {
   justify-content: space-between;
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-tertiary);
+  background: var(--bg-secondary);
 }
 
 .col-header-left {
@@ -396,7 +400,7 @@ body {
 .col-badge {
   width: 28px;
   height: 28px;
-  border-radius: 50%;
+  border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -439,28 +443,28 @@ body {
   gap: 5px;
   font-size: 0.75rem;
   padding: 3px 10px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   font-weight: 500;
 }
 
 .status-badge.idle {
   color: var(--text-muted);
-  background: var(--bg-card);
+  background: var(--bg-tertiary);
 }
 
 .status-badge.running {
   color: var(--accent-blue);
-  background: rgba(56, 139, 253, 0.1);
+  background: rgba(0, 85, 204, 0.08);
 }
 
 .status-badge.complete {
   color: var(--accent-green);
-  background: rgba(63, 185, 80, 0.1);
+  background: rgba(27, 122, 61, 0.08);
 }
 
 .status-badge.error {
   color: var(--accent-red);
-  background: rgba(248, 81, 73, 0.1);
+  background: rgba(213, 0, 0, 0.08);
 }
 
 .status-dot {
@@ -502,7 +506,7 @@ body {
   border-radius: 3px;
 }
 .col-body::-webkit-scrollbar-thumb:hover {
-  background: var(--border-light);
+  background: var(--text-muted);
 }
 
 /* Empty State */
@@ -549,7 +553,7 @@ body {
 }
 
 .step-card:hover {
-  border-color: var(--border-light);
+  border-color: var(--border);
 }
 
 .step-header {
@@ -578,17 +582,17 @@ body {
 }
 
 .step-icon.retrieval {
-  background: rgba(56, 139, 253, 0.15);
+  background: rgba(0, 85, 204, 0.08);
   color: var(--accent-blue);
 }
 
 .step-icon.reasoning {
-  background: rgba(163, 113, 247, 0.15);
+  background: rgba(107, 63, 160, 0.08);
   color: var(--accent-purple);
 }
 
 .step-icon.answer {
-  background: rgba(63, 185, 80, 0.15);
+  background: rgba(27, 122, 61, 0.08);
   color: var(--accent-green);
 }
 
@@ -647,7 +651,7 @@ body {
 .step-card.expanded .step-body::-webkit-scrollbar { width: 5px; }
 .step-card.expanded .step-body::-webkit-scrollbar-track { background: transparent; }
 .step-card.expanded .step-body::-webkit-scrollbar-thumb {
-  background: var(--border-light);
+  background: var(--border);
   border-radius: 3px;
 }
 .step-card.expanded .step-body::-webkit-scrollbar-thumb:hover {
@@ -668,7 +672,7 @@ body {
 }
 
 .retrieval-result {
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 8px 10px;
@@ -700,7 +704,7 @@ body {
 
 /* Search query display */
 .search-query {
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 6px 10px;
@@ -727,8 +731,8 @@ body {
 /* Answer text */
 .answer-text {
   padding: 10px 12px;
-  background: rgba(63, 185, 80, 0.08);
-  border: 1px solid rgba(63, 185, 80, 0.2);
+  background: rgba(27, 122, 61, 0.05);
+  border: 1px solid rgba(27, 122, 61, 0.2);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   line-height: 1.6;
@@ -740,7 +744,7 @@ body {
 .answer-text::-webkit-scrollbar { width: 5px; }
 .answer-text::-webkit-scrollbar-track { background: transparent; }
 .answer-text::-webkit-scrollbar-thumb {
-  background: rgba(63, 185, 80, 0.3);
+  background: rgba(27, 122, 61, 0.3);
   border-radius: 3px;
 }
 
@@ -748,10 +752,10 @@ body {
    Voting Panel
    ================================================================ */
 .voting-panel {
-  background: var(--bg-secondary);
+  background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 20px 24px;
+  padding: 24px;
   opacity: 0.4;
   pointer-events: none;
   transition: all var(--transition-normal);
@@ -786,9 +790,9 @@ body {
 .vote-subtitle kbd {
   display: inline-block;
   padding: 1px 6px;
-  background: var(--bg-card);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 0.7rem;
   color: var(--text-secondary);
@@ -838,7 +842,7 @@ body {
 .vote-btn {
   padding: 10px 28px;
   border-radius: var(--radius-md);
-  border: 2px solid transparent;
+  border: 1px solid var(--border);
   font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
@@ -849,6 +853,7 @@ body {
   gap: 6px;
   min-width: 120px;
   justify-content: center;
+  background: var(--bg-primary);
 }
 
 .vote-btn:disabled {
@@ -857,12 +862,11 @@ body {
 }
 
 .vote-btn.left {
-  background: rgba(227, 179, 65, 0.15);
   border-color: var(--accent-yellow);
   color: var(--accent-yellow);
 }
 .vote-btn.left:hover:not(:disabled) {
-  background: rgba(227, 179, 65, 0.25);
+  background: rgba(204, 136, 0, 0.08);
 }
 .vote-btn.left.selected {
   background: var(--accent-yellow);
@@ -870,12 +874,11 @@ body {
 }
 
 .vote-btn.tie {
-  background: rgba(72, 79, 88, 0.3);
   border-color: var(--accent-gray);
   color: var(--text-secondary);
 }
 .vote-btn.tie:hover:not(:disabled) {
-  background: rgba(72, 79, 88, 0.5);
+  background: rgba(136, 136, 136, 0.08);
   color: var(--text-primary);
 }
 .vote-btn.tie.selected {
@@ -884,12 +887,11 @@ body {
 }
 
 .vote-btn.right {
-  background: rgba(56, 139, 253, 0.15);
   border-color: var(--accent-blue);
   color: var(--accent-blue);
 }
 .vote-btn.right:hover:not(:disabled) {
-  background: rgba(56, 139, 253, 0.25);
+  background: rgba(0, 85, 204, 0.08);
 }
 .vote-btn.right.selected {
   background: var(--accent-blue);
@@ -915,7 +917,7 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.3);
   z-index: 200;
   align-items: center;
   justify-content: center;
@@ -926,7 +928,7 @@ body {
 }
 
 .modal {
-  background: var(--bg-secondary);
+  background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   width: 90%;
@@ -976,9 +978,9 @@ body {
 .leaderboard-table th {
   text-align: left;
   padding: 8px 12px;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   color: var(--text-muted);
   border-bottom: 1px solid var(--border);
   font-weight: 600;
@@ -987,7 +989,7 @@ body {
 .leaderboard-table td {
   padding: 10px 12px;
   font-size: 0.85rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-light);
 }
 
 .leaderboard-table tr:last-child td {
@@ -1046,9 +1048,9 @@ body {
 }
 
 .about-content code {
-  background: var(--bg-card);
+  background: var(--bg-secondary);
   padding: 2px 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 0.85em;
   color: var(--accent-blue);
@@ -1069,7 +1071,7 @@ body {
   top: 100%;
   right: 0;
   margin-top: 6px;
-  background: var(--bg-secondary);
+  background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 12px 16px;
@@ -1093,7 +1095,7 @@ body {
 .settings-group-label {
   font-size: 0.7rem;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   color: var(--text-muted);
   margin-bottom: 6px;
   font-weight: 600;
@@ -1132,8 +1134,8 @@ body {
   justify-content: center;
   gap: 10px;
   padding: 10px;
-  background: rgba(56, 139, 253, 0.1);
-  border: 1px solid rgba(56, 139, 253, 0.3);
+  background: rgba(0, 85, 204, 0.06);
+  border: 1px solid rgba(0, 85, 204, 0.2);
   border-radius: var(--radius-md);
   margin-bottom: 16px;
   font-size: 0.85rem;
@@ -1147,7 +1149,7 @@ body {
 .share-link {
   font-family: var(--font-mono);
   font-size: 0.8rem;
-  background: var(--bg-card);
+  background: var(--bg-secondary);
   padding: 3px 8px;
   border-radius: var(--radius-sm);
   user-select: all;
@@ -1157,7 +1159,7 @@ body {
   padding: 4px 10px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--bg-tertiary);
+  background: var(--bg-primary);
   color: var(--text-secondary);
   font-size: 0.75rem;
   cursor: pointer;
@@ -1165,7 +1167,7 @@ body {
 }
 
 .btn-copy:hover {
-  background: var(--bg-card);
+  background: var(--bg-secondary);
   color: var(--text-primary);
 }
 
@@ -1176,7 +1178,7 @@ body {
   width: 16px;
   height: 16px;
   border: 2px solid var(--border);
-  border-top-color: var(--accent-blue);
+  border-top-color: var(--accent-red);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -1197,7 +1199,7 @@ body {
     align-items: flex-start;
     gap: 10px;
   }
-  .topbar {
+  .topbar-inner {
     flex-wrap: wrap;
     gap: 8px;
   }
@@ -1210,6 +1212,7 @@ body {
      Top Bar
      ================================================================ -->
 <div class="topbar">
+<div class="topbar-inner">
   <div class="topbar-left">
     <div class="logo">
       <div class="logo-icon">K</div>
@@ -1218,12 +1221,17 @@ body {
     <div class="nav-tabs">
       <a href="/arena/" class="nav-tab active">Arena</a>
       <a href="/traces/" class="nav-tab">Traces</a>
+      <a href="/training/" class="nav-tab">Training</a>
     </div>
   </div>
   <div class="topbar-right" style="position:relative;">
     <button class="topbar-btn" id="btnLeaderboard" title="Leaderboard">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="12" width="5" height="10" rx="1"/><rect x="9.5" y="4" width="5" height="18" rx="1"/><rect x="17" y="8" width="5" height="14" rx="1"/></svg>
       Leaderboard
+    </button>
+    <button class="topbar-btn" id="btnAbout" title="About">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      About
     </button>
     <button class="topbar-btn" id="btnSettings" title="Settings">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.32 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -1248,6 +1256,7 @@ body {
       </div>
     </div>
   </div>
+</div>
 </div>
 
 <!-- ================================================================

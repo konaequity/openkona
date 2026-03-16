@@ -182,7 +182,8 @@ class Agent:
                 or message.get("reasoning")
                 or ""
             )
-            if content:
+            # Skip compression placeholders injected by CompressionPlugin
+            if content and not content.startswith("[Compressed:"):
                 return content
 
         # Second pass: if no non-tool-call answer found (e.g. GLM via Zhipu

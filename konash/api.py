@@ -104,6 +104,8 @@ class _OpenAILLMClient:
         }
         if kwargs.get("tools"):
             body["tools"] = kwargs["tools"]
+        if kwargs.get("tool_choice"):
+            body["tool_choice"] = kwargs["tool_choice"]
         if kwargs.get("stop"):
             body["stop"] = kwargs["stop"]
 
