@@ -272,7 +272,7 @@ function renderRolloutData(data) {
     html += `</div></div>`;
 
     if (g.reference_answer) {
-      html += `<div class="group-answer">Reference: ${escapeHtml(g.reference_answer.substring(0, 200))}</div>`;
+      html += `<div class="group-answer">Reference: ${escapeHtml(g.reference_answer)}</div>`;
     }
 
     // Expandable rollout details
@@ -284,7 +284,7 @@ function renderRolloutData(data) {
       html += `<span class="rollout-label">${passIcon} Rollout ${ri + 1} (${r.num_steps} steps)</span>`;
       html += `</div>`;
       if (r.final_answer) {
-        html += `<div class="rollout-answer">${escapeHtml(r.final_answer.substring(0, 300))}</div>`;
+        html += `<div class="rollout-answer">${escapeHtml(r.final_answer)}</div>`;
       }
       html += '<div class="step-list">';
       (r.steps || []).forEach((s, si) => {

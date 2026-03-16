@@ -467,7 +467,7 @@ def training_rollouts(project: str):
                                     {
                                         "type": s.get("type", ""),
                                         "query": s.get("query", ""),
-                                        "thought": (s.get("thought") or "")[:200],
+                                        "thought": s.get("thought") or "",
                                         "num_results": len(s.get("results", [])) if isinstance(s.get("results"), list) else 0,
                                     }
                                     for s in r.get("steps", [])
