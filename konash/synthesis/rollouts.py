@@ -5,6 +5,7 @@ import logging
 import random
 import re as _re
 import threading
+import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
@@ -64,6 +65,23 @@ class RolloutGroup:
     @property
     def size(self) -> int:
         return len(self.rollouts)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RolloutGroup":
+        """Reconstruct a RolloutGroup from a checkpoint dict."""
+        rollouts = [
+            Rollout(
+                steps=r.get("steps", []),
+                final_answer=r.get("final_answer"),
+                passed=r.get("passed"),
+            )
+            for r in data.get("rollouts", [])
+        ]
+        return cls(
+            prompt=data.get("prompt", ""),
+            reference_answer=data.get("reference_answer"),
+            rollouts=rollouts,
+        )
 
     def __repr__(self) -> str:
         return f"RolloutGroup(n={self.size}, pass_rate={self.pass_rate:.2f})"
@@ -293,6 +311,9 @@ class RolloutGenerator:
         )
 
         # -- Run through the harness --
+        t_start = _time.monotonic()
+        logger.debug("rollout_start qa=%d rollout=%d max_steps=%d", qa_idx, rollout_id, self.max_steps)
+
         env.reset(prompt=prompt)
         result = env.run_episode(agent, max_steps=self.max_steps)
 
@@ -311,6 +332,12 @@ class RolloutGenerator:
                 final_answer, reference_answer,
                 question=prompt, nuggets=nuggets,
             )
+
+        elapsed = _time.monotonic() - t_start
+        logger.info(
+            "rollout_done qa=%d rollout=%d steps=%d passed=%s elapsed=%.1fs",
+            qa_idx, rollout_id, len(steps), passed, elapsed,
+        )
 
         return Rollout(
             steps=steps,

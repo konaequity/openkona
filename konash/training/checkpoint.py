@@ -133,3 +133,111 @@ def load_synthesis_incremental(
     if data and isinstance(data, dict) and "examples" in data:
         return data
     return None
+
+
+# ---------------------------------------------------------------------------
+# Incremental rollout checkpoints
+# ---------------------------------------------------------------------------
+
+_ROLLOUT_INCREMENTAL_FILENAME = "rollouts_incremental.json"
+
+
+def save_rollout_incremental(
+    project_checkpoint_dir: str,
+    iteration: int,
+    groups_data: list[dict],
+    completed_count: int,
+    total_count: int,
+) -> str:
+    """Atomically save incremental rollout progress.
+
+    Called every N completed QA pairs so a crash during rollout
+    generation loses at most N groups of work.
+    """
+    d = checkpoint_dir(project_checkpoint_dir, iteration)
+    target = os.path.join(d, _ROLLOUT_INCREMENTAL_FILENAME)
+
+    payload = {
+        "version": 1,
+        "phase": "rollouts_incremental",
+        "iteration": iteration,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "completed_count": completed_count,
+        "total_count": total_count,
+        "groups": groups_data,
+    }
+
+    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f, default=str)
+        os.replace(tmp, target)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+    return target
+
+
+def load_rollout_incremental(
+    project_checkpoint_dir: str,
+    iteration: int,
+) -> Optional[dict]:
+    """Load incremental rollout checkpoint.
+
+    Returns dict with ``groups``, ``completed_count``, ``total_count``
+    or ``None`` if no checkpoint exists.
+    """
+    d = checkpoint_dir(project_checkpoint_dir, iteration)
+    target = os.path.join(d, _ROLLOUT_INCREMENTAL_FILENAME)
+
+    if not os.path.exists(target):
+        return None
+
+    try:
+        with open(target) as f:
+            payload = json.load(f)
+        if isinstance(payload, dict) and "groups" in payload:
+            return {
+                "groups": payload["groups"],
+                "completed_count": payload.get("completed_count", len(payload["groups"])),
+                "total_count": payload.get("total_count", 0),
+            }
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Run manifest
+# ---------------------------------------------------------------------------
+
+
+def save_manifest(
+    project_checkpoint_dir: str,
+    iteration: int,
+    manifest_data: dict,
+) -> str:
+    """Save a manifest listing all artifacts and counts for an iteration."""
+    d = checkpoint_dir(project_checkpoint_dir, iteration)
+    target = os.path.join(d, "manifest.json")
+
+    payload = {
+        "version": 1,
+        "iteration": iteration,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **manifest_data,
+    }
+
+    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f, indent=2, default=str)
+        os.replace(tmp, target)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+    return target

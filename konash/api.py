@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_api_logger = logging.getLogger(__name__)
 
 from konash.corpus import Corpus
 from konash.agent import Agent as BaseAgent
@@ -115,6 +118,7 @@ class _OpenAILLMClient:
             },
         )
 
+        t0 = time.monotonic()
         for attempt in range(4):
             try:
                 with urllib.request.urlopen(req, timeout=120) as resp:
@@ -124,9 +128,22 @@ class _OpenAILLMClient:
                 if e.code in {429, 500, 502, 503, 504} and attempt < 3:
                     retry_after = int(e.headers.get("Retry-After", 0))
                     backoff = max(retry_after, 2 ** attempt)
+                    _api_logger.warning(
+                        "api_retry attempt=%d/4 code=%d backoff=%ds model=%s",
+                        attempt + 1, e.code, backoff, self.model,
+                    )
                     time.sleep(backoff)
                     continue
                 raise
+
+        elapsed = time.monotonic() - t0
+        usage = result.get("usage", {})
+        _api_logger.debug(
+            "api_call model=%s latency=%.2fs tokens_in=%s tokens_out=%s",
+            self.model, elapsed,
+            usage.get("prompt_tokens", "?"),
+            usage.get("completion_tokens", "?"),
+        )
 
         choice = result["choices"][0]
         message = choice["message"]
@@ -423,7 +440,10 @@ class Agent:
             _con = _Console()
 
         from konash.training import checkpoint as ckpt
-        from konash.training.logger import TrainingLogger
+        from konash.training.logger import TrainingLogger, configure_file_logging
+        debug_log_path = configure_file_logging(self.project)
+        _api_logger.info("Debug log: %s", debug_log_path)
+
         self._log = TrainingLogger(self.project)
         log = self._log
         log.start(
@@ -687,6 +707,34 @@ class Agent:
                     _con.print("  [yellow]–[/]  No training data after filtering.")
                 return {}
 
+        # Save run manifest listing all artifacts for this iteration
+        try:
+            from konash.training.logger import configure_file_logging  # noqa: already imported above
+            debug_log = os.path.expanduser(
+                f"~/.konash/projects/{self.project}/training_debug.log"
+            )
+            jsonl_log = os.path.expanduser(
+                f"~/.konash/projects/{self.project}/training.jsonl"
+            )
+            ckpt.save_manifest(
+                self.checkpoint_dir, iteration + 1,
+                {
+                    "artifacts": {
+                        "rollouts_checkpoint": rollouts_path,
+                        "debug_log": debug_log,
+                        "training_log_jsonl": jsonl_log,
+                        "corpus_index_cache": os.path.join(
+                            self.checkpoint_dir, "index_cache",
+                        ),
+                    },
+                    "counts": {
+                        "deduped_examples": len(examples),
+                    },
+                },
+            )
+        except Exception:
+            _api_logger.debug("Failed to save manifest", exc_info=True)
+
         return rollouts_path
 
     def _run_synthesis(
@@ -940,21 +988,40 @@ class Agent:
             judge_fn=_judge_fn,
         )
 
+        # Incremental rollout checkpointing — pass checkpoint_dir so
+        # completed groups are saved every 50 QA pairs
+        rollout_ckpt_dir = self.checkpoint_dir
+
+        # Progress callback → JSONL log
+        import time as _time
+        _rollout_t0 = _time.monotonic()
+
+        def _on_progress(completed: int, total: int) -> None:
+            if hasattr(self, "_log"):
+                self._log.rollout_progress(
+                    iteration=iteration + 1,
+                    completed=completed,
+                    total=total,
+                    elapsed_seconds=_time.monotonic() - _rollout_t0,
+                )
+
+        stage_two_kwargs = dict(
+            examples=examples,
+            num_rollouts=rollouts_per_example,
+            checkpoint_dir=rollout_ckpt_dir,
+            checkpoint_iteration=iteration + 1,
+            on_rollout_progress=_on_progress,
+        )
+
         if verbose:
             with _con.status(
                 f"  [cyan]Generating rollouts "
                 f"({len(examples)} × {rollouts_per_example})...",
                 spinner="dots",
             ):
-                final_examples = pipeline.run_stage_two(
-                    examples=examples,
-                    num_rollouts=rollouts_per_example,
-                )
+                final_examples = pipeline.run_stage_two(**stage_two_kwargs)
         else:
-            final_examples = pipeline.run_stage_two(
-                examples=examples,
-                num_rollouts=rollouts_per_example,
-            )
+            final_examples = pipeline.run_stage_two(**stage_two_kwargs)
 
         if verbose:
             _con.print(
@@ -999,6 +1066,19 @@ class Agent:
                 examples=len(examples),
                 rollouts=total_rollouts,
                 filtered=len(groups),
+            )
+            # Log filter summaries
+            self._log.filter_summary(
+                iteration=iteration + 1,
+                phase="pass_rate",
+                input_count=len(pipeline.rollout_groups),
+                output_count=len(pipeline.filtered_groups),
+            )
+            self._log.filter_summary(
+                iteration=iteration + 1,
+                phase="quality",
+                input_count=len(pipeline.filtered_groups),
+                output_count=len(final_examples),
             )
 
         return rollouts_path

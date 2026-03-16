@@ -21,10 +21,55 @@ Usage::
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from typing import Any, Optional
+
+
+def configure_file_logging(project: str, level: str = "DEBUG") -> str:
+    """Set up file-based logging for all ``konash.*`` modules.
+
+    Creates a ``RotatingFileHandler`` at
+    ``~/.konash/projects/<project>/training_debug.log`` and attaches it
+    to the ``"konash"`` logger.  All modules that call
+    ``logging.getLogger(__name__)`` inherit this handler automatically.
+
+    Safe to call multiple times — skips if a file handler is already
+    attached.
+
+    Returns the path to the log file.
+    """
+    log_dir = os.path.expanduser(f"~/.konash/projects/{project}")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "training_debug.log")
+
+    konash_logger = logging.getLogger("konash")
+
+    # Don't add duplicate handlers on repeated calls
+    if any(
+        isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", "") == os.path.abspath(log_path)
+        for h in konash_logger.handlers
+    ):
+        return log_path
+
+    handler = RotatingFileHandler(
+        log_path,
+        maxBytes=50 * 1024 * 1024,  # 50 MB
+        backupCount=3,
+    )
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)-8s %(name)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    ))
+    handler.setLevel(getattr(logging, level.upper(), logging.DEBUG))
+
+    konash_logger.addHandler(handler)
+    konash_logger.setLevel(logging.DEBUG)
+
+    return log_path
 
 
 class TrainingLogger:
@@ -163,6 +208,40 @@ class TrainingLogger:
             "iterations": iterations,
             "total_seconds": round(total_seconds, 1),
             "stats": stats or [],
+        })
+
+    def rollout_progress(
+        self,
+        *,
+        iteration: int,
+        completed: int,
+        total: int,
+        elapsed_seconds: float = 0,
+    ) -> None:
+        """Log incremental rollout progress (called every N completions)."""
+        self._write("rollout_progress", {
+            "iteration": iteration,
+            "completed": completed,
+            "total": total,
+            "pct": round(completed / total * 100, 1) if total else 0,
+            "elapsed_seconds": round(elapsed_seconds, 1),
+        })
+
+    def filter_summary(
+        self,
+        *,
+        iteration: int,
+        phase: str,
+        input_count: int,
+        output_count: int,
+    ) -> None:
+        """Log a filter phase summary (pass-rate or quality filter)."""
+        self._write("filter_summary", {
+            "iteration": iteration,
+            "phase": phase,
+            "input_count": input_count,
+            "output_count": output_count,
+            "reject_count": input_count - output_count,
         })
 
     def error(self, *, message: str, phase: str = "", iteration: int = 0) -> None:

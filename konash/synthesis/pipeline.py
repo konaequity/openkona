@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable, Dict, List, Optional
 
 from konash.synthesis.qa import QuestionAnswerSynthesizer, SyntheticExample
 from konash.synthesis.rollouts import RolloutGenerator, RolloutGroup
 from konash.synthesis.filters import PassRateFilter, QualityFilter, GroundingFilter
 from konash.synthesis.dedup import EmbeddingDeduplicator, DeduplicationAgent
 from konash.synthesis.config import SynthesisTaskConfig, QualityFilterConfig
+
+logger = logging.getLogger(__name__)
 
 
 class SynthesisPipeline:
@@ -109,6 +114,10 @@ class SynthesisPipeline:
         num_rollouts: Optional[int] = None,
         reference_documents: Optional[List[str]] = None,
         parallel_workers: int = 4,
+        checkpoint_dir: Optional[str] = None,
+        checkpoint_iteration: int = 1,
+        checkpoint_interval: int = 50,
+        on_rollout_progress: Optional[Callable[[int, int], None]] = None,
     ) -> List[SyntheticExample]:
         """Stage Two: Rollout generation + pass-rate filter + quality filter.
 
@@ -126,6 +135,18 @@ class SynthesisPipeline:
             Documents for quality filter reference-accuracy checking.
         parallel_workers : int
             Number of QA pairs to process in parallel (default 4).
+        checkpoint_dir : str | None
+            Project checkpoint directory for incremental rollout checkpoints.
+            When set, completed rollout groups are saved every
+            *checkpoint_interval* completions so a crash loses at most that
+            many groups.
+        checkpoint_iteration : int
+            Iteration number for checkpoint file placement (1-indexed,
+            matching the convention in ``checkpoint.py``).
+        checkpoint_interval : int
+            Save incremental checkpoint every N completed QA pairs (default 50).
+        on_rollout_progress : callable | None
+            Called with ``(completed, total)`` after each QA pair completes.
 
         Returns
         -------
@@ -144,26 +165,95 @@ class SynthesisPipeline:
         num_qa = len(self.synthetic_examples)
         results: List[Optional[RolloutGroup]] = [None] * num_qa
 
-        def _generate_for_qa(qa_idx_ex):
-            qa_idx, ex = qa_idx_ex
-            return qa_idx, self.rollout_generator.generate_group(
+        # Resume from incremental checkpoint if available
+        skip_indices: set = set()
+        if checkpoint_dir is not None:
+            from konash.training import checkpoint as ckpt
+            existing = ckpt.load_rollout_incremental(
+                checkpoint_dir, checkpoint_iteration,
+            )
+            if existing and existing.get("groups"):
+                for g in existing["groups"]:
+                    qa_idx = g.get("qa_idx")
+                    if qa_idx is not None and qa_idx < num_qa:
+                        skip_indices.add(qa_idx)
+                        results[qa_idx] = RolloutGroup.from_dict(g)
+                logger.info(
+                    "Resumed %d/%d rollout groups from incremental checkpoint",
+                    len(skip_indices), num_qa,
+                )
+
+        # Thread-safe accumulator for incremental checkpointing
+        lock = threading.Lock()
+        completed_count = len(skip_indices)
+        t_start = time.monotonic()
+
+        def _on_group_complete(qa_idx: int, group: RolloutGroup) -> None:
+            nonlocal completed_count
+            with lock:
+                results[qa_idx] = group
+                completed_count += 1
+                current = completed_count
+
+            elapsed = time.monotonic() - t_start
+            logger.info(
+                "rollout_group_complete qa=%d/%d pass_rate=%.2f "
+                "rollouts=%d elapsed=%.1fs",
+                current, num_qa,
+                group.pass_rate if hasattr(group, "pass_rate") else 0.0,
+                len(group.rollouts),
+                elapsed,
+            )
+
+            if on_rollout_progress is not None:
+                on_rollout_progress(current, num_qa)
+
+            # Incremental checkpoint
+            if checkpoint_dir is not None and current % checkpoint_interval == 0:
+                self._save_rollout_checkpoint(
+                    checkpoint_dir, checkpoint_iteration, results, current, num_qa,
+                )
+
+        def _generate_for_qa(qa_idx: int, ex: SyntheticExample):
+            group = self.rollout_generator.generate_group(
                 prompt=ex.question,
                 reference_answer=ex.answer,
                 num_rollouts=rollout_count,
                 qa_idx=qa_idx,
             )
+            _on_group_complete(qa_idx, group)
+            return qa_idx
 
         max_workers = min(parallel_workers, num_qa) if num_qa > 0 else 1
+        futures = []
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            for qa_idx, group in pool.map(
-                _generate_for_qa, enumerate(self.synthetic_examples)
-            ):
-                results[qa_idx] = group
+            for qa_idx, ex in enumerate(self.synthetic_examples):
+                if qa_idx in skip_indices:
+                    continue
+                futures.append(pool.submit(_generate_for_qa, qa_idx, ex))
+
+            # Wait for all to complete (as_completed gives us error propagation)
+            for future in as_completed(futures):
+                future.result()  # raises if the task raised
+
+        # Final incremental checkpoint (captures any groups since last interval)
+        if checkpoint_dir is not None and completed_count > 0:
+            self._save_rollout_checkpoint(
+                checkpoint_dir, checkpoint_iteration, results, completed_count, num_qa,
+            )
 
         self.rollout_groups = [g for g in results if g is not None]
+        logger.info(
+            "Rollout generation complete: %d/%d groups produced",
+            len(self.rollout_groups), num_qa,
+        )
 
         # Phase 2: Pass-rate filtering
         self.filtered_groups = self.estimate_pass_rate(self.rollout_groups)
+        logger.info(
+            "Pass-rate filter: %d -> %d groups",
+            len(self.rollout_groups), len(self.filtered_groups),
+        )
 
         # Phase 3: Quality filtering
         # Map surviving groups back to examples, preserving rollout attempts
@@ -197,8 +287,57 @@ class SynthesisPipeline:
             reference_documents=reference_documents,
             rollout_attempts=rollout_attempts,
         )
+        logger.info(
+            "Quality filter: %d -> %d examples",
+            len(surviving_examples), len(self.final_examples),
+        )
 
         return self.final_examples
+
+    def _save_rollout_checkpoint(
+        self,
+        checkpoint_dir: str,
+        iteration: int,
+        results: List[Optional[RolloutGroup]],
+        completed_count: int,
+        total_count: int,
+    ) -> None:
+        """Save incremental rollout checkpoint."""
+        from konash.training import checkpoint as ckpt
+
+        groups_data = []
+        for qa_idx, group in enumerate(results):
+            if group is None:
+                continue
+            groups_data.append({
+                "qa_idx": qa_idx,
+                "prompt": group.prompt,
+                "reference_answer": getattr(group, "reference_answer", ""),
+                "rollouts": [
+                    {
+                        "steps": r.steps,
+                        "final_answer": r.final_answer,
+                        "passed": r.passed,
+                    }
+                    for r in group.rollouts
+                    if r is not None
+                ],
+            })
+
+        try:
+            ckpt.save_rollout_incremental(
+                checkpoint_dir, iteration,
+                groups_data, completed_count, total_count,
+            )
+            logger.debug(
+                "Saved incremental rollout checkpoint: %d/%d groups",
+                completed_count, total_count,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to save incremental rollout checkpoint", exc_info=True,
+            )
+
 
     def deduplicate(
         self,

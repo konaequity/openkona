@@ -139,12 +139,27 @@ class PassRateFilter:
             if rate is None:
                 continue
 
+            keep = True
             if self.min_pass_rate is not None and rate < self.min_pass_rate:
-                continue
+                keep = False
             if self.max_pass_rate is not None and rate > self.max_pass_rate:
-                continue
+                keep = False
 
-            result.append(group)
+            prompt = getattr(group, "prompt", None) or (
+                group.get("prompt", "") if isinstance(group, dict) else ""
+            )
+            logger.debug(
+                "pass_rate_filter rate=%.3f keep=%s prompt=%.60s",
+                rate, keep, prompt,
+            )
+
+            if keep:
+                result.append(group)
+
+        logger.info(
+            "pass_rate_filter input=%d output=%d rejected=%d",
+            len(groups), len(result), len(groups) - len(result),
+        )
         return result
 
     @staticmethod
@@ -246,6 +261,12 @@ class QualityFilter:
             if self.judge_fn is not None and attempts:
                 result = self._llm_judge_quality(question, answer, example, attempts)
                 if result is not None:
+                    verdict = "valid" if result.get("is_valid", True) else "invalid"
+                    reason = result.get("reason", "")[:80]
+                    logger.debug(
+                        "quality_filter idx=%d verdict=%s reason=%s question=%.60s",
+                        idx, verdict, reason, question,
+                    )
                     if result.get("is_valid", True):
                         passed.append(example)
                     continue
@@ -254,6 +275,10 @@ class QualityFilter:
             if self.checks_ambiguity:
                 ambiguity_result = self.judge_ambiguity(question, answer)
                 if ambiguity_result.get("is_ambiguous", False):
+                    logger.debug(
+                        "quality_filter idx=%d verdict=ambiguous question=%.60s",
+                        idx, question,
+                    )
                     continue
 
             if self.checks_reference_accuracy and reference_documents:
@@ -261,9 +286,18 @@ class QualityFilter:
                     question, answer, reference_documents
                 )
                 if not accuracy_result.get("is_accurate", True):
+                    logger.debug(
+                        "quality_filter idx=%d verdict=inaccurate question=%.60s",
+                        idx, question,
+                    )
                     continue
 
             passed.append(example)
+
+        logger.info(
+            "quality_filter input=%d output=%d rejected=%d",
+            len(examples), len(passed), len(examples) - len(passed),
+        )
         return passed
 
     # -- Paper-faithful unified quality judge (Figures 35-36) ---------------
