@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional
 
 
@@ -141,10 +142,7 @@ class ParallelThinkingStrategy:
         Each rollout gets a fresh copy of the environment so they do not
         share state.
         """
-        rollout_results: List[Dict[str, Any]] = []
-
-        for i in range(self.num_rollouts):
-            # Deep-copy the environment so rollouts are independent
+        def _run_single(i: int) -> Dict[str, Any]:
             env_copy = copy.deepcopy(environment)
             env_copy.reset(prompt=prompt)
             result = env_copy.run_episode(
@@ -153,7 +151,16 @@ class ParallelThinkingStrategy:
                 **kwargs,
             )
             result["rollout_index"] = i
-            rollout_results.append(result)
+            return result
+
+        # Run rollouts concurrently — each is I/O-bound (LLM API calls).
+        n = self.num_rollouts
+        rollout_results: List[Dict[str, Any]] = [None] * n  # type: ignore[list-item]
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            futures = {pool.submit(_run_single, i): i for i in range(n)}
+            for future in as_completed(futures):
+                i = futures[future]
+                rollout_results[i] = future.result()
 
         return rollout_results
 

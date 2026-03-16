@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import re
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 
@@ -99,22 +100,25 @@ class ParallelThinkingEngine:
         if n is None:
             raise ValueError("num_rollouts is required")
 
-        rollouts: List[Dict[str, Any]] = []
-        for i in range(n):
-            if self.agent is not None:
-                rollout = self.agent.generate_rollout(
-                    query, rollout_index=i, context=context
-                )
-            else:
-                # Stub rollout when no agent is wired up (useful for unit tests
-                # and dry-run evaluations).
-                rollout = {
-                    "query": query,
-                    "rollout_index": i,
-                    "steps": [],
-                    "final_answer": None,
-                }
-            rollouts.append(rollout)
+        if self.agent is None:
+            # Stub rollouts when no agent is wired up (unit tests / dry-runs).
+            return [
+                {"query": query, "rollout_index": i, "steps": [], "final_answer": None}
+                for i in range(n)
+            ]
+
+        def _run_single(i: int) -> Dict[str, Any]:
+            return self.agent.generate_rollout(
+                query, rollout_index=i, context=context
+            )
+
+        # Run rollouts concurrently — each is I/O-bound (LLM API calls).
+        rollouts: List[Dict[str, Any]] = [None] * n  # type: ignore[list-item]
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            futures = {pool.submit(_run_single, i): i for i in range(n)}
+            for future in as_completed(futures):
+                i = futures[future]
+                rollouts[i] = future.result()
         return rollouts
 
     def extract_answers(

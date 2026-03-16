@@ -7,6 +7,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
+from konash.agent import Agent as BaseAgent
+from konash.harness.environment import Environment
+from konash.plugins.compression import CompressionPlugin
+from konash.plugins.control import StepBudgetPlugin
+
 
 class Rollout:
     """A single reasoning rollout: a sequence of steps with a final answer."""
@@ -205,89 +210,96 @@ class RolloutGenerator:
     ) -> Rollout:
         """Generate a single reasoning rollout for a prompt.
 
-        Trajectory structure (matching KARL paper Section 4.1):
-        - Step 0: Initial retrieval (vector search with the question)
-        - Steps 1..N-1: Reasoning — the LLM examines evidence and either:
-            (a) issues a follow-up search with a refined sub-query, or
-            (b) formulates a final answer
-        - Step N (if no earlier answer): Forced answer from all evidence
+        Uses the same ``Environment`` / ``Agent`` harness as inference
+        (``solve()``), ensuring identical agent behavior during training
+        data collection and serving (KARL paper Section 6.2).
 
         Returns
         -------
         Rollout
         """
-        self._tls.temperature = temperature
-        steps: List[Dict[str, Any]] = []
-        final_answer: Optional[str] = None
+        # -- Build tool executor wrapping our search tool --
+        def _tool_executor(tool_call: Any) -> Dict[str, Any]:
+            query_text = _extract_tool_query(tool_call)
+            results = self._retrieve(query_text, self.top_k)
+            result_text = "\n\n".join(
+                f"[{i+1}] (score: {r.get('score', 0):.3f}) {r.get('text', '')}"
+                if isinstance(r, dict) else f"[{i+1}] {r}"
+                for i, r in enumerate(results)
+            )
+            observation: Dict[str, Any] = {"role": "tool", "content": result_text}
+            if isinstance(tool_call, dict) and tool_call.get("id"):
+                observation["tool_call_id"] = tool_call["id"]
+            return observation
 
-        # Track total context size for compression
-        total_chars = 0
+        # -- Plugins matching the inference path --
+        plugins: List[Any] = [StepBudgetPlugin(max_steps=self.max_steps)]
+        if self.compression_trigger_chars:
+            threshold_tokens = self.compression_trigger_chars // 4
+            plugins.append(CompressionPlugin(
+                threshold_tokens=threshold_tokens,
+                target_tokens=threshold_tokens // 2,
+            ))
 
-        for step_idx in range(self.max_steps):
-            step_record: Dict[str, Any] = {"step": step_idx, "type": None}
+        search_tool_schema = [{
+            "type": "function",
+            "function": {
+                "name": "search",
+                "description": "Search the knowledge base for relevant documents.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query.",
+                        }
+                    },
+                    "required": ["query"],
+                },
+            },
+        }]
 
-            if step_idx == 0:
-                # Step 0: initial retrieval
-                retrieved = self._retrieve(prompt, self.top_k)
-                step_record["type"] = "retrieval"
-                step_record["query"] = prompt
-                step_record["num_results"] = len(retrieved)
-                step_record["results"] = retrieved
-                total_chars += sum(
-                    len(r.get("text", str(r))) if isinstance(r, dict) else len(str(r))
-                    for r in retrieved
-                )
-                steps.append(step_record)
-                self._notify(qa_idx, rollout_id, step_idx, step_record)
-                continue
+        env = Environment(
+            tool_executor=_tool_executor,
+            plugins=plugins,
+            available_tools=search_tool_schema,
+        )
 
-            # Check if we need context compression (KARL paper Section 4.2)
-            if (self.compression_trigger_chars
-                    and total_chars > self.compression_trigger_chars):
-                steps = self._compress_context(steps, prompt)
-                total_chars = sum(
-                    len(str(s.get("thought", ""))) + len(str(s.get("results", "")))
-                    + len(str(s.get("summary", "")))
-                    for s in steps
-                )
+        # -- Build LLM client with temperature support --
+        class _LLMClient:
+            def __init__(self, llm_fn, temp):
+                self._fn = llm_fn
+                self._temp = temp
 
-            # Intermediate reasoning steps
-            if step_idx < self.max_steps - 1:
-                reasoning = self._reason(prompt, steps, step_idx)
-                step_record["type"] = "reasoning"
-                step_record["thought"] = reasoning.get("thought", "")
-                total_chars += len(step_record["thought"])
+            def generate(self, messages, **kwargs):
+                if self._temp is not None:
+                    kwargs.setdefault("temperature", self._temp)
+                return self._fn(messages, **kwargs)
 
-                if reasoning.get("needs_retrieval"):
-                    sub_query = reasoning.get("sub_query", prompt)
-                    retrieved = self._retrieve(sub_query, self.top_k)
-                    step_record["sub_retrieval"] = {
-                        "query": sub_query,
-                        "num_results": len(retrieved),
-                        "results": retrieved,
-                    }
-                    total_chars += sum(
-                        len(r.get("text", str(r))) if isinstance(r, dict) else len(str(r))
-                        for r in retrieved
-                    )
+        # Use the same system prompt as api.py:solve()
+        agent = BaseAgent(
+            llm_client=_LLMClient(self.llm_fn, temperature) if self.llm_fn else None,
+            system_prompt=(
+                "You are a knowledge agent. You have access to a search tool that "
+                "retrieves relevant documents from a knowledge base. Use it to find "
+                "evidence before answering. Search iteratively — refine your queries "
+                "based on what you find. When you have enough evidence, provide a "
+                "clear, well-supported answer."
+            ),
+            max_steps=self.max_steps,
+        )
 
-                if reasoning.get("has_answer"):
-                    final_answer = reasoning["answer"]
-                    step_record["type"] = "answer"
-                    step_record["answer"] = final_answer
-                    steps.append(step_record)
-                    self._notify(qa_idx, rollout_id, step_idx, step_record)
-                    break
+        # -- Run through the harness --
+        env.reset(prompt=prompt)
+        result = env.run_episode(agent, max_steps=self.max_steps)
 
-                steps.append(step_record)
-                self._notify(qa_idx, rollout_id, step_idx, step_record)
-            else:
-                # Last step: force an answer
-                final_answer = self._force_answer(prompt, steps)
-                step_record["type"] = "answer"
-                step_record["answer"] = final_answer
-                steps.append(step_record)
-                self._notify(qa_idx, rollout_id, step_idx, step_record)
+        # -- Convert episode result to Rollout format --
+        steps = _episode_to_steps(result)
+        final_answer = result.get("final_answer")
+
+        # Fire progress callbacks
+        for step in steps:
+            self._notify(qa_idx, rollout_id, step.get("step", 0), step)
 
         # Evaluate pass/fail
         passed = None
@@ -305,6 +317,7 @@ class RolloutGenerator:
                 "rollout_id": rollout_id,
                 "max_steps": self.max_steps,
                 "top_k": self.top_k,
+                "history": result.get("history", []),
             },
         )
 
@@ -332,389 +345,6 @@ class RolloutGenerator:
             return results if isinstance(results, list) else []
         except Exception:
             return []
-
-    def _collect_evidence(self, steps: List[Dict[str, Any]]) -> List[str]:
-        """Gather all retrieved text from the trajectory so far."""
-        evidence: List[str] = []
-        for s in steps:
-            if s.get("type") == "retrieval" and s.get("results"):
-                for r in s["results"]:
-                    if isinstance(r, dict):
-                        evidence.append(r.get("text", str(r)))
-                    else:
-                        evidence.append(str(r))
-            # Also gather sub-retrieval results
-            sub = s.get("sub_retrieval")
-            if sub and sub.get("results"):
-                for r in sub["results"]:
-                    if isinstance(r, dict):
-                        evidence.append(r.get("text", str(r)))
-                    else:
-                        evidence.append(str(r))
-        return evidence
-
-    def _reason(
-        self, prompt: str, steps: List[Dict[str, Any]], step_idx: int,
-    ) -> Dict[str, Any]:
-        """Perform a single reasoning step.
-
-        When ``llm_fn`` is configured, calls the LLM to decide whether to
-        search again or formulate an answer.  Otherwise uses a deterministic
-        heuristic.
-        """
-        evidence = self._collect_evidence(steps)
-
-        if self.llm_fn is not None:
-            return self._reason_with_llm(prompt, steps, evidence, step_idx)
-
-        # Heuristic fallback
-        if evidence:
-            combined = " ".join(evidence[:3])
-            return {
-                "thought": f"Based on retrieved evidence, I can answer: {prompt[:100]}",
-                "has_answer": True,
-                "answer": combined[:500] if combined else "No answer found",
-                "needs_retrieval": False,
-            }
-        return {
-            "thought": f"I need more information to answer: {prompt[:100]}",
-            "has_answer": False,
-            "needs_retrieval": True,
-            "sub_query": prompt,
-        }
-
-    def _reason_with_llm(
-        self,
-        prompt: str,
-        steps: List[Dict[str, Any]],
-        evidence: List[str],
-        step_idx: int,
-    ) -> Dict[str, Any]:
-        """Use the LLM to decide the next reasoning action.
-
-        The system prompt instructs the agent to act as a knowledge-retrieval
-        solver that can search or answer.  It includes the step budget so the
-        LLM knows when to commit to an answer.
-        """
-        evidence_text = "\n".join(f"- {e[:1000]}" for e in evidence[:10])
-        steps_remaining = self.max_steps - step_idx - 1
-
-        # Detect cycling: if we've done 2+ reasoning steps with evidence,
-        # the LLM should answer instead of searching again
-        reasoning_count = sum(1 for s in steps if s.get("type") == "reasoning")
-        should_answer = (
-            steps_remaining <= 1
-            or (evidence and reasoning_count >= 2)
-        )
-
-        if should_answer:
-            # Force answer mode — skip LLM reasoning and go straight to
-            # answer generation to avoid cycling
-            answer = self._force_answer(prompt, steps)
-            return {
-                "thought": f"Sufficient evidence gathered after {reasoning_count} reasoning steps.",
-                "has_answer": True,
-                "answer": answer,
-                "needs_retrieval": False,
-            }
-
-        messages = [
-            {"role": "system", "content": (
-                "You are a knowledge agent solving a question using retrieval. "
-                "You have ONE tool: vector search over a document corpus.\n\n"
-                "Output JSON with ONE of these two forms:\n\n"
-                "If you can answer from the evidence:\n"
-                '{"thought": "...", "has_answer": true, "answer": "your concise answer"}\n\n'
-                "If you need MORE information (only if evidence is clearly missing):\n"
-                '{"thought": "...", "needs_retrieval": true, "sub_query": "specific new query"}\n\n'
-                "IMPORTANT: If the evidence contains the answer, you MUST answer. "
-                "Do NOT search for information you already have."
-            )},
-            {"role": "user", "content": (
-                f"Question: {prompt}\n\n"
-                f"Step: {step_idx}/{self.max_steps} "
-                f"({steps_remaining} steps remaining)\n\n"
-                f"Evidence gathered ({len(evidence)} passages):\n"
-                f"{evidence_text or '(none yet)'}\n\n"
-                "Respond with JSON only."
-            )},
-        ]
-        llm_kwargs = {}
-        _temp = getattr(self._tls, 'temperature', None)
-        if _temp is not None:
-            llm_kwargs['temperature'] = _temp
-        response = self.llm_fn(messages, **llm_kwargs)
-        content = response.get("content", "") if isinstance(response, dict) else str(response)
-
-        # Parse JSON response
-        match = _re.search(r"\{.*\}", content, _re.DOTALL)
-        if match:
-            try:
-                parsed = _json.loads(match.group())
-                return {
-                    "thought": parsed.get("thought", content[:200]),
-                    "has_answer": parsed.get("has_answer", False),
-                    "answer": parsed.get("answer", ""),
-                    "needs_retrieval": parsed.get("needs_retrieval", False),
-                    "sub_query": parsed.get("sub_query", prompt),
-                }
-            except _json.JSONDecodeError:
-                pass
-
-        # If we can't parse JSON, force a clean natural-language answer
-        # instead of leaking raw LLM content (which may be malformed JSON).
-        if evidence:
-            answer = self._force_answer(prompt, steps)
-            return {
-                "thought": content[:200],
-                "has_answer": True,
-                "answer": answer,
-                "needs_retrieval": False,
-            }
-        return {
-            "thought": content[:200],
-            "has_answer": False,
-            "needs_retrieval": True,
-            "sub_query": prompt,
-        }
-
-    def _force_answer(self, prompt: str, steps: List[Dict[str, Any]]) -> str:
-        """Force an answer when max_steps is reached.
-
-        Uses a larger token budget (512) than reasoning steps because
-        thinking models (e.g. Qwen3) spend most tokens inside
-        ``<think>...</think>`` tags which get stripped, leaving little
-        room for the actual answer at the default 256 budget.
-        """
-        evidence = self._collect_evidence(steps)
-        thoughts = [s["thought"] for s in steps if s.get("thought")]
-
-        if self.llm_fn is not None and (evidence or thoughts):
-            evidence_text = "\n".join(f"- {e[:1000]}" for e in evidence[:10])
-            thoughts_text = "\n".join(f"- {t[:200]}" for t in thoughts[:5])
-            messages = [
-                {"role": "system", "content": (
-                    "Answer the question concisely based on the evidence. "
-                    "If the evidence is insufficient, give your best answer. "
-                    "Do NOT output JSON — answer in plain text only."
-                )},
-                {"role": "user", "content": (
-                    f"Question: {prompt}\n\n"
-                    f"Evidence:\n{evidence_text}\n\n"
-                    f"Reasoning so far:\n{thoughts_text}\n\n"
-                    "Final answer:"
-                )},
-            ]
-            # Use a larger token budget so thinking models have room
-            # for <think> tags AND a complete answer.
-            llm_kwargs = {"max_new_tokens": 512}
-            _temp = getattr(self._tls, 'temperature', None)
-            if _temp is not None:
-                llm_kwargs['temperature'] = _temp
-            response = self.llm_fn(messages, **llm_kwargs)
-            content = response.get("content", "") if isinstance(response, dict) else str(response)
-            if content.strip():
-                return content.strip()
-
-        if evidence:
-            return " ".join(evidence[:3])[:500]
-        return f"Unable to determine answer for: {prompt[:200]}"
-
-    def _compress_context(
-        self,
-        steps: List[Dict[str, Any]],
-        prompt: str = "",
-    ) -> List[Dict[str, Any]]:
-        """Compress the trajectory context using LLM-generated summarization.
-
-        Matches the KARL paper's compression mechanism (Section 4.2):
-
-        - **The agent compresses its own history** — the same LLM that runs
-          the search trajectory produces the summary.
-        - Achieves ~100x reduction (e.g. 112K chars -> ~1,100 chars) while
-          preserving conclusions, key evidence, and reasoning state.
-        - Compression quality improves through RL training because bad
-          compressions lead to wrong answers and low reward.
-
-        When no ``llm_fn`` is available, falls back to a mechanical
-        keep-first-and-last truncation strategy.
-
-        Parameters
-        ----------
-        steps : list[dict]
-            The trajectory steps accumulated so far.
-        prompt : str
-            The question being answered — included so the LLM knows what
-            information is most important to retain.
-
-        Returns
-        -------
-        list[dict]
-            Compressed trajectory with a ``compression`` step marker.
-        """
-        if self.llm_fn is not None:
-            # LLM compression can handle any number of steps
-            if len(steps) <= 1:
-                return steps
-            return self._llm_compress(steps, prompt)
-
-        # Mechanical fallback needs at least 4 steps (first + middle + last 2)
-        if len(steps) <= 3:
-            return steps
-        return self._mechanical_compress(steps)
-
-    def _llm_compress(
-        self,
-        steps: List[Dict[str, Any]],
-        prompt: str,
-    ) -> List[Dict[str, Any]]:
-        """Use the LLM to compress the trajectory (paper-faithful).
-
-        The full trajectory is serialized and sent to the LLM with a
-        compression prompt.  The LLM returns a concise summary preserving
-        key findings, conclusions, and evidence.
-        """
-        # Serialize the trajectory into a readable format
-        trajectory_parts: List[str] = []
-        for s in steps:
-            stype = s.get("type", "unknown")
-            if stype == "retrieval":
-                results = s.get("results", [])
-                docs_preview = []
-                for r in results[:5]:
-                    text = r.get("text", str(r)) if isinstance(r, dict) else str(r)
-                    docs_preview.append(text[:300])
-                trajectory_parts.append(
-                    f"[Step {s.get('step', '?')}] RETRIEVAL for: "
-                    f"{s.get('query', '?')}\n"
-                    f"  Retrieved {s.get('num_results', 0)} documents. "
-                    f"Top results:\n" +
-                    "\n".join(f"  - {d}" for d in docs_preview)
-                )
-            elif stype == "reasoning":
-                thought = s.get("thought", "")
-                part = f"[Step {s.get('step', '?')}] REASONING: {thought}"
-                sub = s.get("sub_retrieval")
-                if sub:
-                    sub_results = sub.get("results", [])
-                    sub_preview = []
-                    for r in sub_results[:3]:
-                        text = r.get("text", str(r)) if isinstance(r, dict) else str(r)
-                        sub_preview.append(text[:200])
-                    part += (
-                        f"\n  Sub-retrieval for: {sub.get('query', '?')}\n" +
-                        "\n".join(f"  - {d}" for d in sub_preview)
-                    )
-                trajectory_parts.append(part)
-            elif stype == "answer":
-                trajectory_parts.append(
-                    f"[Step {s.get('step', '?')}] ANSWER: {s.get('answer', '')}"
-                )
-            elif stype == "compression":
-                trajectory_parts.append(
-                    f"[Step {s.get('step', '?')}] PREVIOUS COMPRESSION: "
-                    f"{s.get('summary', '')}"
-                )
-
-        trajectory_text = "\n\n".join(trajectory_parts)
-
-        # Truncate if the serialized trajectory itself is enormous
-        if len(trajectory_text) > 200_000:
-            trajectory_text = trajectory_text[:200_000] + "\n\n[... truncated ...]"
-
-        messages = [
-            {"role": "system", "content": (
-                "You are compressing your own search trajectory into a concise "
-                "summary. Your goal is to preserve ALL information needed to "
-                "answer the question correctly.\n\n"
-                "What to preserve:\n"
-                "- Any conclusions or candidate answers you have reached\n"
-                "- Key evidence and facts discovered from retrieved documents\n"
-                "- Important entity names, dates, numbers, and relationships\n"
-                "- Which search queries have already been tried\n\n"
-                "What to drop:\n"
-                "- Redundant or irrelevant retrieved passages\n"
-                "- Verbose reasoning that can be stated more concisely\n"
-                "- Document text that doesn't relate to the question\n\n"
-                "Return ONLY the compressed summary. Be concise but complete."
-            )},
-            {"role": "user", "content": (
-                f"Question being answered: {prompt}\n\n"
-                f"Full search trajectory ({len(steps)} steps, "
-                f"{len(trajectory_text)} chars):\n\n"
-                f"{trajectory_text}\n\n"
-                "Compress this trajectory into a summary of roughly "
-                "1000-2000 characters, preserving all critical information "
-                "needed to answer the question."
-            )},
-        ]
-
-        try:
-            response = self.llm_fn(messages)
-            summary = (
-                response.get("content", "")
-                if isinstance(response, dict)
-                else str(response)
-            ).strip()
-
-            if summary:
-                compressed_step: Dict[str, Any] = {
-                    "step": "compressed",
-                    "type": "compression",
-                    "original_steps": len(steps),
-                    "original_chars": len(trajectory_text),
-                    "summary_chars": len(summary),
-                    "summary": summary,
-                }
-                # Keep the most recent step alongside the compression
-                # so the agent has immediate context
-                recent = steps[-1:] if len(steps) > 1 else []
-                return [compressed_step] + recent
-        except Exception:
-            pass
-
-        # LLM call failed — fall back to mechanical compression
-        return self._mechanical_compress(steps)
-
-    @staticmethod
-    def _mechanical_compress(
-        steps: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """Mechanical fallback: keep first + last 2 steps, drop the middle.
-
-        Used only when no LLM is available for proper compression.
-        """
-        if len(steps) <= 3:
-            return steps
-
-        first = steps[0]
-        recent = steps[-2:]
-        middle = steps[1:-2]
-
-        summary_parts = []
-        for s in middle:
-            stype = s.get("type", "?")
-            if stype == "retrieval":
-                summary_parts.append(
-                    f"[retrieval: {s.get('num_results', 0)} docs for "
-                    f"'{s.get('query', '?')[:50]}']"
-                )
-            elif stype == "reasoning":
-                thought = s.get("thought", "")[:100]
-                summary_parts.append(f"[reasoning: {thought}]")
-            elif stype == "answer":
-                summary_parts.append(
-                    f"[answer attempt: {s.get('answer', '')[:100]}]"
-                )
-
-        compressed: Dict[str, Any] = {
-            "step": "compressed",
-            "type": "compression",
-            "original_steps": len(middle),
-            "summary": " | ".join(summary_parts),
-        }
-
-        return [first, compressed] + recent
 
     def _evaluate(
         self,
@@ -919,6 +549,80 @@ class RolloutGenerator:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _extract_tool_query(tool_call: Any) -> str:
+    """Extract the search query string from a tool call dict."""
+    if not isinstance(tool_call, dict):
+        return str(tool_call)
+
+    query_text = tool_call.get("query", "") or tool_call.get("input", "")
+    if query_text:
+        return str(query_text)
+
+    function_call = tool_call.get("function")
+    if isinstance(function_call, dict):
+        arguments = function_call.get("arguments", {})
+        if isinstance(arguments, str):
+            try:
+                arguments = _json.loads(arguments)
+            except _json.JSONDecodeError:
+                return arguments
+        if isinstance(arguments, dict):
+            nested_query = arguments.get("query", "") or arguments.get("input", "")
+            if nested_query:
+                return str(nested_query)
+
+    return str(tool_call)
+
+
+def _episode_to_steps(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Convert an Environment episode result into Rollout step records.
+
+    Preserves the step structure that downstream consumers (OAPL trainer,
+    pass-rate filter, serialization) expect.
+    """
+    steps: List[Dict[str, Any]] = []
+    trajectory = result.get("trajectory", [])
+
+    for idx, step_record in enumerate(trajectory):
+        agent_response = step_record.get("agent_response")
+        tool_results = step_record.get("tool_results", [])
+
+        if agent_response is None:
+            # Plugin terminated early (e.g. step budget exhausted)
+            continue
+
+        step: Dict[str, Any] = {"step": idx}
+
+        if tool_results:
+            # Agent made a tool call — this is a retrieval step
+            content = agent_response.get("content", "")
+            tool_calls = agent_response.get("tool_calls", [])
+            query = ""
+            if tool_calls:
+                query = _extract_tool_query(tool_calls[0])
+
+            tool_content = ""
+            for tr in tool_results:
+                if isinstance(tr, dict):
+                    tool_content += tr.get("content", "")
+
+            step["type"] = "retrieval"
+            step["query"] = query
+            step["thought"] = content
+            step["results_text"] = tool_content
+            step["num_results"] = tool_content.count("[") if tool_content else 0
+        else:
+            # No tool call — this is an answer step
+            content = agent_response.get("content", "")
+            step["type"] = "answer"
+            step["answer"] = content
+            step["thought"] = content
+
+        steps.append(step)
+
+    return steps
 
 
 def _heuristic_evaluate(predicted: str, reference: str) -> bool:

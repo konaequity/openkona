@@ -166,14 +166,36 @@ class SynthesisPipeline:
         self.filtered_groups = self.estimate_pass_rate(self.rollout_groups)
 
         # Phase 3: Quality filtering
-        # Map surviving groups back to examples
-        surviving_prompts = {g.prompt for g in self.filtered_groups}
+        # Map surviving groups back to examples, preserving rollout attempts
+        prompt_to_group = {g.prompt: g for g in self.filtered_groups}
         surviving_examples = [
-            ex for ex in self.synthetic_examples if ex.question in surviving_prompts
+            ex for ex in self.synthetic_examples if ex.question in prompt_to_group
         ]
 
+        # Build per-example rollout attempts for the quality filter
+        # (KARL paper Sections 7.2.1-7.2.2: the quality judge receives the
+        # synthesized question, reference answer, AND solver rollout attempts)
+        rollout_attempts: List[List[Dict[str, Any]]] = []
+        for ex in surviving_examples:
+            group = prompt_to_group.get(ex.question)
+            if group is not None:
+                attempts = [
+                    {
+                        "answer": r.final_answer or "",
+                        "score": 1.0 if r.passed else 0.0,
+                        "passed": r.passed,
+                    }
+                    for r in group.rollouts
+                    if r is not None
+                ]
+                rollout_attempts.append(attempts)
+            else:
+                rollout_attempts.append([])
+
         self.final_examples = self.apply_quality_filter(
-            surviving_examples, reference_documents=reference_documents
+            surviving_examples,
+            reference_documents=reference_documents,
+            rollout_attempts=rollout_attempts,
         )
 
         return self.final_examples
@@ -237,6 +259,7 @@ class SynthesisPipeline:
         self,
         examples: List[SyntheticExample],
         reference_documents: Optional[List[str]] = None,
+        rollout_attempts: Optional[List[List[Dict[str, Any]]]] = None,
     ) -> List[SyntheticExample]:
         """Apply the quality filter to a list of examples.
 
@@ -246,6 +269,11 @@ class SynthesisPipeline:
             Examples to filter.
         reference_documents : list[str] | None
             Source documents for reference-accuracy checking.
+        rollout_attempts : list[list[dict]] | None
+            Per-example solver rollout attempts.  Each attempt dict has
+            ``answer`` (str), ``score`` (float), and ``passed`` (bool).
+            When provided alongside a ``judge_fn``, the paper's structured
+            quality prompts (Figures 35-36) are used.
 
         Returns
         -------
@@ -253,7 +281,9 @@ class SynthesisPipeline:
             Quality-filtered examples.
         """
         return self.quality_filter.apply(
-            examples, reference_documents=reference_documents
+            examples,
+            reference_documents=reference_documents,
+            rollout_attempts=rollout_attempts,
         )
 
     # ------------------------------------------------------------------
