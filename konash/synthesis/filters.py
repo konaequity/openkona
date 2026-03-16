@@ -243,7 +243,7 @@ class QualityFilter:
                 if rollout_attempts is not None and idx < len(rollout_attempts)
                 else None
             )
-            if self.judge_fn is not None and self.task_name and attempts:
+            if self.judge_fn is not None and attempts:
                 result = self._llm_judge_quality(question, answer, example, attempts)
                 if result is not None:
                     if result.get("is_valid", True):
@@ -277,12 +277,15 @@ class QualityFilter:
     ) -> Optional[Dict[str, Any]]:
         """Unified quality check using the KARL paper's exact prompts.
 
-        For BrowseComp-Plus (Figure 35): formats attempts with
-        correct/incorrect labels, checks if ground truth is wrong or
-        question is ambiguous.
+        Prompt selection logic:
 
-        For TREC-Biogen (Figure 36): formats attempts with nugget coverage
-        percentages, includes avg/max/min stats.
+        1. If ``task_name`` explicitly matches a KARL task, use that task's
+           prompt (BrowseComp-Plus → Figure 35, TREC-Biogen → Figure 36).
+        2. Otherwise, inspect the example: if it has ``nuggets``, use the
+           TREC prompt (Figure 36) since nugget-based evaluation applies.
+        3. Default to the BrowseComp-Plus prompt (Figure 35) — it handles
+           the common case of a single ground-truth answer with binary
+           correct/incorrect solver attempts.
 
         Returns
         -------
@@ -290,16 +293,22 @@ class QualityFilter:
             ``{"is_valid": bool, "reason": str}`` on success, ``None`` on
             failure (caller falls back to heuristics).
         """
-        from konash.prompts.registry import PromptRegistry
+        task = (self.task_name or "").lower()
 
-        task = self.task_name or ""
-
-        if "browsecomp" in task.lower() or "BrowseComp" in task:
+        # Explicit task match
+        if "browsecomp" in task:
             return self._judge_browsecomp(question, answer, attempts)
-        elif "trec" in task.lower() or "TRECBiogen" in task:
+        if "trec" in task or "biogen" in task:
             return self._judge_trec(question, answer, example, attempts)
 
-        return None
+        # Infer from example data: nuggets → TREC, otherwise BrowseComp
+        nuggets = getattr(example, "nuggets", None) or (
+            example.get("nuggets") if isinstance(example, dict) else None
+        )
+        if nuggets:
+            return self._judge_trec(question, answer, example, attempts)
+
+        return self._judge_browsecomp(question, answer, attempts)
 
     def _judge_browsecomp(
         self,

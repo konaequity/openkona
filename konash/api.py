@@ -20,6 +20,7 @@ from konash.plugins.control import StepBudgetPlugin
 from konash.inference.parallel import ParallelThinkingEngine
 from konash.inference.aggregation import GenerativeAggregator
 from konash.synthesis.pipeline import SynthesisPipeline
+from konash.synthesis.config import SynthesisTaskConfig
 from konash.synthesis.qa import QuestionAnswerSynthesizer, SyntheticExample
 from konash.synthesis.rollouts import RolloutGenerator
 from konash.training.dataset import OfflineRolloutDataset
@@ -289,6 +290,21 @@ class Agent:
         self._value_model: Optional[Any] = None  # ValueModel for VGS
         self._trained = False
         self._iteration = 0
+        self._task_name = self._infer_task_name()
+
+    def _infer_task_name(self) -> Optional[str]:
+        """Infer the KARL task name from the corpus path.
+
+        Returns a task name recognised by ``PassRateFilter`` and
+        ``QualityFilter`` (e.g. ``"BrowseCompPlus"``, ``"TRECBiogen"``),
+        or ``None`` for unknown / user-supplied corpora.
+        """
+        corpus_path = str(self.corpus.path).lower()
+        if "browsecomp" in corpus_path:
+            return "BrowseCompPlus"
+        if "trec" in corpus_path or "biogen" in corpus_path:
+            return "TRECBiogen"
+        return None
 
     # ------------------------------------------------------------------
     # Presets
@@ -856,6 +872,7 @@ class Agent:
             return generate_fn(messages, **kwargs)
 
         pipeline = SynthesisPipeline(
+            config=SynthesisTaskConfig(task_name=self._task_name),
             synthesizer=QuestionAnswerSynthesizer(
                 vector_search_tool=self.corpus.vector_search,
                 llm_fn=_synthesis_fn,
@@ -904,17 +921,23 @@ class Agent:
             kwargs.setdefault("max_new_tokens", 512)
             return generate_fn(messages, **kwargs)
 
+        def _judge_fn(messages, **kwargs):
+            kwargs.setdefault("max_new_tokens", 1024)
+            return generate_fn(messages, **kwargs)
+
         rollout_gen = RolloutGenerator(
             search_tool=self.corpus.vector_search,
             llm_fn=_rollout_fn,
             max_steps=rollout_max_steps,
         )
         pipeline = SynthesisPipeline(
+            config=SynthesisTaskConfig(task_name=self._task_name),
             synthesizer=QuestionAnswerSynthesizer(
                 vector_search_tool=self.corpus.vector_search,
                 llm_fn=_rollout_fn,
             ),
             rollout_generator=rollout_gen,
+            judge_fn=_judge_fn,
         )
 
         if verbose:

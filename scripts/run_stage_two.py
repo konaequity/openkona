@@ -308,6 +308,7 @@ def main():
 
     pipeline = SynthesisPipeline(
         config=SynthesisTaskConfig(
+            task_name="BrowseCompPlus",
             solver_rollout_count=NUM_ROLLOUTS,
             solver_max_steps=MAX_STEPS,
             solver_top_k=TOP_K,
@@ -318,11 +319,6 @@ def main():
             ),
         ),
         rollout_generator=rollout_gen,
-        pass_rate_filter=PassRateFilter(min_pass_rate=0.1, max_pass_rate=0.9),
-        quality_filter=QualityFilter(
-            judge_fn=judge_fn,
-            judge_model=OPENAI_JUDGE_MODEL,
-        ),
         evaluation_questions=EVAL_QUESTIONS,
         judge_fn=judge_fn,
     )

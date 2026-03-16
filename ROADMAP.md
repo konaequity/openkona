@@ -75,7 +75,9 @@ Strategic decisions that need answers before we can commit to architecture.
 - [ ] **Does VGS help?** Value-Guided Search is implemented but untested end-to-end. KARL reports 70.4 on BrowseComp-Plus with VGS — does our version improve over parallel thinking?
 - [ ] **Does the value model actually work?** The value model predicts future success probability for partial rollouts. Is ours well-calibrated? Does it guide search toward better answers or just add latency?
 
-### Embeddings
+### Retrieval architecture
+- [ ] **BM25 hybrid is not in KARL.** KONASH fuses BM25 keyword search with vector search via reciprocal rank fusion (`corpus.py:389-425`). KARL only uses vector search — the agent's sole tool is embedding-based nearest neighbor lookup. The BM25 layer means the trained search policy learns against a different retrieval distribution than KARL's. Table 5 shows swapping embedding models barely matters, so the hybrid probably doesn't hurt, but it's an untested divergence. Should we drop BM25 to match the paper, or keep it as a deliberate improvement and validate it with an ablation?
+- [ ] **FAISS is an implementation detail, not a divergence.** KARL doesn't name its ANN index but must use one (500 QPS over 67K docs requires it). FAISS `IndexFlatIP` is a reasonable choice. No action needed unless we hit scale issues — then consider HNSW or IVF variants.
 - [ ] **GTE vs Qwen embedding model?** KARL uses Qwen3-Embedding-8B for BrowseComp-Plus and GTE-large for PMBench. Qwen3-8B produces better retrieval but is slow to run locally on a user's own corpus. GTE-large is much faster. Is the retrieval quality difference worth the wait, or should we default to GTE (or even smaller models like MiniLM) for local corpora and reserve Qwen3-8B for pre-built indexes?
 
 ### Evaluation

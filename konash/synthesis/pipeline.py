@@ -46,7 +46,7 @@ class SynthesisPipeline:
         self.deduplication_agent = deduplication_agent or DeduplicationAgent(
             evaluation_questions=self.evaluation_questions,
         )
-        self.pass_rate_filter = pass_rate_filter or self._build_pass_rate_filter()
+        self.pass_rate_filter = pass_rate_filter or self._build_pass_rate_filter(config)
         self.quality_filter = quality_filter or self._build_quality_filter(config, judge_fn)
         self.grounding_filter = grounding_filter or GroundingFilter()
 
@@ -315,12 +315,17 @@ class SynthesisPipeline:
         return RolloutGenerator(**kwargs)
 
     @staticmethod
-    def _build_pass_rate_filter() -> PassRateFilter:
-        """Build a default pass-rate filter.
+    def _build_pass_rate_filter(
+        config: Optional[SynthesisTaskConfig] = None,
+    ) -> PassRateFilter:
+        """Build a pass-rate filter from config.
 
-        Default range [0.1, 0.9] rejects groups where the solver always
-        fails or always succeeds.
+        When ``config.task_name`` is set, adaptive per-task thresholds
+        from the KARL paper (Section 7.2) are used.  Otherwise defaults
+        to [0.1, 0.9].
         """
+        if config is not None and config.task_name:
+            return PassRateFilter(task_name=config.task_name)
         return PassRateFilter(min_pass_rate=0.1, max_pass_rate=0.9)
 
     @staticmethod
@@ -328,16 +333,23 @@ class SynthesisPipeline:
         config: Optional[SynthesisTaskConfig],
         judge_fn: Any = None,
     ) -> QualityFilter:
-        """Build a quality filter from config, wiring in the LLM judge."""
+        """Build a quality filter from config, wiring in the LLM judge.
+
+        When ``config.task_name`` is set, the paper's structured quality
+        prompts (Figures 35-36) are used instead of generic heuristics.
+        """
         kwargs: Dict[str, Any] = {}
         if judge_fn is not None:
             kwargs["judge_fn"] = judge_fn
-        if config is not None and config.quality_filter is not None:
-            qf = config.quality_filter
-            if hasattr(qf, "judge_model"):
-                kwargs["judge_model"] = qf.judge_model
-            if hasattr(qf, "checks_ambiguity"):
-                kwargs["checks_ambiguity"] = qf.checks_ambiguity
-            if hasattr(qf, "checks_reference_accuracy"):
-                kwargs["checks_reference_accuracy"] = qf.checks_reference_accuracy
+        if config is not None:
+            if config.task_name:
+                kwargs["task_name"] = config.task_name
+            if config.quality_filter is not None:
+                qf = config.quality_filter
+                if hasattr(qf, "judge_model"):
+                    kwargs["judge_model"] = qf.judge_model
+                if hasattr(qf, "checks_ambiguity"):
+                    kwargs["checks_ambiguity"] = qf.checks_ambiguity
+                if hasattr(qf, "checks_reference_accuracy"):
+                    kwargs["checks_reference_accuracy"] = qf.checks_reference_accuracy
         return QualityFilter(**kwargs)

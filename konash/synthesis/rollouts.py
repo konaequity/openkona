@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json as _json
+import logging
 import random
 import re as _re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from konash.agent import Agent as BaseAgent
 from konash.harness.environment import Environment
@@ -362,7 +365,7 @@ class RolloutGenerator:
 
         Falls back to heuristic token matching when no LLM is available.
         """
-        # --- LLM-based nugget evaluation ---
+        # --- LLM-based nugget evaluation (KARL paper, Appendix D.1) ---
         if self.llm_fn is not None:
             return self._llm_evaluate(predicted, reference, question, nuggets)
 
@@ -371,7 +374,12 @@ class RolloutGenerator:
             result = self.nugget_scorer.score(predicted, reference)
             return result.get("score", 0.0) >= 0.5
 
-        # --- Heuristic fallback ---
+        # --- Heuristic fallback (no LLM available) ---
+        logger.warning(
+            "No llm_fn configured for rollout evaluation — using heuristic "
+            "token-matching instead of KARL nugget evaluation. Training data "
+            "quality may be degraded."
+        )
         return _heuristic_evaluate(predicted, reference)
 
     def _decompose_nuggets(
@@ -453,6 +461,8 @@ class RolloutGenerator:
         # If decomposition fails, treat the whole answer as one nugget
         return [reference]
 
+    _MAX_EVAL_RETRIES = 2
+
     def _llm_evaluate(
         self,
         predicted: str,
@@ -468,6 +478,9 @@ class RolloutGenerator:
         - not_support (0.0): answer does not capture it
 
         Pass if mean score >= 0.5.
+
+        Retries up to ``_MAX_EVAL_RETRIES`` times on parse failure before
+        falling back to the heuristic evaluator.
         """
         if not nuggets:
             nuggets = [reference]
@@ -509,40 +522,68 @@ class RolloutGenerator:
             )},
         ]
 
-        try:
-            response = self.llm_fn(messages, max_new_tokens=1024)
-            content = response.get("content", "") if isinstance(response, dict) else str(response)
-            # Strip thinking / reasoning tags from various models
-            content = _re.sub(r'<think>.*?</think>\s*', '', content, flags=_re.DOTALL)
-            content = _re.sub(r'<think>.*', '', content, flags=_re.DOTALL)
-            content = _re.sub(r'</?(arg_value|think)>', '', content).strip()
+        last_error: Optional[str] = None
+        for attempt in range(1, self._MAX_EVAL_RETRIES + 1):
+            try:
+                response = self.llm_fn(messages, max_new_tokens=1024)
+                content = response.get("content", "") if isinstance(response, dict) else str(response)
+                # Strip thinking / reasoning tags from various models
+                content = _re.sub(r'<think>.*?</think>\s*', '', content, flags=_re.DOTALL)
+                content = _re.sub(r'<think>.*', '', content, flags=_re.DOTALL)
+                content = _re.sub(r'</?(arg_value|think)>', '', content).strip()
 
-            # If content is empty (e.g. GLM reasoning_content not captured),
-            # fall back to heuristic immediately
-            if not content.strip():
-                return _heuristic_evaluate(predicted, reference)
+                if not content.strip():
+                    last_error = "empty response"
+                    logger.debug(
+                        "LLM nugget eval attempt %d/%d: empty response",
+                        attempt, self._MAX_EVAL_RETRIES,
+                    )
+                    continue
 
-            # Parse the label list
-            match = _re.search(r'\[.*\]', content, _re.DOTALL)
-            if match:
+                # Parse the label list
+                match = _re.search(r'\[.*\]', content, _re.DOTALL)
+                if not match:
+                    last_error = f"no label list found in: {content[:200]}"
+                    logger.debug(
+                        "LLM nugget eval attempt %d/%d: %s",
+                        attempt, self._MAX_EVAL_RETRIES, last_error,
+                    )
+                    continue
+
                 labels = _json.loads(match.group())
-                if isinstance(labels, list):
-                    score_map = {
-                        "support": 1.0,
-                        "partial_support": 0.5,
-                        "not_support": 0.0,
-                    }
-                    scores = []
-                    for label in labels:
-                        label_str = str(label).lower().strip().replace(" ", "_")
-                        scores.append(score_map.get(label_str, 0.0))
-                    if scores:
-                        return (sum(scores) / len(scores)) >= 0.5
+                if not isinstance(labels, list) or not labels:
+                    last_error = f"invalid label list: {labels}"
+                    logger.debug(
+                        "LLM nugget eval attempt %d/%d: %s",
+                        attempt, self._MAX_EVAL_RETRIES, last_error,
+                    )
+                    continue
 
-        except Exception:
-            pass
+                score_map = {
+                    "support": 1.0,
+                    "partial_support": 0.5,
+                    "not_support": 0.0,
+                }
+                scores = []
+                for label in labels:
+                    label_str = str(label).lower().strip().replace(" ", "_")
+                    scores.append(score_map.get(label_str, 0.0))
 
-        # If LLM judge fails, fall back to heuristic
+                return (sum(scores) / len(scores)) >= 0.5
+
+            except Exception as exc:
+                last_error = str(exc)
+                logger.debug(
+                    "LLM nugget eval attempt %d/%d failed: %s",
+                    attempt, self._MAX_EVAL_RETRIES, exc,
+                )
+
+        # All retries exhausted — fall back to heuristic with a warning
+        logger.warning(
+            "LLM nugget evaluation failed after %d attempts (%s), "
+            "falling back to heuristic evaluator for question: %.80s",
+            self._MAX_EVAL_RETRIES, last_error, question,
+        )
         return _heuristic_evaluate(predicted, reference)
 
 
