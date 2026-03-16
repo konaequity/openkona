@@ -666,6 +666,7 @@ def _episode_to_steps(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         if tool_results:
             # Agent made a tool call — this is a retrieval step
             content = agent_response.get("content", "")
+            reasoning = agent_response.get("reasoning_content", "")
             tool_calls = agent_response.get("tool_calls", [])
             query = ""
             if tool_calls:
@@ -678,7 +679,8 @@ def _episode_to_steps(result: Dict[str, Any]) -> List[Dict[str, Any]]:
 
             step["type"] = "retrieval"
             step["query"] = query
-            step["thought"] = content
+            # Capture thinking: prefer reasoning_content (GLM), fall back to content
+            step["thought"] = reasoning or content or None
             step["results_text"] = tool_content
             step["num_results"] = tool_content.count("[") if tool_content else 0
         else:
