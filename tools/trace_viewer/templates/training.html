@@ -253,20 +253,35 @@ function renderRolloutData(data) {
     return '<div class="empty-state"><h2>No rollout data yet</h2><p>Rollout data will appear here once rollout generation completes.</p></div>';
   }
 
-  let html = '<div class="data-section">';
-  html += `<h2>${data.rollout_groups.length} Rollout Groups</h2>`;
+  const kept = data.rollout_groups.filter(g => g.kept);
+  const filtered = data.rollout_groups.filter(g => !g.kept);
 
-  data.rollout_groups.forEach((g, idx) => {
+  let html = '<div class="data-section">';
+  html += `<h2>${kept.length} Training Groups <span style="font-size:13px;color:var(--text-tertiary);font-weight:400">(${filtered.length} filtered out)</span></h2>`;
+
+  // Show toggle for filtered groups
+  if (filtered.length > 0) {
+    html += `<div style="margin-bottom:16px"><label style="font-size:13px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="show-filtered" onchange="toggleFiltered()" style="margin-right:6px">Show ${filtered.length} filtered-out groups</label></div>`;
+  }
+
+  // Render all groups, hidden filtered ones by default
+  const allGroups = [...kept, ...filtered];
+  allGroups.forEach((g, idx) => {
     const passRate = g.pass_rate;
     let badgeClass = 'badge-mixed';
     let badgeText = `${Math.round(passRate * 100)}% pass`;
     if (passRate >= 1.0) { badgeClass = 'badge-pass'; badgeText = '100% pass'; }
     else if (passRate <= 0) { badgeClass = 'badge-fail'; badgeText = '0% pass'; }
 
-    html += `<div class="group-card" onclick="toggleGroup(this)">`;
+    const filteredStyle = g.kept ? '' : 'opacity:0.4;display:none';
+    const filteredClass = g.kept ? '' : 'filtered-group';
+    const filteredBadge = g.kept ? '' : '<span class="group-badge" style="background:rgba(110,118,129,0.15);color:var(--text-tertiary)">filtered out</span>';
+
+    html += `<div class="group-card ${filteredClass}" style="${filteredStyle}" onclick="toggleGroup(this)">`;
     html += `<div class="group-header">`;
     html += `<div class="group-question">${escapeHtml(g.question)}</div>`;
     html += `<div class="group-meta">`;
+    html += filteredBadge;
     html += `<span class="group-badge ${badgeClass}">${badgeText}</span>`;
     html += `<span style="font-size:12px;color:var(--text-tertiary)">${g.num_rollouts} rollouts</span>`;
     html += `</div></div>`;
@@ -365,6 +380,13 @@ function switchTab(name) {
 
 function toggleGroup(el) {
   el.classList.toggle('expanded');
+}
+
+function toggleFiltered() {
+  const show = document.getElementById('show-filtered').checked;
+  document.querySelectorAll('.filtered-group').forEach(el => {
+    el.style.display = show ? 'block' : 'none';
+  });
 }
 
 function formatEventTitle(e) {

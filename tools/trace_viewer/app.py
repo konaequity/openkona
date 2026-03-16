@@ -439,9 +439,61 @@ def training_rollouts(project: str):
     ckpt_base = os.path.expanduser(f"~/.konash/projects/{project}/checkpoints/pipeline_state")
     groups = []
 
-    # Try each iteration directory, preferring final rollouts over incremental
+    def _parse_groups(raw_groups, iter_dir, fname, kept_prompts=None):
+        """Convert raw checkpoint groups to API response format."""
+        parsed = []
+        for g in raw_groups:
+            rollouts = g.get("rollouts", [])
+            passed_count = sum(1 for r in rollouts if r.get("passed"))
+            prompt = g.get("prompt", g.get("question", ""))
+            parsed.append({
+                "question": prompt,
+                "reference_answer": g.get("reference_answer", ""),
+                "num_rollouts": len(rollouts),
+                "passed": passed_count,
+                "pass_rate": round(passed_count / len(rollouts), 2) if rollouts else 0,
+                "kept": prompt in kept_prompts if kept_prompts is not None else True,
+                "rollouts": [
+                    {
+                        "final_answer": r.get("final_answer", ""),
+                        "passed": r.get("passed"),
+                        "num_steps": len(r.get("steps", [])),
+                        "steps": [
+                            {
+                                "type": s.get("type", ""),
+                                "query": s.get("query", ""),
+                                "thought": s.get("thought") or "",
+                                "num_results": len(s.get("results", [])) if isinstance(s.get("results"), list) else 0,
+                            }
+                            for s in r.get("steps", [])
+                        ],
+                    }
+                    for r in rollouts
+                ],
+                "iteration": os.path.basename(iter_dir),
+                "source": fname,
+            })
+        return parsed
+
     for iter_dir in sorted(glob.glob(os.path.join(ckpt_base, "iter*"))):
-        for fname in ["stage2_rollouts.json", "rollouts_incremental.json"]:
+        # First, find which prompts survived filtering (from final rollouts)
+        kept_prompts = None
+        final_path = os.path.join(iter_dir, "stage2_rollouts.json")
+        if os.path.exists(final_path):
+            try:
+                with open(final_path) as f:
+                    final_data = json.load(f)
+                final_groups = final_data.get("data", final_data).get("groups", [])
+                kept_prompts = {
+                    g.get("prompt", g.get("question", ""))
+                    for g in final_groups
+                }
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Load all groups from incremental checkpoint (has everything)
+        # Fall back to final rollouts if no incremental exists
+        for fname in ["rollouts_incremental.json", "stage2_rollouts.json"]:
             fpath = os.path.join(iter_dir, fname)
             if not os.path.exists(fpath):
                 continue
@@ -449,36 +501,8 @@ def training_rollouts(project: str):
                 with open(fpath) as f:
                     data = json.load(f)
                 raw_groups = data.get("data", data).get("groups", [])
-                for g in raw_groups:
-                    rollouts = g.get("rollouts", [])
-                    passed_count = sum(1 for r in rollouts if r.get("passed"))
-                    groups.append({
-                        "question": g.get("prompt", g.get("question", "")),
-                        "reference_answer": g.get("reference_answer", ""),
-                        "num_rollouts": len(rollouts),
-                        "passed": passed_count,
-                        "pass_rate": round(passed_count / len(rollouts), 2) if rollouts else 0,
-                        "rollouts": [
-                            {
-                                "final_answer": r.get("final_answer", ""),
-                                "passed": r.get("passed"),
-                                "num_steps": len(r.get("steps", [])),
-                                "steps": [
-                                    {
-                                        "type": s.get("type", ""),
-                                        "query": s.get("query", ""),
-                                        "thought": s.get("thought") or "",
-                                        "num_results": len(s.get("results", [])) if isinstance(s.get("results"), list) else 0,
-                                    }
-                                    for s in r.get("steps", [])
-                                ],
-                            }
-                            for r in rollouts
-                        ],
-                        "iteration": os.path.basename(iter_dir),
-                        "source": fname,
-                    })
-                break  # Use first found file per iteration
+                groups.extend(_parse_groups(raw_groups, iter_dir, fname, kept_prompts))
+                break
             except (json.JSONDecodeError, OSError, KeyError):
                 continue
 
