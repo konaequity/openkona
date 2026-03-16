@@ -215,13 +215,19 @@ class SynthesisPipeline:
                 )
 
         def _generate_for_qa(qa_idx: int, ex: SyntheticExample):
-            group = self.rollout_generator.generate_group(
-                prompt=ex.question,
-                reference_answer=ex.answer,
-                num_rollouts=rollout_count,
-                qa_idx=qa_idx,
-            )
-            _on_group_complete(qa_idx, group)
+            try:
+                group = self.rollout_generator.generate_group(
+                    prompt=ex.question,
+                    reference_answer=ex.answer,
+                    num_rollouts=rollout_count,
+                    qa_idx=qa_idx,
+                )
+                _on_group_complete(qa_idx, group)
+            except Exception:
+                logger.error(
+                    "Rollout generation failed for qa=%d, skipping: %.60s",
+                    qa_idx, ex.question, exc_info=True,
+                )
             return qa_idx
 
         max_workers = min(parallel_workers, num_qa) if num_qa > 0 else 1
@@ -232,9 +238,8 @@ class SynthesisPipeline:
                     continue
                 futures.append(pool.submit(_generate_for_qa, qa_idx, ex))
 
-            # Wait for all to complete (as_completed gives us error propagation)
             for future in as_completed(futures):
-                future.result()  # raises if the task raised
+                future.result()
 
         # Final incremental checkpoint (captures any groups since last interval)
         if checkpoint_dir is not None and completed_count > 0:

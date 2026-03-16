@@ -805,11 +805,15 @@ def cmd_train(args: argparse.Namespace) -> None:
         it = IntPrompt.ask("    Training iterations", default=2)
         return qp, ro, rs, it
 
-    model = _pick_model()
-    qa_pairs, rollouts, rollout_steps, iterations = _pick_scale()
+    # Skip interactive wizard in non-TTY environments (pipes, Colab, CI).
+    # CLI args already have sensible defaults from argparse.
+    _interactive = sys.stdin.isatty()
+    if _interactive:
+        model = _pick_model()
+        qa_pairs, rollouts, rollout_steps, iterations = _pick_scale()
 
     # ── Summary + confirm (with go-back loop) ────────────────────────
-    while True:
+    while _interactive:
         synthesis_calls = max(1, qa_pairs // 8)
         est_cost, est_total_secs = _estimate_training(
             qa_pairs, rollouts, rollout_steps, iterations,
@@ -853,6 +857,7 @@ def cmd_train(args: argparse.Namespace) -> None:
             return
 
     # ── Train ────────────────────────────────────────────────────────
+    synthesis_calls = max(1, qa_pairs // 8)
     console.print()
 
     agent = Agent(
