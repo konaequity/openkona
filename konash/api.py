@@ -148,18 +148,18 @@ class _OpenAILLMClient:
         choice = result["choices"][0]
         message = choice["message"]
         content = message.get("content") or ""
-        reasoning = message.get("reasoning_content") or ""
-        # GLM 4.5 Air returns reasoning in a separate field; fall back to it
-        # when the main content is empty (e.g. low max_tokens budget).
-        if not content and reasoning:
+        # GLM 4.5 Air uses "reasoning", other models use "reasoning_content"
+        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+        # Fall back to reasoning when content is empty and no tool calls
+        if not content and reasoning and not message.get("tool_calls"):
             content = reasoning
         response: Dict[str, Any] = {
             "role": "assistant",
             "content": content,
         }
-        # Preserve reasoning_content so downstream can capture thinking
+        # Preserve reasoning so downstream can capture thinking
         # even on tool-call steps where content is empty
-        if reasoning and reasoning != content:
+        if reasoning:
             response["reasoning_content"] = reasoning
         if message.get("tool_calls"):
             response["tool_calls"] = message["tool_calls"]
