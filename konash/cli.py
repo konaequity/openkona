@@ -672,16 +672,24 @@ def _start_web_ui() -> None:
     if _web_ui_process is not None:
         return  # Already running
 
+    # Prefer unified server (arena + traces + training) over trace_viewer alone
+    server_path = os.path.join(os.path.dirname(__file__), "..", "tools", "server.py")
     app_path = os.path.join(os.path.dirname(__file__), "..", "tools", "trace_viewer", "app.py")
-    if not os.path.exists(app_path):
+    if os.path.exists(server_path):
+        launch_path = server_path
+        port = 5117
+    elif os.path.exists(app_path):
+        launch_path = app_path
+        port = 5050
+    else:
         return  # Not available (pip install, no tools/)
 
     try:
         _web_ui_process = subprocess.Popen(
-            [sys.executable, app_path],
+            [sys.executable, launch_path],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        console.print("  [dim]Dashboard: http://localhost:5050/training/[/]")
+        console.print(f"  [dim]Dashboard: http://localhost:{port}/training/[/]")
     except Exception:
         pass  # Non-critical
 

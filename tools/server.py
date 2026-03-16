@@ -50,6 +50,7 @@ class PathDispatcher:
 app = PathDispatcher(root_app, {
     "/arena": arena_app,
     "/traces": trace_app,
+    "/training": trace_app,
 })
 
 if __name__ == "__main__":

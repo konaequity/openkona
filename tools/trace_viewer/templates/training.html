@@ -38,6 +38,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .project-selector { margin-bottom: 24px; }
 .project-selector select { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-default); border-radius: 6px; padding: 8px 12px; font-size: 14px; }
 
+.tab-bar { display: flex; gap: 4px; margin-bottom: 20px; }
+.tab-btn { padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-default); cursor: pointer; transition: all 0.15s; }
+.tab-btn:hover { color: var(--text-primary); border-color: var(--text-tertiary); }
+.tab-btn.active { background: var(--bg-card); color: var(--text-primary); border-color: var(--accent-blue); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
 /* Summary cards */
 .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 24px; }
 .summary-card { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; padding: 16px; }
@@ -48,6 +55,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .summary-card .value.orange { color: var(--accent-orange); }
 .summary-card .value.purple { color: var(--accent-purple); }
 
+/* Progress bar */
+.progress-bar { background: var(--bg-tertiary); border-radius: 4px; height: 8px; margin-top: 8px; overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 4px; background: var(--accent-blue); transition: width 0.3s; }
+
 /* Timeline */
 .timeline { margin-bottom: 24px; }
 .timeline h2 { font-size: 16px; margin-bottom: 12px; color: var(--text-secondary); }
@@ -57,10 +68,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .timeline-dot.start { background: var(--accent-blue); }
 .timeline-dot.synthesis { background: var(--accent-green); }
 .timeline-dot.rollouts { background: var(--accent-orange); }
+.timeline-dot.rollout_progress { background: var(--accent-orange); opacity: 0.5; }
+.timeline-dot.filter_summary { background: var(--accent-purple); }
 .timeline-dot.oapl { background: var(--accent-purple); }
 .timeline-dot.value_model { background: var(--accent-red); }
 .timeline-dot.complete { background: var(--accent-green); }
 .timeline-dot.error { background: var(--accent-red); }
+.timeline-dot.phase { background: var(--text-tertiary); }
 .timeline-content { flex: 1; }
 .timeline-title { font-size: 14px; font-weight: 600; }
 .timeline-detail { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
@@ -73,6 +87,32 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 .bar { background: var(--accent-blue); border-radius: 3px 3px 0 0; min-width: 20px; transition: height 0.3s; position: relative; }
 .bar:hover { opacity: 0.8; }
 .bar-label { position: absolute; bottom: -20px; left: 50%; transform: translateX(-50%); font-size: 10px; color: var(--text-tertiary); white-space: nowrap; }
+
+/* Rollout data table */
+.data-section { margin-bottom: 24px; }
+.data-section h2 { font-size: 16px; margin-bottom: 12px; color: var(--text-secondary); }
+.group-card { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; padding: 16px; margin-bottom: 12px; cursor: pointer; transition: border-color 0.15s; }
+.group-card:hover { border-color: var(--accent-blue); }
+.group-card.expanded { border-color: var(--accent-blue); }
+.group-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.group-question { font-size: 14px; font-weight: 600; flex: 1; }
+.group-meta { display: flex; gap: 12px; flex-shrink: 0; }
+.group-badge { font-size: 12px; padding: 2px 8px; border-radius: 9999px; font-weight: 600; }
+.badge-pass { background: rgba(63, 185, 80, 0.15); color: var(--accent-green); }
+.badge-fail { background: rgba(248, 81, 73, 0.15); color: var(--accent-red); }
+.badge-mixed { background: rgba(240, 136, 62, 0.15); color: var(--accent-orange); }
+.group-answer { font-size: 13px; color: var(--text-secondary); margin-top: 6px; }
+.group-details { display: none; margin-top: 16px; border-top: 1px solid var(--border-default); padding-top: 16px; }
+.group-card.expanded .group-details { display: block; }
+
+.rollout-row { background: var(--bg-tertiary); border-radius: 6px; padding: 12px; margin-bottom: 8px; }
+.rollout-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.rollout-label { font-size: 13px; font-weight: 600; }
+.rollout-answer { font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; }
+.step-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.step-chip { font-size: 11px; padding: 3px 8px; border-radius: 4px; background: var(--bg-card); border: 1px solid var(--border-default); color: var(--text-secondary); }
+.step-chip.search { border-color: var(--accent-blue); color: var(--accent-blue); }
+.step-chip.answer { border-color: var(--accent-green); color: var(--accent-green); }
 
 .empty-state { text-align: center; padding: 60px 20px; color: var(--text-tertiary); }
 .empty-state h2 { font-size: 20px; margin-bottom: 8px; color: var(--text-secondary); }
@@ -111,6 +151,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 
 <script>
 const API_BASE = '/training/api';
+let currentProject = null;
 
 async function loadProjects() {
   const resp = await fetch(`${API_BASE}/projects`);
@@ -132,14 +173,19 @@ async function loadProjects() {
 
 async function loadProject(project) {
   if (!project) return;
-  const resp = await fetch(`${API_BASE}/logs/${project}`);
-  const data = await resp.json();
-  renderTraining(data.events, project);
+  currentProject = project;
+  const [logsResp, rolloutsResp] = await Promise.all([
+    fetch(`${API_BASE}/logs/${project}`),
+    fetch(`${API_BASE}/rollouts/${project}`),
+  ]);
+  const logsData = await logsResp.json();
+  const rolloutsData = await rolloutsResp.json();
+  renderAll(logsData.events, rolloutsData, project);
 }
 
-function renderTraining(events, project) {
+function renderAll(events, rolloutsData, project) {
   const content = document.getElementById('content');
-  if (!events || events.length === 0) {
+  if ((!events || events.length === 0) && rolloutsData.total_groups === 0) {
     content.innerHTML = `<div class="empty-state"><h2>No events for ${project}</h2></div>`;
     return;
   }
@@ -150,6 +196,7 @@ function renderTraining(events, project) {
   const oapl = events.filter(e => e.event === 'oapl');
   const complete = events.find(e => e.event === 'complete');
   const start = events.find(e => e.event === 'start');
+  const lastProgress = [...events.filter(e => e.event === 'rollout_progress')].pop();
 
   const totalPairs = synthesis.reduce((s, e) => s + (e.raw_pairs || 0), 0);
   const totalFiltered = rollouts.reduce((s, e) => s + (e.examples_after_filter || 0), 0);
@@ -160,30 +207,137 @@ function renderTraining(events, project) {
 
   // Summary cards
   html += '<div class="summary-grid">';
-  html += `<div class="summary-card"><div class="label">QA Pairs</div><div class="value green">${totalPairs}</div></div>`;
-  html += `<div class="summary-card"><div class="label">After Filter</div><div class="value blue">${totalFiltered}</div></div>`;
-  html += `<div class="summary-card"><div class="label">OAPL Loss</div><div class="value purple">${lastLoss !== null ? lastLoss.toFixed(4) : '—'}</div></div>`;
-  html += `<div class="summary-card"><div class="label">Total Time</div><div class="value orange">${totalTime ? formatDuration(totalTime) : 'running...'}</div></div>`;
+  html += `<div class="summary-card"><div class="label">QA Pairs</div><div class="value green">${totalPairs || rolloutsData.total_synthesis || 0}</div></div>`;
+  html += `<div class="summary-card"><div class="label">Rollout Groups</div><div class="value blue">${rolloutsData.total_groups}</div></div>`;
+  html += `<div class="summary-card"><div class="label">After Filter</div><div class="value orange">${totalFiltered}</div></div>`;
+  html += `<div class="summary-card"><div class="label">OAPL Loss</div><div class="value purple">${lastLoss !== null ? lastLoss.toFixed(4) : '\u2014'}</div></div>`;
+  html += `<div class="summary-card"><div class="label">Total Time</div><div class="value">${totalTime ? formatDuration(totalTime) : (lastProgress ? formatDuration(lastProgress.elapsed_seconds) + ' (running)' : '\u2014')}</div></div>`;
   if (start) {
-    html += `<div class="summary-card"><div class="label">Model</div><div class="value" style="font-size:14px">${start.model || '—'}</div></div>`;
-    html += `<div class="summary-card"><div class="label">Iterations</div><div class="value blue">${start.iterations || '—'}</div></div>`;
+    html += `<div class="summary-card"><div class="label">Model</div><div class="value" style="font-size:13px;word-break:break-all">${start.model || '\u2014'}</div></div>`;
   }
   html += '</div>';
 
-  // Loss chart (if multiple OAPL events)
-  if (oapl.length > 1) {
-    const maxLoss = Math.max(...oapl.map(e => e.loss));
-    html += '<div class="chart-section"><h3>OAPL Loss</h3><div class="bar-chart">';
-    oapl.forEach((e, i) => {
-      const h = (e.loss / maxLoss) * 100;
-      html += `<div class="bar" style="height:${h}%;background:var(--accent-purple)" title="Loss: ${e.loss.toFixed(4)}"><span class="bar-label">${i+1}</span></div>`;
-    });
-    html += '</div></div>';
+  // Rollout progress bar (if running)
+  if (lastProgress && !complete) {
+    html += `<div class="chart-section"><h3>Rollout Progress: ${lastProgress.completed}/${lastProgress.total} (${lastProgress.pct}%)</h3>`;
+    html += `<div class="progress-bar"><div class="progress-fill" style="width:${lastProgress.pct}%"></div></div></div>`;
   }
 
-  // Timeline
-  html += '<div class="timeline"><h2>Events</h2>';
-  events.forEach(e => {
+  // Tab bar
+  html += '<div class="tab-bar">';
+  html += '<button class="tab-btn active" onclick="switchTab(\'data\')">Rollout Data</button>';
+  html += '<button class="tab-btn" onclick="switchTab(\'events\')">Events</button>';
+  html += '<button class="tab-btn" onclick="switchTab(\'synthesis\')">Synthesis</button>';
+  html += '</div>';
+
+  // Tab: Rollout Data
+  html += '<div id="tab-data" class="tab-panel active">';
+  html += renderRolloutData(rolloutsData);
+  html += '</div>';
+
+  // Tab: Events
+  html += '<div id="tab-events" class="tab-panel">';
+  html += renderTimeline(events);
+  html += '</div>';
+
+  // Tab: Synthesis
+  html += '<div id="tab-synthesis" class="tab-panel">';
+  html += renderSynthesis(rolloutsData.synthesis_examples || []);
+  html += '</div>';
+
+  content.innerHTML = html;
+}
+
+function renderRolloutData(data) {
+  if (!data.rollout_groups || data.rollout_groups.length === 0) {
+    return '<div class="empty-state"><h2>No rollout data yet</h2><p>Rollout data will appear here once rollout generation completes.</p></div>';
+  }
+
+  let html = '<div class="data-section">';
+  html += `<h2>${data.rollout_groups.length} Rollout Groups</h2>`;
+
+  data.rollout_groups.forEach((g, idx) => {
+    const passRate = g.pass_rate;
+    let badgeClass = 'badge-mixed';
+    let badgeText = `${Math.round(passRate * 100)}% pass`;
+    if (passRate >= 1.0) { badgeClass = 'badge-pass'; badgeText = '100% pass'; }
+    else if (passRate <= 0) { badgeClass = 'badge-fail'; badgeText = '0% pass'; }
+
+    html += `<div class="group-card" onclick="toggleGroup(this)">`;
+    html += `<div class="group-header">`;
+    html += `<div class="group-question">${escapeHtml(g.question)}</div>`;
+    html += `<div class="group-meta">`;
+    html += `<span class="group-badge ${badgeClass}">${badgeText}</span>`;
+    html += `<span style="font-size:12px;color:var(--text-tertiary)">${g.num_rollouts} rollouts</span>`;
+    html += `</div></div>`;
+
+    if (g.reference_answer) {
+      html += `<div class="group-answer">Reference: ${escapeHtml(g.reference_answer.substring(0, 200))}</div>`;
+    }
+
+    // Expandable rollout details
+    html += '<div class="group-details">';
+    (g.rollouts || []).forEach((r, ri) => {
+      const passIcon = r.passed ? '\u2705' : '\u274C';
+      html += `<div class="rollout-row">`;
+      html += `<div class="rollout-header">`;
+      html += `<span class="rollout-label">${passIcon} Rollout ${ri + 1} (${r.num_steps} steps)</span>`;
+      html += `</div>`;
+      if (r.final_answer) {
+        html += `<div class="rollout-answer">${escapeHtml(r.final_answer.substring(0, 300))}</div>`;
+      }
+      html += '<div class="step-list">';
+      (r.steps || []).forEach((s, si) => {
+        const isSearch = s.type === 'search' || s.query;
+        const chipClass = isSearch ? 'search' : '';
+        const label = isSearch ? `Search: "${escapeHtml((s.query || '').substring(0, 50))}"` : `Step ${si + 1}: ${s.type || 'reason'}`;
+        html += `<span class="step-chip ${chipClass}">${label}</span>`;
+      });
+      html += '</div></div>';
+    });
+    html += '</div></div>';
+  });
+
+  html += '</div>';
+  return html;
+}
+
+function renderSynthesis(examples) {
+  if (!examples || examples.length === 0) {
+    return '<div class="empty-state"><h2>No synthesis data</h2></div>';
+  }
+
+  let html = '<div class="data-section">';
+  html += `<h2>${examples.length} Synthesized QA Pairs</h2>`;
+  examples.forEach((ex, idx) => {
+    html += `<div class="group-card" style="cursor:default">`;
+    html += `<div class="group-question">${escapeHtml(ex.question)}</div>`;
+    html += `<div class="group-answer">${escapeHtml(ex.answer)}</div>`;
+    html += `</div>`;
+  });
+  html += '</div>';
+  return html;
+}
+
+function renderTimeline(events) {
+  // Collapse consecutive rollout_progress events — show only every 10th or the last
+  const collapsed = [];
+  let progressCount = 0;
+  events.forEach((e, i) => {
+    if (e.event === 'rollout_progress') {
+      progressCount++;
+      const isLast = (i === events.length - 1) || events[i + 1]?.event !== 'rollout_progress';
+      if (progressCount % 10 === 0 || isLast) {
+        collapsed.push(e);
+      }
+    } else {
+      progressCount = 0;
+      collapsed.push(e);
+    }
+  });
+
+  let html = '<div class="timeline"><h2>Events</h2>';
+  collapsed.forEach(e => {
     const dotClass = e.event || 'start';
     const title = formatEventTitle(e);
     const detail = formatEventDetail(e);
@@ -199,15 +353,27 @@ function renderTraining(events, project) {
       </div>`;
   });
   html += '</div>';
+  return html;
+}
 
-  content.innerHTML = html;
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-' + name).classList.add('active');
+}
+
+function toggleGroup(el) {
+  el.classList.toggle('expanded');
 }
 
 function formatEventTitle(e) {
   switch (e.event) {
     case 'start': return 'Training Started';
     case 'synthesis': return `Synthesis (Iteration ${e.iteration || '?'})`;
-    case 'rollouts': return `Rollouts (Iteration ${e.iteration || '?'})`;
+    case 'rollouts': return `Rollouts Complete (Iteration ${e.iteration || '?'})`;
+    case 'rollout_progress': return `Rollout Progress: ${e.completed}/${e.total} (${e.pct}%)`;
+    case 'filter_summary': return `Filter: ${e.phase || '?'}`;
     case 'oapl': return `OAPL Training (Iteration ${e.iteration || '?'})`;
     case 'value_model': return 'Value Model Training';
     case 'complete': return 'Training Complete';
@@ -219,14 +385,16 @@ function formatEventTitle(e) {
 
 function formatEventDetail(e) {
   switch (e.event) {
-    case 'start': return `${e.model || '?'} · ${e.iterations || '?'} iterations · ${e.corpus || '?'}`;
-    case 'synthesis': return `${e.raw_pairs || 0} pairs · ${e.calls_completed || 0}/${e.calls_total || 0} calls · ${e.duration_seconds ? formatDuration(e.duration_seconds) : ''}`;
-    case 'rollouts': return `${e.examples_in || 0} examples · ${e.rollouts_total || 0} rollouts · ${e.examples_after_filter || 0} after filter`;
-    case 'oapl': return `Loss: ${e.loss ? e.loss.toFixed(4) : '?'} · ${e.num_groups || 0} groups · ${e.num_rollouts || 0} rollouts`;
-    case 'value_model': return `Loss: ${e.final_loss ? e.final_loss.toFixed(4) : '?'} · ${e.epochs || 0} epochs`;
+    case 'start': return `${e.model || '?'} \u00B7 ${e.iterations || '?'} iterations \u00B7 ${e.corpus || '?'}`;
+    case 'synthesis': return `${e.raw_pairs || 0} pairs \u00B7 ${e.calls_completed || 0}/${e.calls_total || 0} calls \u00B7 ${e.duration_seconds ? formatDuration(e.duration_seconds) : ''}`;
+    case 'rollouts': return `${e.examples_in || 0} examples \u00B7 ${e.rollouts_total || 0} rollouts \u00B7 ${e.examples_after_filter || 0} after filter`;
+    case 'rollout_progress': return `${e.completed} of ${e.total} groups complete (${e.pct}%)`;
+    case 'filter_summary': return `${e.input_count} \u2192 ${e.output_count} (${e.reject_count} rejected)`;
+    case 'oapl': return `Loss: ${e.loss ? e.loss.toFixed(4) : '?'} \u00B7 ${e.num_groups || 0} groups \u00B7 ${e.num_rollouts || 0} rollouts`;
+    case 'value_model': return `Loss: ${e.final_loss ? e.final_loss.toFixed(4) : '?'} \u00B7 ${e.epochs || 0} epochs`;
     case 'complete': return `${e.iterations || '?'} iterations in ${formatDuration(e.total_seconds || 0)}`;
     case 'error': return e.message || 'Unknown error';
-    default: return JSON.stringify(e).substring(0, 100);
+    default: return JSON.stringify(e).substring(0, 120);
   }
 }
 
@@ -234,6 +402,11 @@ function formatDuration(seconds) {
   if (seconds < 60) return `${Math.round(seconds)}s`;
   if (seconds < 3600) return `${Math.floor(seconds/60)}m ${Math.round(seconds%60)}s`;
   return `${Math.floor(seconds/3600)}h ${Math.floor((seconds%3600)/60)}m`;
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 loadProjects();

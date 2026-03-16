@@ -427,6 +427,90 @@ def training_logs(project: str):
     return jsonify({"project": project, "events": events})
 
 
+@app.route("/training/api/rollouts/<project>")
+def training_rollouts(project: str):
+    """Get rollout checkpoint data (questions, answers, steps) for a project.
+
+    Looks for pipeline_state/iter*/stage2_rollouts.json or
+    rollouts_incremental.json in the project's checkpoint directory.
+    """
+    import glob
+
+    ckpt_base = os.path.expanduser(f"~/.konash/projects/{project}/checkpoints/pipeline_state")
+    groups = []
+
+    # Try each iteration directory, preferring final rollouts over incremental
+    for iter_dir in sorted(glob.glob(os.path.join(ckpt_base, "iter*"))):
+        for fname in ["stage2_rollouts.json", "rollouts_incremental.json"]:
+            fpath = os.path.join(iter_dir, fname)
+            if not os.path.exists(fpath):
+                continue
+            try:
+                with open(fpath) as f:
+                    data = json.load(f)
+                raw_groups = data.get("data", data).get("groups", [])
+                for g in raw_groups:
+                    rollouts = g.get("rollouts", [])
+                    passed_count = sum(1 for r in rollouts if r.get("passed"))
+                    groups.append({
+                        "question": g.get("prompt", g.get("question", "")),
+                        "reference_answer": g.get("reference_answer", ""),
+                        "num_rollouts": len(rollouts),
+                        "passed": passed_count,
+                        "pass_rate": round(passed_count / len(rollouts), 2) if rollouts else 0,
+                        "rollouts": [
+                            {
+                                "final_answer": r.get("final_answer", ""),
+                                "passed": r.get("passed"),
+                                "num_steps": len(r.get("steps", [])),
+                                "steps": [
+                                    {
+                                        "type": s.get("type", ""),
+                                        "query": s.get("query", ""),
+                                        "thought": (s.get("thought") or "")[:200],
+                                        "num_results": len(s.get("results", [])) if isinstance(s.get("results"), list) else 0,
+                                    }
+                                    for s in r.get("steps", [])
+                                ],
+                            }
+                            for r in rollouts
+                        ],
+                        "iteration": os.path.basename(iter_dir),
+                        "source": fname,
+                    })
+                break  # Use first found file per iteration
+            except (json.JSONDecodeError, OSError, KeyError):
+                continue
+
+    # Also load synthesis data for QA pairs without rollouts
+    synthesis_groups = []
+    for iter_dir in sorted(glob.glob(os.path.join(ckpt_base, "iter*"))):
+        for fname in ["stage1_deduped.json", "stage1_synthesis.json"]:
+            fpath = os.path.join(iter_dir, fname)
+            if not os.path.exists(fpath):
+                continue
+            try:
+                with open(fpath) as f:
+                    data = json.load(f)
+                raw = data.get("data", data)
+                examples = raw if isinstance(raw, list) else raw.get("examples", [])
+                synthesis_groups = [
+                    {"question": e.get("question", ""), "answer": e.get("answer", "")}
+                    for e in examples
+                ]
+                break
+            except (json.JSONDecodeError, OSError):
+                continue
+
+    return jsonify({
+        "project": project,
+        "rollout_groups": groups,
+        "synthesis_examples": synthesis_groups,
+        "total_groups": len(groups),
+        "total_synthesis": len(synthesis_groups),
+    })
+
+
 @app.route("/traces/api/traces", methods=["GET"])
 def list_traces():
     """List all available trace sessions.
