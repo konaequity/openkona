@@ -47,7 +47,7 @@ def load_eval_questions(corpus_dir: str, limit: int | None = None) -> list[dict]
 
 def eval_one_question(
     agent, question: str, reference: str, scorer, policy,
-    *, parallel_rollouts: int = 1, max_steps: int = 10, top_k: int = 5,
+    *, parallel_rollouts: int = 1, max_steps: int = 50, top_k: int = 20,
 ) -> dict:
     """Evaluate a single question. Returns result dict with trace."""
     t0 = time.monotonic()
@@ -63,6 +63,8 @@ def eval_one_question(
     answer = result["answer"] if isinstance(result, dict) else result
     trajectory = result.get("trajectory", []) if isinstance(result, dict) else []
 
+    # Pass question context to the judge (KARL Figure 31 includes it)
+    scorer.judge.question_context = question
     score_result = scorer.score(answer, reference, policy=policy)
     score = score_result["score"]
 
