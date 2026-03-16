@@ -297,10 +297,14 @@ class LLMNuggetJudge:
         -------
         list[float]
             Per-nugget scores: 1.0 (support), 0.5 (partial_support),
-            0.0 (not_support).
+            0.0 (not_support).  Returns all zeros for empty/blank candidates.
         """
         if not nuggets:
             return []
+
+        # Empty or blank candidate cannot support any nugget
+        if not candidate or not candidate.strip():
+            return [0.0] * len(nuggets)
 
         nuggets_formatted = "\n".join(
             f"- {n}" for n in nuggets

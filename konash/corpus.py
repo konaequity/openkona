@@ -187,14 +187,25 @@ class Corpus:
             documents = []
             for docid in doc_ids:
                 name = str(docid)
-                # Try multiple filename mappings:
-                # 1. Direct: docid with / → _ (FreshStack style)
-                # 2. URL tail: last path segment with _ → space (QAMPARI/Wikipedia style)
-                direct = name.replace("/", "_").replace("\\", "_")[:100]
-                fpath = self._docs_dir / f"{direct}.txt"
-                if not fpath.exists() and "/" in name:
-                    tail = name.rsplit("/", 1)[-1].replace("_", " ")
-                    fpath = self._docs_dir / f"{tail}.txt"
+                # If doc_id is already an absolute path that exists, use it directly
+                if os.path.isabs(name) and os.path.exists(name):
+                    fpath = Path(name)
+                else:
+                    # Try multiple filename mappings:
+                    # 1. Direct: docid with / → _ (FreshStack style)
+                    # 2. URL tail: last path segment with _ → space (QAMPARI/Wikipedia style)
+                    # 3. Basename: just the filename from the path
+                    direct = name.replace("/", "_").replace("\\", "_")[:100]
+                    fpath = self._docs_dir / f"{direct}.txt"
+                    if not fpath.exists() and "/" in name:
+                        # Try basename first (handles absolute paths stored as doc_ids)
+                        basename = name.rsplit("/", 1)[-1]
+                        candidate = self._docs_dir / basename
+                        if candidate.exists():
+                            fpath = candidate
+                        else:
+                            tail = basename.replace("_", " ")
+                            fpath = self._docs_dir / f"{tail}.txt"
                 documents.append({"text": "", "source": str(fpath), "chunk_index": 0})
 
             self.documents = documents
@@ -240,8 +251,16 @@ class Corpus:
             try:
                 from konash.retrieval.vector_search import load_embedding_model
                 local_fn = load_embedding_model(model, device="cpu")
-                self.vector_search.embed_fn = local_fn
-                self.embed_fn = local_fn
+                # Verify dimensions match the index
+                test = local_fn(["test"])
+                index_dim = (
+                    self.vector_search._vectors.shape[-1]
+                    if hasattr(self.vector_search, "_vectors") and self.vector_search._vectors is not None
+                    else None
+                )
+                if index_dim is None or test.shape[-1] == index_dim:
+                    self.vector_search.embed_fn = local_fn
+                    self.embed_fn = local_fn
             except Exception:
                 pass
         elif "qwen3" in model.lower():
@@ -466,6 +485,15 @@ class Corpus:
                     with open(source, errors="replace") as f:
                         r["text"] = f.read(2048)
                 except OSError:
+                    # Handle double-extension bug in prebuilt indexes
+                    # (doc_id stored as "file.txt.txt" but actual file is "file.txt")
+                    if source.endswith(".txt.txt"):
+                        try:
+                            with open(source[:-4], errors="replace") as f:
+                                r["text"] = f.read(2048)
+                            continue
+                        except OSError:
+                            pass
                     r["text"] = ""
 
     def _read_all(

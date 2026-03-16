@@ -310,8 +310,13 @@ class Environment:
             return True
 
         # No tool calls and content present -> agent is giving a final answer
+        # GLM 4.5 Air puts answers in reasoning/reasoning_content instead of content
         has_tool_calls = bool(response.get("tool_calls"))
-        has_content = bool(response.get("content"))
+        has_content = bool(
+            response.get("content")
+            or response.get("reasoning_content")
+            or response.get("reasoning")
+        )
         if has_content and not has_tool_calls:
             return True
 

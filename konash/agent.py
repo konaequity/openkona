@@ -166,15 +166,27 @@ class Agent:
         """Extract the final answer from the conversation history.
 
         Walks the history backwards looking for the last assistant message
-        that does not appear to be a tool call.
+        that does not appear to be a tool call.  Checks ``reasoning_content``
+        and ``reasoning`` as fallbacks for GLM 4.5 Air which puts answers
+        in a separate reasoning field instead of ``content``.
         """
         for message in reversed(conversation_history):
             if message.get("role") != "assistant":
                 continue
             # Skip messages that are purely tool calls with no textual content
-            if message.get("tool_calls") and not message.get("content"):
+            has_text = (
+                message.get("content")
+                or message.get("reasoning_content")
+                or message.get("reasoning")
+            )
+            if message.get("tool_calls") and not has_text:
                 continue
-            content = message.get("content", "")
+            content = (
+                message.get("content")
+                or message.get("reasoning_content")
+                or message.get("reasoning")
+                or ""
+            )
             if content:
                 return content
         return None

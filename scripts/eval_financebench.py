@@ -30,8 +30,10 @@ from rich import box
 console = Console()
 
 TOGETHER_API_BASE = "https://api.together.xyz/v1"
+ZHIPU_API_BASE = "https://api.z.ai/api/paas/v4"
 OPENAI_API_BASE = "https://api.openai.com/v1"
-DEFAULT_MODEL = "zai-org/GLM-4.5-Air-FP8"
+DEFAULT_MODEL_TOGETHER = "zai-org/GLM-4.5-Air-FP8"
+DEFAULT_MODEL_ZHIPU = "glm-4.5-air"
 DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
 
 
@@ -50,6 +52,7 @@ def load_eval_questions(corpus_dir: str, limit: int | None = None) -> list[dict]
 def eval_one_question(
     agent, question: str, reference: str, scorer, policy,
     *, parallel_rollouts: int = 1, max_steps: int = 50, top_k: int = 20,
+    verbose_trace: bool = False,
 ) -> dict:
     """Evaluate a single question. Returns result dict with trace."""
     t0 = time.monotonic()
@@ -65,10 +68,43 @@ def eval_one_question(
     answer = result["answer"] if isinstance(result, dict) else result
     trajectory = result.get("trajectory", []) if isinstance(result, dict) else []
 
+    if verbose_trace:
+        console.print(f"\n  [bold cyan]Q:[/] {question}")
+        console.print(f"  [bold]Ref:[/] {reference}")
+        for i, step in enumerate(trajectory):
+            resp = step.get("agent_response") or {}
+            content = resp.get("content", "") or ""
+            reasoning = resp.get("reasoning_content", "") or resp.get("reasoning", "") or ""
+            tool_calls = resp.get("tool_calls", [])
+            tool_results = step.get("tool_results", [])
+            done = step.get("done", False)
+
+            console.print(f"\n  [dim]--- Step {i} {'[FINAL]' if done else ''} ---[/]")
+            if reasoning:
+                console.print(f"  [yellow]Thinking:[/] {reasoning[:300]}")
+            if tool_calls:
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    console.print(f"  [blue]Search:[/] {fn.get('arguments', '')}")
+            if tool_results:
+                for tr in tool_results:
+                    tr_content = tr.get("content", "") if isinstance(tr, dict) else str(tr)
+                    # Show first 300 chars of search results
+                    console.print(f"  [dim]Results ({len(tr_content)} chars):[/] {tr_content[:300]}")
+            if content and not tool_calls:
+                console.print(f"  [green]Answer:[/] {content[:400]}")
+
+        console.print(f"\n  [bold]Final answer:[/] {(answer or '(empty)')[:300]}")
+        console.print()
+
     # Pass question context to the judge (KARL Figure 31 includes it)
     scorer.judge.question_context = question
     score_result = scorer.score(answer, reference, policy=policy)
     score = score_result["score"]
+
+    if verbose_trace:
+        console.print(f"  [bold]Judge score:[/] {score}  nuggets: {score_result.get('nuggets', [])}")
+        console.print()
 
     return {
         "question": question,
@@ -82,7 +118,7 @@ def eval_one_question(
 
 def run_eval(
     agent, questions: list[dict], scorer, policy, label: str,
-    *, parallel_rollouts: int = 1, workers: int = 4,
+    *, parallel_rollouts: int = 1, workers: int = 4, verbose_trace: bool = False,
 ) -> dict:
     """Run eval on all questions with thread-level parallelism."""
     import threading
@@ -98,6 +134,7 @@ def run_eval(
         r = eval_one_question(
             agent, q["question"], q["answer"], scorer, policy,
             parallel_rollouts=parallel_rollouts,
+            verbose_trace=verbose_trace,
         )
         results[idx] = r
         with lock:
@@ -228,24 +265,49 @@ def main():
     parser.add_argument("--limit", type=int, default=None, help="Limit eval questions")
     parser.add_argument("--parallel", type=int, default=3, help="Parallel rollouts for PT mode (default: 3)")
     parser.add_argument("--workers", type=int, default=4, help="Concurrent eval threads (default: 4)")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="Model ID")
-    parser.add_argument("--api-key", default=None, help="Together AI API key")
+    parser.add_argument("--verbose", action="store_true", help="Print full trace for each question")
+    parser.add_argument("--model", default=None, help="Model ID (auto-detected from provider)")
+    parser.add_argument("--provider", default=None, choices=["zhipu", "together"], help="LLM provider (default: auto-detect from available keys)")
+    parser.add_argument("--api-key", default=None, help="API key for solver provider")
     parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL, help="Judge model (default: gpt-4o-mini)")
     parser.add_argument("--judge-key", default=None, help="OpenAI API key for judge (or set OPENAI_API_KEY)")
     args = parser.parse_args()
 
-    # Resolve Together AI key (for solver)
-    api_key = args.api_key or os.environ.get("TOGETHER_API_KEY")
+    # Resolve solver provider and key
+    config_path = os.path.expanduser("~/.konash/config.json")
+    config = {}
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            config = json.load(f)
+
+    # Auto-detect provider: prefer Zhipu (free), fall back to Together
+    provider = args.provider
+    api_key = args.api_key
+
+    if not provider:
+        zhipu_key = os.environ.get("ZHIPU_API_KEY") or config.get("zhipu_api_key")
+        together_key = os.environ.get("TOGETHER_API_KEY") or config.get("together_api_key")
+        if zhipu_key:
+            provider = "zhipu"
+            api_key = api_key or zhipu_key
+        elif together_key:
+            provider = "together"
+            api_key = api_key or together_key
+
+    if provider == "zhipu":
+        solver_api_base = ZHIPU_API_BASE
+        solver_model = args.model or DEFAULT_MODEL_ZHIPU
+        api_key = api_key or os.environ.get("ZHIPU_API_KEY") or config.get("zhipu_api_key")
+    else:
+        solver_api_base = TOGETHER_API_BASE
+        solver_model = args.model or DEFAULT_MODEL_TOGETHER
+        api_key = api_key or os.environ.get("TOGETHER_API_KEY") or config.get("together_api_key")
+
     if not api_key:
-        config_path = os.path.expanduser("~/.konash/config.json")
-        if os.path.exists(config_path):
-            with open(config_path) as f:
-                api_key = json.load(f).get("together_api_key")
-    if not api_key:
-        console.print("[red]No Together AI key.[/] Run [cyan]konash setup[/] first.")
+        console.print("[red]No API key found.[/] Run [cyan]konash setup[/] or set ZHIPU_API_KEY / TOGETHER_API_KEY.")
         sys.exit(1)
 
-    # Resolve OpenAI key (for judge) — falls back to Together AI if not set
+    # Resolve OpenAI key (for judge) — falls back to solver model if not set
     judge_key = args.judge_key or os.environ.get("OPENAI_API_KEY")
     if judge_key:
         judge_api_base = OPENAI_API_BASE
@@ -253,8 +315,8 @@ def main():
     else:
         console.print("  [yellow]No OpenAI key — using solver model as judge (less accurate)[/]")
         console.print("  [dim]Set OPENAI_API_KEY for gpt-4o-mini judge (matches KARL paper)[/]")
-        judge_api_base = TOGETHER_API_BASE
-        judge_model = args.model
+        judge_api_base = solver_api_base
+        judge_model = solver_model
         judge_key = api_key
 
     # Step 1: Download FinanceBench
@@ -284,6 +346,7 @@ def main():
     )
     judge = LLMNuggetJudge(llm_fn=judge_client.generate)
     scorer = NuggetScorer(judge=judge)
+    console.print(f"  Solver: {solver_model} via {provider}")
     console.print(f"  Judge: {judge_model} via {judge_api_base.split('//')[1].split('/')[0]}")
 
     # Step 3: Create agent
@@ -291,10 +354,10 @@ def main():
     # alongside the documents/ subdirectory — avoids re-embedding 168 files
     from konash.api import Agent
     agent = Agent(
-        base_model=args.model,
+        base_model=solver_model,
         corpus=corpus_dir,
         project="eval-financebench",
-        api_base=TOGETHER_API_BASE,
+        api_base=solver_api_base,
         api_key=api_key,
     )
 
@@ -317,9 +380,12 @@ def main():
     console.rule("[bold]Single rollout[/]", style="dim")
     console.print()
 
+    # Force single worker in verbose mode to keep output readable
+    eval_workers = 1 if args.verbose else args.workers
     baseline = run_eval(
         agent, questions, scorer, policy, "Single rollout",
-        parallel_rollouts=1, workers=args.workers,
+        parallel_rollouts=1, workers=eval_workers,
+        verbose_trace=args.verbose,
     )
     console.print()
     console.print(
@@ -335,7 +401,8 @@ def main():
 
     parallel = run_eval(
         agent, questions, scorer, policy, f"Parallel (N={args.parallel})",
-        parallel_rollouts=args.parallel, workers=args.workers,
+        parallel_rollouts=args.parallel, workers=eval_workers,
+        verbose_trace=args.verbose,
     )
     console.print()
     console.print(
