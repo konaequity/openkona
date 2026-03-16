@@ -656,11 +656,11 @@ body {
 .card-thought {
   font-size: 0.78rem;
   color: var(--text-tertiary);
-  line-height: 1.4;
+  line-height: 1.5;
   font-style: italic;
   overflow: hidden;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   cursor: pointer;
   transition: all 0.2s;
@@ -669,6 +669,28 @@ body {
 .card-thought.expanded {
   -webkit-line-clamp: unset;
   color: var(--text-secondary);
+}
+
+/* Final answer block (shown after timeline) */
+.final-answer {
+  margin-top: 16px;
+  padding: 14px 18px;
+  background: var(--bg-secondary, #F7F7F7);
+  border-left: 3px solid var(--accent-green, #1B7A3D);
+  font-size: 0.85rem;
+  line-height: 1.7;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 720px;
+}
+.final-answer-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+  font-weight: 500;
 }
 
 /* Card bottom stats */
@@ -1044,6 +1066,16 @@ function renderModelRow(model) {
         // Update stats
         const statsContainer = row.querySelector('.model-stats');
         statsContainer.innerHTML = buildStatsHTML(trace);
+        // Update final answer
+        const answerEl = row.querySelector('.final-answer');
+        if (answerEl) {
+          if (trace.final_answer) {
+            answerEl.style.display = 'block';
+            answerEl.querySelector('div:last-child').textContent = trace.final_answer;
+          } else {
+            answerEl.style.display = 'none';
+          }
+        }
       };
       traceButtons.appendChild(btn);
     });
@@ -1067,6 +1099,15 @@ function renderModelRow(model) {
 
   timelineContainer.appendChild(timeline);
   row.appendChild(timelineContainer);
+
+  // Final answer block
+  if (activeTrace.final_answer) {
+    const answerBlock = document.createElement('div');
+    answerBlock.className = 'final-answer';
+    answerBlock.style.margin = '0 20px 20px';
+    answerBlock.innerHTML = `<div class="final-answer-label">Final Answer</div><div>${escapeHtml(activeTrace.final_answer)}</div>`;
+    row.appendChild(answerBlock);
+  }
 
   return row;
 }
@@ -1116,19 +1157,32 @@ function renderStepCard(step) {
   }
 
   // Build queries display
-  const queries = step.queries || [];
+  const queries = (step.queries || []).filter(q => q && q !== '(no query)');
   const queryLines = queries.map(q => `<span class="query-line">${escapeHtml(q)}</span>`).join('');
 
-  // Query count text
-  const qCountText = step.num_queries === 1 ? '1 query' : `${step.num_queries} queries`;
+  // Step type label
+  const stepType = step.type || '';
+  const typeLabel = stepType === 'retrieval' ? 'Search' : stepType === 'answer' ? 'Answer' : stepType === 'reasoning' ? 'Reasoning' : step.category;
+
+  // Description line
+  let descLine = '';
+  if (queries.length > 0) {
+    descLine = queries.length === 1 ? '1 query' : `${queries.length} queries`;
+  } else if (stepType === 'answer') {
+    descLine = step.thought ? 'Generated answer' : 'Empty answer attempt';
+  } else if (stepType === 'reasoning') {
+    descLine = step.thought ? 'Internal reasoning' : 'Empty reasoning step';
+  } else {
+    descLine = 'No queries';
+  }
 
   card.innerHTML = `
     <div class="card-top">
       <span class="step-badge">Step ${step.step_number}</span>
-      <span class="category-badge ${catClass}">${step.category}</span>
+      <span class="category-badge ${catClass}">${escapeHtml(typeLabel)}</span>
     </div>
-    <span class="query-count-badge">${qCountText} in this step</span>
-    <div class="card-query">${queryLines}</div>
+    <span class="query-count-badge">${descLine}</span>
+    ${queryLines ? `<div class="card-query">${queryLines}</div>` : ''}
     ${step.thought ? `<div class="card-thought" onclick="this.classList.toggle('expanded')">${escapeHtml(step.thought)}</div>` : ''}
     <div class="card-bottom">
       <div class="card-stat">

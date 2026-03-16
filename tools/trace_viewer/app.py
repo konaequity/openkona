@@ -161,18 +161,28 @@ def convert_konash_rollout(
                 if docid and docid in expected_set:
                     found_so_far.add(docid)
 
-        # Classify
-        category = classify_step(raw_step, idx, total, prev_queries)
+        # Use step type for classification when available
+        if step_type == "answer":
+            category = "verification"
+        elif step_type == "retrieval":
+            category = classify_step(raw_step, idx, total, prev_queries)
+        elif step_type == "reasoning":
+            category = classify_step(raw_step, idx, total, prev_queries)
+        else:
+            category = classify_step(raw_step, idx, total, prev_queries)
+
+        thought = raw_step.get("thought", "") or raw_step.get("answer", "")
 
         viewer_step = {
             "step_number": raw_step.get("step", idx),
+            "type": step_type,
             "category": category,
-            "queries": queries_in_step if queries_in_step else ["(no query)"],
+            "queries": queries_in_step if queries_in_step else [],
             "num_queries": len(queries_in_step),
             "docs_retrieved": docs_retrieved,
             "expected_found": len(found_so_far),
             "total_expected": len(expected_doc_ids),
-            "thought": raw_step.get("thought", ""),
+            "thought": thought,
         }
         viewer_steps.append(viewer_step)
         prev_queries.extend(queries_in_step)
@@ -344,49 +354,110 @@ def _convert_arena_steps(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _discover_checkpoint_rollouts() -> List[Dict[str, Any]]:
-    """Scan checkpoints/ for cached rollout files."""
-    if not CHECKPOINTS_DIR.exists():
-        return []
+    """Scan checkpoints for rollout files.
 
+    Checks two locations:
+    1. {PROJECT_ROOT}/checkpoints/ — legacy path for rollouts_cache.json
+    2. ~/.konash/projects/*/checkpoints/pipeline_state/ — training pipeline outputs
+    """
     sessions = []
-    for cache_file in sorted(CHECKPOINTS_DIR.rglob("rollouts_cache.json")):
-        try:
-            with open(cache_file) as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            continue
 
-        # The cache format may vary — handle list-of-rollout-groups or raw list
-        checkpoint_name = cache_file.parent.name
-        if isinstance(data, list):
-            for q_idx, group in enumerate(data):
-                if isinstance(group, dict) and "prompt" in group:
-                    rollouts = group.get("rollouts", [])
-                    traces = []
-                    for r_idx, r in enumerate(rollouts):
-                        raw_steps = r.get("steps", [])
-                        viewer_steps = convert_konash_rollout(raw_steps)
-                        traces.append({
-                            "trace_id": r_idx + 1,
-                            "coverage": 1.0 if r.get("passed") else 0.0,
-                            "total_steps": len(viewer_steps),
-                            "found_count": 0,
-                            "total_expected": 0,
-                            "steps": viewer_steps,
-                            "final_answer": r.get("final_answer", ""),
-                        })
-                    if traces:
-                        sessions.append({
-                            "query_id": q_idx + 1,
-                            "question": group.get("prompt", ""),
-                            "reference_answer": group.get("reference_answer", ""),
-                            "expected_documents": [],
-                            "source": f"checkpoint:{checkpoint_name}",
-                            "models": [{
-                                "name": checkpoint_name,
-                                "traces": traces,
-                            }],
-                        })
+    # 1. Legacy: rollouts_cache.json in project-root checkpoints/
+    if CHECKPOINTS_DIR.exists():
+        for cache_file in sorted(CHECKPOINTS_DIR.rglob("rollouts_cache.json")):
+            try:
+                with open(cache_file) as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+
+            checkpoint_name = cache_file.parent.name
+            if isinstance(data, list):
+                for q_idx, group in enumerate(data):
+                    if isinstance(group, dict) and "prompt" in group:
+                        rollouts = group.get("rollouts", [])
+                        traces = []
+                        for r_idx, r in enumerate(rollouts):
+                            raw_steps = r.get("steps", [])
+                            viewer_steps = convert_konash_rollout(raw_steps)
+                            traces.append({
+                                "trace_id": r_idx + 1,
+                                "coverage": 1.0 if r.get("passed") else 0.0,
+                                "total_steps": len(viewer_steps),
+                                "found_count": 0,
+                                "total_expected": 0,
+                                "steps": viewer_steps,
+                                "final_answer": r.get("final_answer", ""),
+                            })
+                        if traces:
+                            sessions.append({
+                                "query_id": q_idx + 1,
+                                "question": group.get("prompt", ""),
+                                "reference_answer": group.get("reference_answer", ""),
+                                "expected_documents": [],
+                                "source": f"checkpoint:{checkpoint_name}",
+                                "models": [{
+                                    "name": checkpoint_name,
+                                    "traces": traces,
+                                }],
+                            })
+
+    # 2. Training pipeline: ~/.konash/projects/*/checkpoints/pipeline_state/
+    konash_projects = Path(os.path.expanduser("~/.konash/projects"))
+    if konash_projects.exists():
+        for project_dir in sorted(konash_projects.iterdir()):
+            if not project_dir.is_dir():
+                continue
+            project_name = project_dir.name
+            pipeline_dir = project_dir / "checkpoints" / "pipeline_state"
+            if not pipeline_dir.exists():
+                continue
+
+            for iter_dir in sorted(pipeline_dir.iterdir()):
+                if not iter_dir.is_dir() or not iter_dir.name.startswith("iter"):
+                    continue
+
+                # Try stage2_rollouts.json first, then rollouts_incremental.json
+                for fname in ["stage2_rollouts.json", "rollouts_incremental.json"]:
+                    fpath = iter_dir / fname
+                    if not fpath.exists():
+                        continue
+                    try:
+                        with open(fpath) as f:
+                            data = json.load(f)
+                        raw_groups = data.get("data", data).get("groups", [])
+                    except (json.JSONDecodeError, OSError, AttributeError):
+                        continue
+
+                    for q_idx, group in enumerate(raw_groups):
+                        rollouts = group.get("rollouts", [])
+                        traces = []
+                        for r_idx, r in enumerate(rollouts):
+                            raw_steps = r.get("steps", [])
+                            viewer_steps = convert_konash_rollout(raw_steps)
+                            traces.append({
+                                "trace_id": r_idx + 1,
+                                "coverage": 1.0 if r.get("passed") else 0.0,
+                                "total_steps": len(viewer_steps),
+                                "found_count": 0,
+                                "total_expected": 0,
+                                "steps": viewer_steps,
+                                "final_answer": r.get("final_answer", ""),
+                            })
+                        if traces:
+                            question = group.get("prompt", group.get("question", ""))
+                            sessions.append({
+                                "query_id": len(sessions) + 1,
+                                "question": question,
+                                "reference_answer": group.get("reference_answer", ""),
+                                "expected_documents": [],
+                                "source": f"training:{project_name}/{iter_dir.name}",
+                                "models": [{
+                                    "name": f"{project_name} {iter_dir.name}",
+                                    "traces": traces,
+                                }],
+                            })
+                    break  # only load one file per iteration
 
     return sessions
 
@@ -571,7 +642,7 @@ def list_traces():
     discovered.extend(_discover_checkpoint_rollouts())
 
     for d in discovered:
-        sid = f"live_{d['source']}_{d['query_id']}"
+        sid = f"live_{d['source'].replace('/', '_').replace(':', '_')}_{d['query_id']}"
         # Avoid duplicates if already saved to data/
         if any(s["session_id"] == sid for s in sessions):
             continue
@@ -593,6 +664,29 @@ def list_traces():
     return jsonify(sessions)
 
 
+def _ensure_viewer_steps(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert raw rollout steps to viewer format if needed.
+
+    Static JSON files may store steps in the raw KONASH format
+    (step/type/query/thought) rather than the viewer format
+    (step_number/category/queries/num_queries/docs_retrieved).
+    Detect and convert in-place.
+    """
+    expected_docs = data.get("expected_documents", [])
+    for model in data.get("models", []):
+        for trace in model.get("traces", []):
+            steps = trace.get("steps", [])
+            if not steps:
+                continue
+            # Check if already in viewer format
+            if "step_number" in steps[0] and "category" in steps[0]:
+                continue
+            # Convert from raw rollout format
+            trace["steps"] = convert_konash_rollout(steps, expected_docs)
+            trace["total_steps"] = len(trace["steps"])
+    return data
+
+
 @app.route("/traces/api/trace/<session_id>", methods=["GET"])
 def get_trace(session_id: str):
     """Get full trace data for a session.
@@ -605,7 +699,7 @@ def get_trace(session_id: str):
         try:
             with open(fp) as f:
                 data = json.load(f)
-            return jsonify(data)
+            return jsonify(_ensure_viewer_steps(data))
         except json.JSONDecodeError:
             return jsonify({"error": "Invalid JSON data"}), 500
 
@@ -617,7 +711,7 @@ def get_trace(session_id: str):
         all_discovered.extend(_discover_checkpoint_rollouts())
 
         for d in all_discovered:
-            sid = f"live_{d['source']}_{d['query_id']}"
+            sid = f"live_{d['source'].replace('/', '_').replace(':', '_')}_{d['query_id']}"
             if sid == session_id:
                 return jsonify(d)
 
