@@ -463,7 +463,7 @@ def download_qampari(
                         f.write(text)
                     doc_count += 1
 
-        if question and len(eval_questions) < 20:
+        if question:
             eval_questions.append({
                 "question": question,
                 "answers": answer_texts,
