@@ -178,10 +178,16 @@ class Corpus:
             doc_ids = data["doc_ids"].tolist()
             docs_dir = self.path if self.path.is_dir() else self.path.parent
 
-            # Check if documents live in a subdirectory
-            sub_dir = docs_dir / "documents"
-            use_sub = sub_dir.is_dir()
-            self._docs_dir = sub_dir if use_sub else docs_dir
+            # Check if documents live in a subdirectory.
+            # Prefer pages/ (page-level indexes) over documents/ (whole-doc).
+            pages_sub = docs_dir / "pages"
+            docs_sub = docs_dir / "documents"
+            if pages_sub.is_dir():
+                self._docs_dir = pages_sub
+            elif docs_sub.is_dir():
+                self._docs_dir = docs_sub
+            else:
+                self._docs_dir = docs_dir
 
             # Create lightweight stub documents (no file I/O — text loaded on demand)
             documents = []
@@ -392,9 +398,21 @@ class Corpus:
         if not self._indexed:
             self.ingest()
 
-        # Prebuilt indexes use vector-only search (no BM25 text loaded)
+        # Prebuilt indexes: build BM25 on first hybrid search call
         if self._lazy_text:
-            results = self.vector_search.search(query, top_k=top_k, **kwargs)
+            if mode == "vector":
+                results = self.vector_search.search(query, top_k=top_k, **kwargs)
+                self._resolve_text(results)
+                return results
+            # Load text into BM25 on demand for hybrid/bm25 search
+            if self.bm25._n_docs == 0:
+                self._build_lazy_bm25()
+            if mode == "bm25":
+                results = self.bm25.search(query, top_k=top_k)
+                self._resolve_text(results)
+                return results
+            # Hybrid: reciprocal rank fusion
+            results = self._hybrid_search(query, top_k=top_k, **kwargs)
             self._resolve_text(results)
             return results
 
@@ -456,6 +474,34 @@ class Corpus:
         if mode == "vector":
             return self.vector_search.batch_search(queries, top_k=top_k, **kwargs)
         return [self.search(q, top_k=top_k, mode=mode, **kwargs) for q in queries]
+
+    def _build_lazy_bm25(self) -> None:
+        """Load text from disk for all documents and build BM25 index.
+
+        Called on demand when hybrid search is requested on a prebuilt index.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("Building BM25 index for prebuilt corpus (%d docs)...", len(self.documents))
+        for doc in self.documents:
+            if doc.get("text"):
+                continue
+            source = doc.get("source", "")
+            if source:
+                try:
+                    with open(source, errors="replace") as f:
+                        doc["text"] = f.read()
+                except OSError:
+                    if source.endswith(".txt.txt"):
+                        try:
+                            with open(source[:-4], errors="replace") as f:
+                                doc["text"] = f.read()
+                            continue
+                        except OSError:
+                            pass
+                    doc["text"] = ""
+        self.bm25.index(self.documents, text_key="text")
+        logger.info("BM25 index built: %d documents", len(self.documents))
 
     @property
     def num_documents(self) -> int:

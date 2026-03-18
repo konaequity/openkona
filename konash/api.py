@@ -121,18 +121,35 @@ class _OpenAILLMClient:
         )
 
         t0 = time.monotonic()
-        for attempt in range(4):
+        max_retries = 8
+        for attempt in range(max_retries):
             try:
                 with urllib.request.urlopen(req, timeout=120) as resp:
                     result = json.loads(resp.read())
                 break
             except urllib.error.HTTPError as e:
-                if e.code in {429, 500, 502, 503, 504} and attempt < 3:
-                    retry_after = int(e.headers.get("Retry-After", 0))
-                    backoff = max(retry_after, 2 ** attempt)
+                # Log response body for debugging API errors
+                err_body = ""
+                try:
+                    err_body = e.read().decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+                if e.code == 400:
                     _api_logger.warning(
-                        "api_retry attempt=%d/4 code=%d backoff=%ds model=%s",
-                        attempt + 1, e.code, backoff, self.model,
+                        "api_400 model=%s body=%s err=%s",
+                        self.model, json.dumps(body)[:500], err_body[:500],
+                    )
+                if e.code in {400, 429, 500, 502, 503, 504} and attempt < max_retries - 1:
+                    retry_after = int(e.headers.get("Retry-After", 0))
+                    # 429 gets longer backoff with jitter to spread out retries
+                    if e.code == 429:
+                        import random
+                        backoff = max(retry_after, 2 ** attempt + random.random() * 2)
+                    else:
+                        backoff = max(retry_after, 2 ** attempt)
+                    _api_logger.warning(
+                        "api_retry attempt=%d/%d code=%d backoff=%.1fs model=%s",
+                        attempt + 1, max_retries, e.code, backoff, self.model,
                     )
                     time.sleep(backoff)
                     continue
@@ -1171,7 +1188,7 @@ class Agent:
             query_text = _extract_tool_query(tool_call)
             results = self.corpus.search(query_text, top_k=top_k)
             result_text = "\n\n".join(
-                f"[{i+1}] (score: {r.get('score', 0):.3f}) {r.get('text', '')}"
+                f"[{i+1}] (score: {r.get('score', 0):.3f}) [{os.path.basename(r.get('source', ''))}] {r.get('text', '')}"
                 for i, r in enumerate(results)
             )
             observation: Dict[str, Any] = {"role": "tool", "content": result_text}
@@ -1212,14 +1229,32 @@ class Agent:
                 }],
             )
 
+        # Format the question into the KARL solver prompt template (Figure 34)
+        formatted_query = self._format_solver_prompt(query)
+
         if parallel_rollouts <= 1 and not (use_vgs and self._value_model):
             # Single rollout
             env = make_environment()
-            env.reset(prompt=query)
+            env.reset(prompt=formatted_query)
             result = env.run_episode(agent, max_steps=max_steps)
             answer = result.get("final_answer") or ""
             if return_trace:
-                return {"answer": answer, "trajectory": result.get("trajectory", [])}
+                # Include full_response for judge scoring (richer context than extracted answer)
+                full_response = ""
+                for msg in reversed(result.get("history", [])):
+                    if msg.get("role") == "assistant" and not msg.get("tool_calls"):
+                        full_response = (
+                            msg.get("content", "")
+                            or msg.get("reasoning_content", "")
+                            or msg.get("reasoning", "")
+                            or ""
+                        )
+                        break
+                return {
+                    "answer": answer,
+                    "full_response": full_response,
+                    "trajectory": result.get("trajectory", []),
+                }
             return answer
 
         # Shared agent wrapper for both VGS and Parallel Thinking
@@ -1320,7 +1355,7 @@ class Agent:
                 parallel_searches=max(parallel_rollouts, 1),
                 max_depth=vgs_max_depth,
             )
-            result = vgs_engine.run(query)
+            result = vgs_engine.run(formatted_query)
             answer = result.get("answer", "")
             if return_trace:
                 return {"answer": answer, "trajectory": result.get("trajectories", [])}
@@ -1335,10 +1370,15 @@ class Agent:
             ),
             num_rollouts=parallel_rollouts,
         )
-        result = engine.run(query)
+        result = engine.run(formatted_query)
         answer = result.get("answer", "")
+        full_response = result.get("full_response", "") or answer
         if return_trace:
-            return {"answer": answer, "trajectory": result.get("rollouts", [])}
+            return {
+                "answer": answer,
+                "full_response": full_response,
+                "trajectory": result.get("rollouts", []),
+            }
         return answer
 
     # ------------------------------------------------------------------
@@ -1508,7 +1548,10 @@ class Agent:
             return self._make_hf_embed_fn()
         elif self.embedding_provider == "local":
             from konash.retrieval.vector_search import load_embedding_model
-            return load_embedding_model("Qwen/Qwen3-Embedding-0.6B")
+            try:
+                return load_embedding_model("Qwen/Qwen3-Embedding-0.6B")
+            except RuntimeError:
+                return None  # Prebuilt index will handle queries
         else:
             raise ValueError(
                 f"Unknown embedding_provider={self.embedding_provider!r}. "
@@ -1603,15 +1646,22 @@ class Agent:
         # No backend — return None so synthesis uses stubs
         return None
 
+    _solver_prompt_template: str | None = None
+
+    @classmethod
+    def _get_solver_prompt_template(cls) -> str:
+        """Return the KARL Figure 34 solver prompt template (cached)."""
+        if cls._solver_prompt_template is None:
+            from konash.prompts.registry import PromptRegistry
+            cls._solver_prompt_template = PromptRegistry.prompts["figure_34_solver_rollout"].template
+        return cls._solver_prompt_template
+
+    def _format_solver_prompt(self, question: str) -> str:
+        """Build the full solver prompt with the question substituted."""
+        return self._get_solver_prompt_template().replace("{question}", question)
+
     def _make_agent(self, max_steps: int = 20) -> BaseAgent:
         """Build an internal BaseAgent wired to the best available backend."""
-        system_prompt = (
-            "You are a knowledge agent. You have access to a search tool that "
-            "retrieves relevant documents from a knowledge base. Use it to find "
-            "evidence before answering. Search iteratively — refine your queries "
-            "based on what you find. When you have enough evidence, provide a "
-            "clear, well-supported answer."
-        )
 
         # Prefer inference API (split mode), then local, then general API
         if self.inference_api_base is not None:
@@ -1625,7 +1675,7 @@ class Agent:
 
         return BaseAgent(
             llm_client=llm_client,
-            system_prompt=system_prompt,
+            system_prompt=None,
             max_steps=max_steps,
         )
 

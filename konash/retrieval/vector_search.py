@@ -82,12 +82,10 @@ def load_embedding_model(
     if embed_fn is None:
         embed_fn = _try_load_transformers(model_name, device, trust_remote_code)
     if embed_fn is None:
-        logger.warning(
-            "Could not load embedding model %r (install sentence-transformers "
-            "or transformers+torch). Falling back to trigram pseudo-embeddings.",
-            model_name,
+        raise RuntimeError(
+            f"Could not load embedding model {model_name!r}. "
+            f"Install sentence-transformers or transformers+torch."
         )
-        embed_fn = _trigram_embed_fn
 
     _EMBEDDING_MODEL_CACHE[cache_key] = embed_fn
     return embed_fn
@@ -149,16 +147,25 @@ def _try_load_transformers(
         model = model.to(device).eval()
         logger.info("Loaded embedding model via transformers: %s → %s", model_name, device)
 
+        # Qwen3-Embedding models use instruction prefixes for queries
+        _QUERY_PREFIX = (
+            "Instruct: Given a web search query, retrieve relevant passages "
+            "that answer the query\nQuery: "
+        ) if "qwen3" in model_name.lower() or "Qwen3" in model_name else ""
+
         def embed_fn(texts: List[str]) -> np.ndarray:
+            prefixed = [f"{_QUERY_PREFIX}{t}" for t in texts] if _QUERY_PREFIX else texts
             encoded = tokenizer(
-                texts, padding=True, truncation=True, max_length=512,
+                prefixed, padding=True, truncation=True, max_length=512,
                 return_tensors="pt",
             ).to(device)
             with torch.no_grad():
                 outputs = model(**encoded)
-            # Mean pooling over non-padding tokens
-            mask = encoded["attention_mask"].unsqueeze(-1).float()
-            embeddings = (outputs.last_hidden_state * mask).sum(dim=1) / mask.sum(dim=1)
+            # Last-token pooling (Qwen3-Embedding models use this, not mean pooling)
+            attention_mask = encoded["attention_mask"]
+            seq_lens = attention_mask.sum(dim=1) - 1
+            batch_idx = torch.arange(outputs.last_hidden_state.size(0), device=device)
+            embeddings = outputs.last_hidden_state[batch_idx, seq_lens.long()]
             # L2 normalize
             embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
             return embeddings.cpu().numpy()
