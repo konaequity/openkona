@@ -135,6 +135,8 @@ def eval_one_question(
     if verbose_trace:
         console.print(f"  [bold]Judge score:[/] {score:.3f}  nuggets: {score_result.get('nuggets', [])[:5]}...")
         console.print(f"  [bold]Nugget scores:[/] {score_result.get('nugget_scores', [])[:10]}...")
+        if hasattr(scorer.judge, 'last_prompt'):
+            console.print(f"  [dim]Judge input (answer):[/] {judge_text}")
         if hasattr(scorer.judge, 'last_raw_response') and scorer.judge.last_raw_response:
             console.print(f"  [dim]Judge reasoning:[/] {scorer.judge.last_raw_response}")
         console.print()
