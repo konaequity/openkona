@@ -166,10 +166,26 @@ class Agent:
         """Extract the final answer from the conversation history.
 
         Walks the history backwards looking for the last assistant message
-        that does not appear to be a tool call.  Checks ``reasoning_content``
-        and ``reasoning`` as fallbacks for GLM 4.5 Air which puts answers
-        in a separate reasoning field instead of ``content``.
+        that does not appear to be a tool call.  If the response contains
+        an ``Exact Answer:`` line (KARL paper format), extracts just that.
+        Otherwise falls back to the full content.
         """
+        import re
+
+        def _extract_exact_answer(text: str) -> str | None:
+            """Parse 'Exact Answer: ...' from structured response."""
+            # Match "Exact Answer:" followed by the answer text
+            m = re.search(r"Exact Answer:\s*(.+?)(?:\nConfidence:|\Z)", text, re.DOTALL)
+            if m:
+                return m.group(1).strip()
+            return None
+
+        def _clean_think_tags(text: str) -> str:
+            """Strip <think>...</think> tags from response."""
+            text = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL)
+            text = re.sub(r"<think>.*", "", text, flags=re.DOTALL)
+            return text.strip()
+
         # First pass: look for a genuine final answer (no tool calls)
         for message in reversed(conversation_history):
             if message.get("role") != "assistant":
@@ -183,13 +199,23 @@ class Agent:
                 or ""
             )
             # Skip compression placeholders injected by CompressionPlugin
-            if content and not content.startswith("[Compressed:"):
-                return content
+            if not content or content.startswith("[Compressed:"):
+                continue
+
+            # Try to extract "Exact Answer:" from raw content first
+            # (may be inside or outside think tags)
+            exact = _extract_exact_answer(content)
+            if exact:
+                return _clean_think_tags(exact)
+
+            # Strip think tags and return what's left
+            cleaned = _clean_think_tags(content)
+            if cleaned:
+                return cleaned
 
         # Second pass: if no non-tool-call answer found (e.g. GLM via Zhipu
         # always makes tool calls), use the last reasoning content as the
         # answer — this is better than returning None.
-        # Skip compression placeholders and tool results.
         for message in reversed(conversation_history):
             if message.get("role") != "assistant":
                 continue
@@ -200,10 +226,14 @@ class Agent:
             )
             if not reasoning or len(reasoning) < 50:
                 continue
-            # Skip compression placeholder messages
             if reasoning.startswith("[Compressed:"):
                 continue
-            return reasoning
+            exact = _extract_exact_answer(reasoning)
+            if exact:
+                return _clean_think_tags(exact)
+            cleaned = _clean_think_tags(reasoning)
+            if cleaned:
+                return cleaned
 
         return None
 

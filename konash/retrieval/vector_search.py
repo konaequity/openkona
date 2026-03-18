@@ -82,12 +82,10 @@ def load_embedding_model(
     if embed_fn is None:
         embed_fn = _try_load_transformers(model_name, device, trust_remote_code)
     if embed_fn is None:
-        logger.warning(
-            "Could not load embedding model %r (install sentence-transformers "
-            "or transformers+torch). Falling back to trigram pseudo-embeddings.",
-            model_name,
+        raise RuntimeError(
+            f"Could not load embedding model {model_name!r}. "
+            f"Install sentence-transformers or transformers+torch."
         )
-        embed_fn = _trigram_embed_fn
 
     _EMBEDDING_MODEL_CACHE[cache_key] = embed_fn
     return embed_fn

@@ -178,10 +178,16 @@ class Corpus:
             doc_ids = data["doc_ids"].tolist()
             docs_dir = self.path if self.path.is_dir() else self.path.parent
 
-            # Check if documents live in a subdirectory
-            sub_dir = docs_dir / "documents"
-            use_sub = sub_dir.is_dir()
-            self._docs_dir = sub_dir if use_sub else docs_dir
+            # Check if documents live in a subdirectory.
+            # Prefer pages/ (page-level indexes) over documents/ (whole-doc).
+            pages_sub = docs_dir / "pages"
+            docs_sub = docs_dir / "documents"
+            if pages_sub.is_dir():
+                self._docs_dir = pages_sub
+            elif docs_sub.is_dir():
+                self._docs_dir = docs_sub
+            else:
+                self._docs_dir = docs_dir
 
             # Create lightweight stub documents (no file I/O — text loaded on demand)
             documents = []

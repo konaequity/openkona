@@ -241,9 +241,13 @@ def download_financebench(
     output_dir: Optional[str] = None,
     console: Optional[Console] = None,
 ) -> str:
-    """Download FinanceBench and save as text files.
+    """Download FinanceBench eval questions and page-level corpus.
 
-    Returns path to the documents directory.
+    The corpus consists of 53K+ page-level text files extracted from all
+    368 SEC filing PDFs in the FinanceBench repository, with a pre-built
+    Qwen3-0.6B embedding index matching the KARL paper setup.
+
+    Returns path to the corpus directory.
     """
     try:
         from datasets import load_dataset
@@ -254,71 +258,28 @@ def download_financebench(
     if output_dir is None:
         output_dir = os.path.join(DEFAULT_CORPUS_DIR, "financebench")
 
-    docs_dir = os.path.join(output_dir, "documents")
+    pages_dir = os.path.join(output_dir, "pages")
+    index_path = os.path.join(output_dir, "prebuilt_index.npz")
 
-    if os.path.isdir(docs_dir) and len(os.listdir(docs_dir)) > 10:
-        count = len([f for f in os.listdir(docs_dir) if f.endswith(".txt")])
-        _print(console, f"    Already downloaded: {count} documents in {docs_dir}")
+    # Check if full page-level corpus is already set up
+    if (os.path.isdir(pages_dir)
+            and len(os.listdir(pages_dir)) > 50000
+            and os.path.exists(index_path)):
+        count = len(os.listdir(pages_dir))
+        _print(console, f"    Already downloaded: {count:,} pages in {pages_dir}")
         return output_dir
 
-    os.makedirs(docs_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
-    _print(console, "    Downloading from HuggingFace (PatronusAI/financebench)...")
+    # Step 1: Download eval questions from HuggingFace
+    _print(console, "    Downloading eval questions from HuggingFace (PatronusAI/financebench)...")
     ds = load_dataset("PatronusAI/financebench", split="train")
-    _print(console, f"    Loaded {len(ds)} records")
 
-    seen: set = set()
-    doc_count = 0
     eval_questions: List[Dict] = []
-
     for rec in ds:
         question = rec.get("question", "")
         answer = rec.get("answer", "")
-        doc_name = rec.get("doc_name", "") or rec.get("company", f"doc_{doc_count}")
-
-        # Extract evidence — FinanceBench stores evidence as a list of dicts,
-        # each with 'evidence_text', 'evidence_text_full_page', and
-        # 'evidence_page_num'.  Save each unique evidence page as a separate
-        # file so multi-question documents don't lose pages.
-        evidence = rec.get("evidence", "") or rec.get("context", "")
-
-        # Normalise to a list of evidence chunks
-        if isinstance(evidence, dict):
-            evidence_items = [evidence]
-        elif isinstance(evidence, list):
-            evidence_items = [e for e in evidence if isinstance(e, dict)]
-        else:
-            evidence_items = []
-            # Fallback: treat as raw text
-            if evidence:
-                doc_key = doc_name
-                if doc_key not in seen:
-                    seen.add(doc_key)
-                    safe_name = doc_name.replace("/", "_").replace("\\", "_")[:120]
-                    filepath = os.path.join(docs_dir, f"{safe_name}.txt")
-                    with open(filepath, "w", encoding="utf-8") as f:
-                        f.write(str(evidence))
-                    doc_count += 1
-
-        for ev in evidence_items:
-            page_num = ev.get("evidence_page_num", "")
-            # Prefer full page text for maximum context
-            context = (
-                ev.get("evidence_text_full_page", "")
-                or ev.get("evidence_text", "")
-            )
-            if not context:
-                continue
-
-            doc_key = f"{doc_name}_p{page_num}" if page_num else doc_name
-            if doc_key not in seen:
-                seen.add(doc_key)
-                safe_name = doc_key.replace("/", "_").replace("\\", "_")[:120]
-                filepath = os.path.join(docs_dir, f"{safe_name}.txt")
-                with open(filepath, "w", encoding="utf-8") as f:
-                    f.write(context)
-                doc_count += 1
-
+        doc_name = rec.get("doc_name", "") or rec.get("company", "")
         if question:
             eval_questions.append({
                 "question": question,
@@ -329,12 +290,15 @@ def download_financebench(
     eval_path = os.path.join(output_dir, "eval_questions.json")
     with open(eval_path, "w", encoding="utf-8") as f:
         json.dump(eval_questions, f, indent=2)
+    _print(console, f"    {len(eval_questions)} eval questions loaded")
 
-    # Copy pre-built Qwen3-0.6B embedding index (ships with the package)
-    _install_prebuilt_index(output_dir, "financebench_qwen3_0.6b.npz", console)
+    # Step 2: Download page-level corpus and embedding index from HuggingFace
+    _download_prebuilt_index_hf(output_dir, "financebench/qwen3-0.6b-pages.npz", console)
+    _download_financebench_pages(output_dir, console)
 
+    pages_count = len(os.listdir(pages_dir)) if os.path.isdir(pages_dir) else 0
     _print(console, f"    [bold green]Done![/]")
-    _print(console, f"    Documents:  {doc_count}")
+    _print(console, f"    Pages:      {pages_count:,}")
     _print(console, f"    Eval Q's:   {len(eval_questions)}")
     _print(console, f"    Saved to:   {output_dir}")
 
@@ -371,6 +335,42 @@ def _download_prebuilt_index_hf(
         _print(console, f"    [green]✓[/]  Pre-built index installed ({size_mb:.0f} MB)")
     except Exception as exc:
         _print(console, f"    [dim]Could not download pre-built index ({exc}). Will embed on first use.[/]")
+
+
+def _download_financebench_pages(
+    output_dir: str,
+    console: Optional["Console"] = None,
+) -> None:
+    """Download page-level text files for FinanceBench from HuggingFace."""
+    pages_dir = os.path.join(output_dir, "pages")
+    if os.path.isdir(pages_dir) and len(os.listdir(pages_dir)) > 50000:
+        return  # Already have them
+
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        _print(console, "    [dim]Skipping pages download (needs huggingface_hub).[/]")
+        return
+
+    _print(console, "    Downloading page-level text files...")
+    try:
+        tarball = hf_hub_download(
+            "konaeq/konash-indexes", "financebench/pages.tar.gz", repo_type="dataset",
+        )
+        import tarfile
+        with tarfile.open(tarball, "r:gz") as tf:
+            tf.extractall(output_dir)
+        # The tarball extracts as all_pages/, rename to pages/
+        extracted = os.path.join(output_dir, "all_pages")
+        if os.path.isdir(extracted):
+            if os.path.isdir(pages_dir):
+                import shutil
+                shutil.rmtree(pages_dir)
+            os.rename(extracted, pages_dir)
+        count = len(os.listdir(pages_dir))
+        _print(console, f"    [green]✓[/]  {count:,} page files installed")
+    except Exception as exc:
+        _print(console, f"    [dim]Could not download pages ({exc}).[/]")
 
 
 def _install_prebuilt_index(

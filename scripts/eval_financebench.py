@@ -66,7 +66,27 @@ def eval_one_question(
     latency = time.monotonic() - t0
 
     answer = result["answer"] if isinstance(result, dict) else result
+    full_response = result.get("full_response", answer) if isinstance(result, dict) else answer
     trajectory = result.get("trajectory", []) if isinstance(result, dict) else []
+
+    # Always log steps (compact by default, verbose if requested)
+    num_searches = 0
+    search_queries = []
+    for step in trajectory:
+        resp = step.get("agent_response") or {}
+        tool_calls = resp.get("tool_calls", [])
+        if tool_calls:
+            num_searches += 1
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                args = fn.get("arguments", "")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+                q = args.get("query", str(args)) if isinstance(args, dict) else str(args)
+                search_queries.append(q)
 
     if verbose_trace:
         console.print(f"\n  [bold cyan]Q:[/] {question}")
@@ -89,7 +109,6 @@ def eval_one_question(
             if tool_results:
                 for tr in tool_results:
                     tr_content = tr.get("content", "") if isinstance(tr, dict) else str(tr)
-                    # Show first 300 chars of search results
                     console.print(f"  [dim]Results ({len(tr_content)} chars):[/] {tr_content[:300]}")
             if content and not tool_calls:
                 console.print(f"  [green]Answer:[/] {content[:400]}")
@@ -97,9 +116,25 @@ def eval_one_question(
         console.print(f"\n  [bold]Final answer:[/] {(answer or '(empty)')[:300]}")
         console.print()
 
-    # Pass question context to the judge (KARL Figure 31 includes it)
-    scorer.judge.question_context = question
-    score_result = scorer.score(answer, reference, policy=policy)
+    # Send full response + extracted answer to the judge for maximum context.
+    # The judge needs the explanation to properly assess whether numerical
+    # values like $8.74B support a nugget of $8.70B.
+    if full_response and full_response != answer:
+        judge_text = f"{full_response}\n\nExtracted Answer: {answer}"
+    else:
+        judge_text = answer or ""
+
+    # Set question context with numerical tolerance guidance for financial data.
+    # Rounding differences are common in FinanceBench (e.g. $8.738B vs $8.70B).
+    scorer.judge.question_context = (
+        f"{question}\n\n"
+        "Note: For numerical values, rounding differences should be ignored "
+        "if they do not meaningfully change the answer. For example, $8.74 "
+        "billion and $8.70 billion refer to the same figure with different "
+        "rounding precision. Two numbers are considered equivalent if one "
+        "can be rounded to the other."
+    )
+    score_result = scorer.score(judge_text, reference, policy=policy)
     score = score_result["score"]
 
     if verbose_trace:
@@ -113,6 +148,9 @@ def eval_one_question(
         "score": score,
         "latency": latency,
         "trajectory": trajectory,
+        "num_steps": len(trajectory),
+        "num_searches": num_searches,
+        "search_queries": search_queries,
     }
 
 
@@ -140,11 +178,37 @@ def run_eval(
         with lock:
             completed[0] += 1
             n = completed[0]
+            elapsed = time.monotonic() - total_start
+            avg_per_q = elapsed / n
+            remaining = (len(questions) - n) * avg_per_q / max(workers, 1)
+            eta_min = int(remaining // 60)
+            eta_sec = int(remaining % 60)
+
+            done_scores = [results[i]["score"] for i in range(len(results)) if results[i] is not None]
+            running_correct = sum(1 for s in done_scores if s >= 0.6)
+            running_acc = running_correct / len(done_scores) if done_scores else 0
+
             marker = "[green]✓[/]" if r["score"] >= 0.6 else "[yellow]~[/]" if r["score"] > 0 else "[red]✗[/]"
+            n_steps = r.get("num_steps", 0)
+            n_searches = r.get("num_searches", 0)
+            queries = r.get("search_queries", [])
+            answer_preview = (r.get("answer") or "(empty)")[:120].replace("\n", " ")
+
             console.print(
-                f"  [dim]{n}/{len(questions)}[/]  {marker}  {r['score']:.2f}  "
-                f"[dim]{r['latency']:.1f}s[/]  {q['question'][:70]}..."
+                f"\n  [dim]{n}/{len(questions)}[/]  {marker}  {r['score']:.2f}  "
+                f"[dim]{r['latency']:.1f}s[/]  "
+                f"[bold]{running_acc:.0%}[/] [dim]({running_correct}/{n})[/]  "
+                f"[dim]ETA {eta_min}m{eta_sec:02d}s[/]"
             )
+            console.print(f"  [dim]Q:[/] {q['question'][:100]}")
+            console.print(f"  [dim]Steps:[/] {n_steps} ({n_searches} searches)")
+            if queries:
+                for sq in queries[:3]:
+                    console.print(f"    [blue]→[/] [dim]{sq[:80]}[/]")
+                if len(queries) > 3:
+                    console.print(f"    [dim]... +{len(queries)-3} more[/]")
+            console.print(f"  [dim]Answer:[/] {answer_preview}")
+            console.print(f"  [dim]Ref:[/] {q['answer'][:120]}")
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_run, i, q): i for i, q in enumerate(questions)}
@@ -412,7 +476,8 @@ def main():
     parser.add_argument("--passk", type=int, default=None, metavar="N",
                         help="Run Pass@k eval with N rollouts per question (e.g. --passk 10)")
     parser.add_argument("--model", default=None, help="Model ID (auto-detected from provider)")
-    parser.add_argument("--provider", default=None, choices=["zhipu", "together"], help="LLM provider (default: auto-detect from available keys)")
+    parser.add_argument("--provider", default=None, choices=["zhipu", "together", "vllm"], help="LLM provider (default: auto-detect from available keys)")
+    parser.add_argument("--api-base", default=None, help="Custom API base URL (e.g. http://localhost:8000/v1 for vLLM)")
     parser.add_argument("--api-key", default=None, help="API key for solver provider")
     parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL, help="Judge model (default: gpt-4o-mini)")
     parser.add_argument("--judge-key", default=None, help="OpenAI API key for judge (or set OPENAI_API_KEY)")
@@ -425,28 +490,39 @@ def main():
         with open(config_path) as f:
             config = json.load(f)
 
-    # Auto-detect provider: prefer Zhipu (free), fall back to Together
+    # Auto-detect provider: custom api-base > Zhipu (free) > Together
     provider = args.provider
     api_key = args.api_key
 
-    if not provider:
-        zhipu_key = os.environ.get("ZHIPU_API_KEY") or config.get("zhipu_api_key")
-        together_key = os.environ.get("TOGETHER_API_KEY") or config.get("together_api_key")
-        if zhipu_key:
-            provider = "zhipu"
-            api_key = api_key or zhipu_key
-        elif together_key:
-            provider = "together"
-            api_key = api_key or together_key
-
-    if provider == "zhipu":
-        solver_api_base = ZHIPU_API_BASE
-        solver_model = args.model or DEFAULT_MODEL_ZHIPU
-        api_key = api_key or os.environ.get("ZHIPU_API_KEY") or config.get("zhipu_api_key")
-    else:
-        solver_api_base = TOGETHER_API_BASE
+    if args.api_base:
+        # Custom API base (vLLM, local server, etc.)
+        provider = provider or "vllm"
+        solver_api_base = args.api_base
         solver_model = args.model or DEFAULT_MODEL_TOGETHER
-        api_key = api_key or os.environ.get("TOGETHER_API_KEY") or config.get("together_api_key")
+        api_key = api_key or "none"  # vLLM doesn't require a key
+    elif provider == "vllm":
+        solver_api_base = args.api_base or "http://localhost:8000/v1"
+        solver_model = args.model or DEFAULT_MODEL_TOGETHER
+        api_key = api_key or "none"
+    else:
+        if not provider:
+            zhipu_key = os.environ.get("ZHIPU_API_KEY") or config.get("zhipu_api_key")
+            together_key = os.environ.get("TOGETHER_API_KEY") or config.get("together_api_key")
+            if zhipu_key:
+                provider = "zhipu"
+                api_key = api_key or zhipu_key
+            elif together_key:
+                provider = "together"
+                api_key = api_key or together_key
+
+        if provider == "zhipu":
+            solver_api_base = ZHIPU_API_BASE
+            solver_model = args.model or DEFAULT_MODEL_ZHIPU
+            api_key = api_key or os.environ.get("ZHIPU_API_KEY") or config.get("zhipu_api_key")
+        else:
+            solver_api_base = TOGETHER_API_BASE
+            solver_model = args.model or DEFAULT_MODEL_TOGETHER
+            api_key = api_key or os.environ.get("TOGETHER_API_KEY") or config.get("together_api_key")
 
     if not api_key:
         console.print("[red]No API key found.[/] Run [cyan]konash setup[/] or set ZHIPU_API_KEY / TOGETHER_API_KEY.")
@@ -525,8 +601,16 @@ def main():
     console.rule("[bold]Single rollout[/]", style="dim")
     console.print()
 
-    # Force single worker in verbose mode to keep output readable
-    eval_workers = 1 if args.verbose else args.workers
+    # Throttle concurrency: Zhipu free tier rate-limits at ~8 concurrent
+    # heavy requests. With N=3 parallel rollouts each running multi-step,
+    # 2 workers keeps us under the limit. Together AI can handle more.
+    if args.verbose:
+        eval_workers = 1
+    elif provider == "zhipu" and args.workers > 2:
+        eval_workers = 2
+        console.print(f"  [dim]Zhipu free tier: throttling to {eval_workers} workers[/]")
+    else:
+        eval_workers = args.workers
     baseline = run_eval(
         agent, questions, scorer, policy, "Single rollout",
         parallel_rollouts=1, workers=eval_workers,
