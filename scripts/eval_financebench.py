@@ -101,7 +101,7 @@ def eval_one_question(
 
             console.print(f"\n  [dim]--- Step {i} {'[FINAL]' if done else ''} ---[/]")
             if reasoning:
-                console.print(f"  [yellow]Thinking:[/] {reasoning[:300]}")
+                console.print(f"  [yellow]Thinking:[/] {reasoning}")
             if tool_calls:
                 for tc in tool_calls:
                     fn = tc.get("function", {})
@@ -109,11 +109,11 @@ def eval_one_question(
             if tool_results:
                 for tr in tool_results:
                     tr_content = tr.get("content", "") if isinstance(tr, dict) else str(tr)
-                    console.print(f"  [dim]Results ({len(tr_content)} chars):[/] {tr_content[:300]}")
+                    console.print(f"  [dim]Results ({len(tr_content)} chars):[/] {tr_content}")
             if content and not tool_calls:
-                console.print(f"  [green]Answer:[/] {content[:400]}")
+                console.print(f"  [green]Answer:[/] {content}")
 
-        console.print(f"\n  [bold]Final answer:[/] {(answer or '(empty)')[:300]}")
+        console.print(f"\n  [bold]Final answer:[/] {answer or '(empty)'}")
         console.print()
 
     # Send full response + extracted answer to the judge for maximum context.
@@ -141,7 +141,7 @@ def eval_one_question(
         console.print(f"  [bold]Judge score:[/] {score}  nuggets: {score_result.get('nuggets', [])}")
         # Show judge input/output for debugging
         if hasattr(scorer.judge, 'last_prompt'):
-            console.print(f"  [dim]Judge input (answer):[/] {judge_text[:200]}")
+            console.print(f"  [dim]Judge input (answer):[/] {judge_text}")
         if hasattr(scorer.judge, 'last_raw_response') and scorer.judge.last_raw_response:
             console.print(f"  [dim]Judge reasoning:[/] {scorer.judge.last_raw_response}")
         console.print()

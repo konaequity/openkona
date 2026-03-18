@@ -147,9 +147,16 @@ def _try_load_transformers(
         model = model.to(device).eval()
         logger.info("Loaded embedding model via transformers: %s → %s", model_name, device)
 
+        # Qwen3-Embedding models use instruction prefixes for queries
+        _QUERY_PREFIX = (
+            "Instruct: Given a web search query, retrieve relevant passages "
+            "that answer the query\nQuery: "
+        ) if "qwen3" in model_name.lower() or "Qwen3" in model_name else ""
+
         def embed_fn(texts: List[str]) -> np.ndarray:
+            prefixed = [f"{_QUERY_PREFIX}{t}" for t in texts] if _QUERY_PREFIX else texts
             encoded = tokenizer(
-                texts, padding=True, truncation=True, max_length=512,
+                prefixed, padding=True, truncation=True, max_length=512,
                 return_tensors="pt",
             ).to(device)
             with torch.no_grad():
