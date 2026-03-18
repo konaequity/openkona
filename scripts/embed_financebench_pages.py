@@ -3,6 +3,11 @@
 
 Produces a prebuilt_index.npz compatible with konash's Corpus loader.
 
+IMPORTANT: Qwen3-Embedding uses LAST-TOKEN pooling, not mean pooling.
+This must match how queries are embedded at search time (via
+sentence-transformers which auto-detects last-token pooling from the
+model config).
+
 Usage (on GPU machine):
     pip install torch transformers numpy
     python embed_financebench_pages.py --pages-dir ./pages --output prebuilt_index.npz
@@ -37,7 +42,7 @@ def load_pages(pages_dir: str) -> tuple[list[str], list[str]]:
         doc_id = os.path.splitext(os.path.basename(f))[0]
         with open(f, "r", encoding="utf-8") as fh:
             text = fh.read().strip()
-        if text:  # Skip empty pages
+        if len(text) >= 5:  # Skip empty/near-empty pages (bare page numbers, etc.)
             doc_ids.append(doc_id)
             texts.append(text)
     return doc_ids, texts
@@ -49,7 +54,13 @@ def embed_batch(
     tokenizer: AutoTokenizer,
     max_length: int = MAX_LENGTH,
 ) -> np.ndarray:
-    """Embed a batch of texts, return (batch_size, dim) float16 array."""
+    """Embed a batch of texts using last-token pooling.
+
+    Qwen3-Embedding models use last-token pooling (the embedding of the
+    final non-padding token), NOT mean pooling or CLS pooling. This is
+    confirmed by the sentence-transformers config:
+        pooling_mode_lasttoken: True
+    """
     encoded = tokenizer(
         texts,
         padding=True,
@@ -60,19 +71,18 @@ def embed_batch(
 
     with torch.no_grad():
         outputs = model(**encoded)
-        # Use last hidden state [CLS] or mean pooling depending on model
-        # Qwen3-Embedding uses last_hidden_state with mean pooling
         attention_mask = encoded["attention_mask"]
         hidden = outputs.last_hidden_state
-        # Masked mean pooling
-        mask_expanded = attention_mask.unsqueeze(-1).expand(hidden.size()).float()
-        sum_embeddings = torch.sum(hidden * mask_expanded, dim=1)
-        sum_mask = torch.clamp(mask_expanded.sum(dim=1), min=1e-9)
-        embeddings = sum_embeddings / sum_mask
+
+        # Last-token pooling: get the embedding at the last non-padding position
+        # For each sequence, find the index of the last real token
+        seq_lens = attention_mask.sum(dim=1) - 1  # (batch_size,)
+        batch_indices = torch.arange(hidden.size(0), device=hidden.device)
+        embeddings = hidden[batch_indices, seq_lens.long()]
 
     # L2 normalize
     embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-    return embeddings.cpu().numpy().astype(np.float16)
+    return embeddings.cpu().float().numpy().astype(np.float16)
 
 
 def main():
@@ -98,7 +108,7 @@ def main():
     else:
         print("  WARNING: No GPU detected, running on CPU (will be slow)")
 
-    print(f"Embedding {len(texts)} pages in batches of {args.batch_size}...")
+    print(f"Embedding {len(texts)} pages in batches of {args.batch_size} (last-token pooling)...")
     all_embeddings = []
     t0 = time.monotonic()
 

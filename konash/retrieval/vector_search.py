@@ -154,9 +154,11 @@ def _try_load_transformers(
             ).to(device)
             with torch.no_grad():
                 outputs = model(**encoded)
-            # Mean pooling over non-padding tokens
-            mask = encoded["attention_mask"].unsqueeze(-1).float()
-            embeddings = (outputs.last_hidden_state * mask).sum(dim=1) / mask.sum(dim=1)
+            # Last-token pooling (Qwen3-Embedding models use this, not mean pooling)
+            attention_mask = encoded["attention_mask"]
+            seq_lens = attention_mask.sum(dim=1) - 1
+            batch_idx = torch.arange(outputs.last_hidden_state.size(0), device=device)
+            embeddings = outputs.last_hidden_state[batch_idx, seq_lens.long()]
             # L2 normalize
             embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
             return embeddings.cpu().numpy()
