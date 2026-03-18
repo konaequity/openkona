@@ -272,6 +272,7 @@ class LLMNuggetJudge:
     ):
         self.llm_fn = llm_fn
         self.question_context = question_context
+        self.last_raw_response: str = ""  # Raw judge output for debugging
 
     def judge(self, candidate: str, nugget: str) -> float:
         """Judge a single nugget against the candidate answer.
@@ -336,11 +337,12 @@ class LLMNuggetJudge:
             "parts.\n"
             "- not_support: The answer does not capture or does not provide "
             "information entailing the decompositional fact.\n\n"
-            "Output Format: Return the labels as a Python list of strings "
-            "(List[str]), in the same order as the decompositional facts. "
-            "Provide a label for each fact. Do not provide any explanation "
-            "or reasoning.\n"
-            '["support", "not_support", "partial_support", ...]\n\n'
+            "Output Format: First provide a brief reasoning for each fact, "
+            "then return the labels as a Python list of strings "
+            "(List[str]), in the same order as the decompositional facts.\n"
+            "Format:\n"
+            "Reasoning: <one line per fact explaining your judgment>\n"
+            'Labels: ["support", "not_support", "partial_support", ...]\n\n'
             "Input:\n"
             f"Question: {question}\n"
             f"Answer: {candidate}\n"
@@ -355,6 +357,8 @@ class LLMNuggetJudge:
                 if isinstance(response, dict)
                 else str(response)
             )
+            self.last_prompt = prompt  # Store input for debugging
+            self.last_raw_response = content  # Store output for debugging
 
             # Parse the Python list from the response
             match = re.search(r"\[.*?\]", content, re.DOTALL)

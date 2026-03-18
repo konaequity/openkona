@@ -181,9 +181,12 @@ class Agent:
             return None
 
         def _clean_think_tags(text: str) -> str:
-            """Strip <think>...</think> tags from response."""
+            """Strip <think>...</think> tags and markdown artifacts from response."""
             text = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL)
             text = re.sub(r"<think>.*", "", text, flags=re.DOTALL)
+            # Strip leading markdown bold markers (** or __) that break extraction
+            text = re.sub(r"^\s*\*{1,2}\s*", "", text)
+            text = re.sub(r"^\s*_{1,2}\s*", "", text)
             return text.strip()
 
         # First pass: look for a genuine final answer (no tool calls)

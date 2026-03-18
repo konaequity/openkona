@@ -139,6 +139,11 @@ def eval_one_question(
 
     if verbose_trace:
         console.print(f"  [bold]Judge score:[/] {score}  nuggets: {score_result.get('nuggets', [])}")
+        # Show judge input/output for debugging
+        if hasattr(scorer.judge, 'last_prompt'):
+            console.print(f"  [dim]Judge input (answer):[/] {judge_text[:200]}")
+        if hasattr(scorer.judge, 'last_raw_response') and scorer.judge.last_raw_response:
+            console.print(f"  [dim]Judge reasoning:[/] {scorer.judge.last_raw_response}")
         console.print()
 
     return {
@@ -470,7 +475,9 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate KONASH on FinanceBench")
     parser.add_argument("--train", action="store_true", help="Train at Quick scale before eval")
     parser.add_argument("--limit", type=int, default=None, help="Limit eval questions")
-    parser.add_argument("--parallel", type=int, default=3, help="Parallel rollouts for PT mode (default: 3)")
+    parser.add_argument("--offset", type=int, default=0, help="Skip first N eval questions")
+    parser.add_argument("--parallel", type=int, default=3, help="Parallel rollouts for PT mode (default: 3, 0 to skip)")
+    parser.add_argument("--single-only", action="store_true", help="Only run single rollout, skip parallel thinking")
     parser.add_argument("--workers", type=int, default=4, help="Concurrent eval threads (default: 4)")
     parser.add_argument("--verbose", action="store_true", help="Print full trace for each question")
     parser.add_argument("--passk", type=int, default=None, metavar="N",
@@ -550,7 +557,11 @@ def main():
     corpus_dir = download_financebench(console=console)
     docs_dir = os.path.join(corpus_dir, "documents")
 
-    questions = load_eval_questions(corpus_dir, limit=args.limit)
+    questions = load_eval_questions(corpus_dir)
+    if args.offset:
+        questions = questions[args.offset:]
+    if args.limit:
+        questions = questions[:args.limit]
     console.print(f"  {len(questions)} eval questions loaded")
     console.print()
 
@@ -601,14 +612,10 @@ def main():
     console.rule("[bold]Single rollout[/]", style="dim")
     console.print()
 
-    # Throttle concurrency: Zhipu free tier rate-limits at ~8 concurrent
-    # heavy requests. With N=3 parallel rollouts each running multi-step,
-    # 2 workers keeps us under the limit. Together AI can handle more.
-    if args.verbose:
-        eval_workers = 1
-    elif provider == "zhipu" and args.workers > 2:
-        eval_workers = 2
-        console.print(f"  [dim]Zhipu free tier: throttling to {eval_workers} workers[/]")
+    # Zhipu concurrency limit is 5.  Default to 4 workers to stay under.
+    if provider == "zhipu" and args.workers > 4:
+        eval_workers = 4
+        console.print(f"  [dim]Zhipu: throttling to {eval_workers} workers (limit 5)[/]")
     else:
         eval_workers = args.workers
     baseline = run_eval(
@@ -625,21 +632,24 @@ def main():
     console.print()
 
     # Step 5: Parallel thinking eval (N=3 rollouts + aggregation)
-    console.rule(f"[bold]Parallel thinking[/]  (N={args.parallel})", style="dim")
-    console.print()
+    parallel = None
+    if not args.single_only and args.parallel > 0:
+        console.rule(f"[bold]Parallel thinking[/]  (N={args.parallel})", style="dim")
+        console.print()
 
-    parallel = run_eval(
-        agent, questions, scorer, policy, f"Parallel (N={args.parallel})",
-        parallel_rollouts=args.parallel, workers=eval_workers,
-        verbose_trace=args.verbose,
-    )
-    console.print()
-    console.print(
-        f"  [bold]Parallel:[/]  {parallel['correct']}/{parallel['total']} "
-        f"({parallel['accuracy']:.0%})  score {parallel['avg_score']:.3f}  "
-        f"{parallel['total_time']:.0f}s total"
-    )
-    console.print()
+        parallel = run_eval(
+            agent, questions, scorer, policy, f"Parallel (N={args.parallel})",
+            parallel_rollouts=args.parallel, workers=eval_workers,
+            verbose_trace=args.verbose,
+        )
+    if parallel:
+        console.print()
+        console.print(
+            f"  [bold]Parallel:[/]  {parallel['correct']}/{parallel['total']} "
+            f"({parallel['accuracy']:.0%})  score {parallel['avg_score']:.3f}  "
+            f"{parallel['total_time']:.0f}s total"
+        )
+        console.print()
 
     # Step 5b: Pass@k eval (optional)
     passk_result = None
@@ -677,23 +687,24 @@ def main():
         f"{baseline['avg_latency']:.1f}s",
         f"{baseline['total_time']:.0f}s",
     )
-    table.add_row(
-        f"Parallel (N={args.parallel})",
-        f"{parallel['accuracy']:.0%}",
-        f"{parallel['avg_score']:.3f}",
-        f"{parallel['avg_latency']:.1f}s",
-        f"{parallel['total_time']:.0f}s",
-    )
-    delta = parallel["avg_score"] - baseline["avg_score"]
-    sign = "+" if delta >= 0 else ""
-    table.add_row(
-        "Delta",
-        "",
-        f"{sign}{delta:.3f}",
-        "",
-        "",
-        style="dim",
-    )
+    if parallel:
+        table.add_row(
+            f"Parallel (N={args.parallel})",
+            f"{parallel['accuracy']:.0%}",
+            f"{parallel['avg_score']:.3f}",
+            f"{parallel['avg_latency']:.1f}s",
+            f"{parallel['total_time']:.0f}s",
+        )
+        delta = parallel["avg_score"] - baseline["avg_score"]
+        sign = "+" if delta >= 0 else ""
+        table.add_row(
+            "Delta",
+            "",
+            f"{sign}{delta:.3f}",
+            "",
+            "",
+            style="dim",
+        )
 
     if passk_result:
         table.add_section()
@@ -719,8 +730,8 @@ def main():
         "num_questions": len(questions),
         "single": {k: v for k, v in baseline.items() if k != "results"},
         "single_details": baseline["results"],
-        "parallel": {k: v for k, v in parallel.items() if k != "results"},
-        "parallel_details": parallel["results"],
+        "parallel": {k: v for k, v in parallel.items() if k != "results"} if parallel else None,
+        "parallel_details": parallel["results"] if parallel else None,
     }
     if passk_result:
         output["pass_at_k"] = {
@@ -738,7 +749,8 @@ def main():
     # Write traces for trace viewer
     trace_dir = "tools/trace_viewer/data"
     write_traces(baseline, f"{args.model} (single)", trace_dir)
-    write_traces(parallel, f"{args.model} (N={args.parallel})", trace_dir)
+    if parallel:
+        write_traces(parallel, f"{args.model} (N={args.parallel})", trace_dir)
     console.print(f"  [dim]Traces saved to {trace_dir}/ — run the trace viewer to explore[/]")
     console.print()
 
