@@ -1243,7 +1243,12 @@ class Agent:
                 full_response = ""
                 for msg in reversed(result.get("history", [])):
                     if msg.get("role") == "assistant" and not msg.get("tool_calls"):
-                        full_response = msg.get("content", "") or ""
+                        full_response = (
+                            msg.get("content", "")
+                            or msg.get("reasoning_content", "")
+                            or msg.get("reasoning", "")
+                            or ""
+                        )
                         break
                 return {
                     "answer": answer,
