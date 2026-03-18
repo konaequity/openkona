@@ -64,7 +64,7 @@ class SynthesisConfigRegistry:
             solver_rollout_count=8,
             solver_max_steps=20,
             solver_top_k=10,
-            quality_filter=QualityFilterConfig(judge_model=None),
+            quality_filter=QualityFilterConfig(judge_model="gpt-4o-mini"),
         ),
         "TRECBiogen": SynthesisTaskConfig(
             task_name="TRECBiogen",
