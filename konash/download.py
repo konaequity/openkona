@@ -400,9 +400,12 @@ def download_qampari(
     output_dir: Optional[str] = None,
     console: Optional[Console] = None,
 ) -> str:
-    """Download QAMPARI and save as text files.
+    """Download QAMPARI eval questions, chunk text files, and prebuilt index.
 
-    Returns path to the documents directory.
+    The corpus consists of 250K+ sentence-level Wikipedia chunks with a
+    pre-built Qwen3-0.6B embedding index matching the KARL paper setup.
+
+    Returns path to the corpus directory.
     """
     try:
         from datasets import load_dataset
@@ -413,55 +416,33 @@ def download_qampari(
     if output_dir is None:
         output_dir = os.path.join(DEFAULT_CORPUS_DIR, "qampari")
 
-    docs_dir = os.path.join(output_dir, "documents")
+    pages_dir = os.path.join(output_dir, "pages")
+    index_path = os.path.join(output_dir, "prebuilt_index.npz")
 
-    if os.path.isdir(docs_dir) and len(os.listdir(docs_dir)) > 10:
-        count = len([f for f in os.listdir(docs_dir) if f.endswith(".txt")])
-        _print(console, f"    Already downloaded: {count} documents in {docs_dir}")
-        _download_prebuilt_index_hf(output_dir, "qampari/qwen3-0.6b.npz", console)
+    # Check if full corpus is already set up
+    if (os.path.isdir(pages_dir)
+            and len(os.listdir(pages_dir)) > 250000
+            and os.path.exists(index_path)):
+        count = len(os.listdir(pages_dir))
+        _print(console, f"    Already downloaded: {count:,} chunks in {pages_dir}")
         return output_dir
 
-    os.makedirs(docs_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
-    _print(console, "    Downloading from HuggingFace (momo4382/QAMPARI)...")
-    ds = load_dataset("momo4382/QAMPARI", split="train")
-    _print(console, f"    Loaded {len(ds)} records")
+    # Step 1: Download eval questions from HuggingFace (validation split, all 1000)
+    _print(console, "    Downloading eval questions from HuggingFace (momo4382/QAMPARI)...")
+    ds = load_dataset("momo4382/QAMPARI", split="validation")
 
-    seen: set = set()
-    doc_count = 0
     eval_questions: List[Dict] = []
-
     for rec in ds:
         question = rec.get("question_text", "") or rec.get("question", "")
         answers = rec.get("answer_list", []) or []
 
-        # Extract proof passages from each answer's proof field
         answer_texts = []
         for answer in answers:
             if not isinstance(answer, dict):
                 continue
             answer_texts.append(answer.get("answer_text", ""))
-
-            # Proofs are embedded in each answer as a list of dicts
-            proofs = answer.get("proof", [])
-            if not isinstance(proofs, list):
-                continue
-            for proof in proofs:
-                if not isinstance(proof, dict):
-                    continue
-                text = proof.get("proof_text", "")
-                url = proof.get("found_in_url", "")
-                # Use URL as unique doc ID
-                doc_key = url or f"doc_{doc_count}"
-                if text and doc_key not in seen:
-                    seen.add(doc_key)
-                    # Extract title from URL
-                    title = url.split("/")[-1].replace("_", " ") if url else f"doc_{doc_count}"
-                    safe = title.replace("/", "_").replace("\\", "_")[:100]
-                    filepath = os.path.join(docs_dir, f"{safe}.txt")
-                    with open(filepath, "w", encoding="utf-8") as f:
-                        f.write(text)
-                    doc_count += 1
 
         if question:
             eval_questions.append({
@@ -472,15 +453,61 @@ def download_qampari(
     eval_path = os.path.join(output_dir, "eval_questions.json")
     with open(eval_path, "w", encoding="utf-8") as f:
         json.dump(eval_questions, f, indent=2)
+    _print(console, f"    {len(eval_questions)} eval questions loaded")
 
-    # Download pre-built Qwen3-0.6B embedding index from HuggingFace
+    # Step 2: Download prebuilt embedding index from HuggingFace
     _download_prebuilt_index_hf(output_dir, "qampari/qwen3-0.6b.npz", console)
 
+    # Step 3: Download chunk text files from HuggingFace
+    _download_qampari_chunks(output_dir, console)
+
+    pages_count = len(os.listdir(pages_dir)) if os.path.isdir(pages_dir) else 0
     _print(console, f"    [bold green]Done![/]")
-    _print(console, f"    Documents:  {doc_count}")
+    _print(console, f"    Chunks:     {pages_count:,}")
+    _print(console, f"    Eval Q's:   {len(eval_questions)}")
     _print(console, f"    Saved to:   {output_dir}")
 
     return output_dir
+
+
+def _download_qampari_chunks(
+    output_dir: str,
+    console: Optional["Console"] = None,
+) -> None:
+    """Download chunk text files for QAMPARI from HuggingFace."""
+    pages_dir = os.path.join(output_dir, "pages")
+    if os.path.isdir(pages_dir) and len(os.listdir(pages_dir)) > 250000:
+        return  # Already have them
+
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        _print(console, "    [dim]Skipping chunks download (needs huggingface_hub).[/]")
+        return
+
+    _print(console, "    Downloading chunk text files...")
+    try:
+        tarball = hf_hub_download(
+            "konaeq/konash-indexes", "qampari/chunks.tar.gz", repo_type="dataset",
+        )
+        import tarfile
+        with tarfile.open(tarball, "r:gz") as tf:
+            tf.extractall(output_dir)
+        # Ensure the pages/ directory exists after extraction
+        if not os.path.isdir(pages_dir):
+            # Try common extracted directory names
+            for candidate in ("chunks", "all_pages", "pages"):
+                extracted = os.path.join(output_dir, candidate)
+                if os.path.isdir(extracted) and extracted != pages_dir:
+                    os.rename(extracted, pages_dir)
+                    break
+        if os.path.isdir(pages_dir):
+            count = len(os.listdir(pages_dir))
+            _print(console, f"    [green]\u2713[/]  {count:,} chunk files installed")
+        else:
+            _print(console, "    [dim]Warning: pages/ directory not found after extraction.[/]")
+    except Exception as exc:
+        _print(console, f"    [dim]Could not download chunks ({exc}).[/]")
 
 
 def download_freshstack(
