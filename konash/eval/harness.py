@@ -107,7 +107,7 @@ def resolve_provider(args) -> dict:
         sys.exit(1)
 
     # Resolve judge
-    judge_key = args.judge_key or os.environ.get("OPENAI_API_KEY")
+    judge_key = args.judge_key or os.environ.get("OPENAI_API_KEY") or config.get("openai_api_key")
     if judge_key:
         judge_api_base = OPENAI_API_BASE
         judge_model = args.judge_model
@@ -318,13 +318,29 @@ def run_eval(
     completed = [0]
     lock = threading.Lock()
     total_start = time.monotonic()
+    total_questions = len(questions)
 
     mode_label = f"N={parallel_rollouts}" if parallel_rollouts > 1 else "single"
+    console.print(
+        f"  [dim]Running {label.lower()} on {total_questions} question"
+        f"{'' if total_questions == 1 else 's'} with {workers} worker"
+        f"{'' if workers == 1 else 's'}...[/]"
+    )
+    status = console.status("  [cyan]Starting evaluation...", spinner="dots")
+    status.start()
 
     def _run(idx: int, q: dict) -> None:
         question_text = bench_config.get_question_text(q)
         reference = bench_config.get_reference(q)
         nuggets_list = bench_config.get_nuggets(q) if bench_config.get_nuggets else None
+
+        with lock:
+            in_flight = completed[0] + 1
+            q_preview = question_text.replace("\n", " ")
+            status.update(
+                f"  [cyan]Running question {min(in_flight, total_questions)}/{total_questions}: "
+                f"{q_preview}[/]"
+            )
 
         r = eval_one_question(
             agent, question_text, reference, scorer, policy,
@@ -348,6 +364,10 @@ def run_eval(
             running_avg = sum(done_scores) / len(done_scores) if done_scores else 0
             running_correct = sum(1 for s in done_scores if s >= 0.6)
             running_acc = running_correct / len(done_scores) if done_scores else 0
+            status.update(
+                f"  [cyan]Completed {n}/{total_questions} question"
+                f"{'' if total_questions == 1 else 's'}...[/]"
+            )
 
             marker = "[green]✓[/]" if r["score"] >= 0.6 else "[yellow]~[/]" if r["score"] > 0 else "[red]✗[/]"
             n_steps = r.get("num_steps", 0)
@@ -389,10 +409,13 @@ def run_eval(
             else:
                 console.print(f"  [dim]Ref:[/] {reference[:120]}")
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_run, i, q): i for i, q in enumerate(questions)}
-        for fut in as_completed(futures):
-            fut.result()  # propagate exceptions
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_run, i, q): i for i, q in enumerate(questions)}
+            for fut in as_completed(futures):
+                fut.result()  # propagate exceptions
+    finally:
+        status.stop()
 
     total_time = time.monotonic() - total_start
     scores = [r["score"] for r in results]

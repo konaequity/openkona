@@ -434,6 +434,7 @@ class Agent:
         learning_rate: float = 1e-6,
         beta_kl: float = 0.001,
         beta_value: float = 1.0,
+        synthesis_rollout_backend: str = "auto",
         verbose: bool = True,
     ) -> Dict[str, Any]:
         """Run the full KONASH training loop.
@@ -484,6 +485,7 @@ class Agent:
 
         from konash.training import checkpoint as ckpt
         from konash.training.logger import TrainingLogger, configure_file_logging
+        from konash.training.execution import plan_training_execution
         debug_log_path = configure_file_logging(self.project)
         _api_logger.info("Debug log: %s", debug_log_path)
 
@@ -495,28 +497,69 @@ class Agent:
             model=self.base_model,
         )
 
-        # Client-server architecture:
-        #
-        # 1. CLIENT (this laptop): synthesis + rollouts via Together AI API.
-        #    No GPU needed. Checkpointed after each phase for crash recovery.
-        #
-        # 2. SERVER (cloud GPU): OAPL gradient updates. Provisioned via
-        #    Shadeform only when rollouts are ready. Stays alive across
-        #    iterations for bootstrapping (trained model from iter N
-        #    becomes synthesizer for iter N+1).
-        #
-        # For iteration 1: client generates rollouts → sends to server.
-        # For iteration 2+: server runs full pipeline (it has the trained
-        # model locally for bootstrapping).
+        plan = plan_training_execution(
+            iterations=iterations,
+            synthesis_rollout_backend=synthesis_rollout_backend,
+        )
 
         stats: List[Dict[str, Any]] = []
+
+        from konash.cloud import train_oapl_from_rollouts, train_remote
+
+        if plan.requires_remote_full_pipeline:
+            if verbose:
+                _con.print()
+                _con.rule("[bold]Cloud Training[/]", style="dim")
+                _con.print()
+                _con.print(
+                    "  [dim]Synthesis + rollouts + OAPL will run on Shadeform.[/]"
+                )
+                _con.print("  [cyan]Finding cheapest GPU via Shadeform...[/]")
+
+            cloud_result = train_remote(
+                corpus=str(self.corpus.path),
+                base_model=self.base_model,
+                checkpoint_dir=self.checkpoint_dir,
+                iterations=iterations,
+                synthesis_calls=synthesis_calls,
+                rollouts_per_example=rollouts_per_example,
+                rollout_max_steps=rollout_max_steps,
+                max_examples=max_examples,
+                learning_rate=learning_rate,
+                keep_alive=False,
+                verbose=verbose,
+            )
+            stats.extend(cloud_result.get("stats") or [])
+
+            self._iteration = iterations
+            self._trained = True
+
+            os.makedirs(self.checkpoint_dir, exist_ok=True)
+            meta_path = os.path.join(self.checkpoint_dir, "training_meta.json")
+            with open(meta_path, "w") as f:
+                json.dump({
+                    "base_model": self.base_model,
+                    "corpus": str(self.corpus.path),
+                    "project": self.project,
+                    "iterations": self._iteration,
+                    "stats": stats,
+                    "value_model": cloud_result.get("value_model", False),
+                    "synthesis_rollout_backend": plan.synthesis_rollout_backend,
+                }, f, indent=2)
+
+            log.complete(
+                iterations=self._iteration,
+                total_seconds=time.monotonic() - log._start_time,
+                stats=stats,
+            )
+            return {"iterations": self._iteration, "stats": stats}
 
         # ── Iteration 1: client-side synthesis + rollouts ──
         if verbose:
             _con.print()
             _con.rule(f"[bold]Iteration 1/{iterations}[/]", style="dim")
             _con.print()
-            _con.print("  [dim]Phase 1: Synthesis + rollouts (local, via API)[/]")
+            _con.print("  [dim]Phase 1: Synthesis + rollouts (Together API)[/]")
 
         rollouts_path = self._run_iteration_local(
             iteration=0,
@@ -544,52 +587,18 @@ class Agent:
                 "  [cyan]Finding cheapest GPU via Shadeform...[/]"
             )
 
-        from konash.cloud import train_oapl_from_rollouts, train_remote, tear_down
-
-        multi_iter = iterations > 1
-
-        # Iter 1: OAPL from client-generated rollouts
-        # Keep GPU alive if more iterations follow
+        # Single iteration only; planner rejects multi-iter Together mode.
         cloud_result = train_oapl_from_rollouts(
             rollouts_path=rollouts_path,
             base_model=self.base_model,
             checkpoint_dir=self.checkpoint_dir,
             learning_rate=learning_rate,
-            keep_alive=multi_iter,
+            keep_alive=False,
             verbose=verbose,
         )
         iter_stats = (cloud_result.get("stats", [{}]) or [{}])[-1]
         if iter_stats:
             stats.append(iter_stats)
-
-        # Iter 2+: full pipeline on the same GPU (bootstrapping)
-        # The trained model from iter 1 is already loaded on the cluster
-        if multi_iter:
-            if verbose:
-                _con.print()
-                _con.rule(
-                    f"[bold]Iterations 2–{iterations}[/]  (cloud, bootstrapping)",
-                    style="dim",
-                )
-                _con.print(
-                    "  [dim]Trained model becomes next synthesizer[/]"
-                )
-
-            cloud_result = train_remote(
-                corpus=str(self.corpus.path),
-                base_model=self.base_model,
-                checkpoint_dir=self.checkpoint_dir,
-                iterations=iterations - 1,
-                rollouts_per_example=rollouts_per_example,
-                learning_rate=learning_rate,
-                keep_alive=False,  # tear down after last iteration
-                verbose=verbose,
-            )
-            for s in (cloud_result.get("stats") or []):
-                stats.append(s)
-        else:
-            # Single iteration — already torn down by train_oapl_from_rollouts
-            pass
 
         self._iteration = iterations
         self._trained = True
@@ -604,7 +613,8 @@ class Agent:
                 "project": self.project,
                 "iterations": self._iteration,
                 "stats": stats,
-                "value_model": False,
+                "value_model": cloud_result.get("value_model", False),
+                "synthesis_rollout_backend": plan.synthesis_rollout_backend,
             }, f, indent=2)
 
         log.complete(

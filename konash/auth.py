@@ -40,6 +40,7 @@ _HF_TOKEN_PATHS = [
 # ---------------------------------------------------------------------------
 TOGETHER_KEYS_PAGE = "https://api.together.xyz/settings/api-keys"
 HF_TOKENS_PAGE = "https://huggingface.co/settings/tokens"
+OPENAI_KEYS_PAGE = "https://platform.openai.com/api-keys"
 
 # ---------------------------------------------------------------------------
 # Google AI (Gemini Embeddings)
@@ -147,6 +148,27 @@ def validate_hf_token(token: str) -> Optional[str]:
             return data.get("name") or data.get("fullname")
     except Exception:
         return None
+
+
+def validate_openai_key(key: str) -> tuple[bool, str]:
+    """Validate an OpenAI API key. Returns (valid, error_message)."""
+    try:
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/models",
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            return True, ""
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return False, "Invalid API key"
+        if e.code == 429:
+            return False, "Rate limited — wait a moment and try again"
+        return False, f"HTTP {e.code}"
+    except urllib.error.URLError as e:
+        return False, f"Network error: {e.reason}"
+    except Exception as e:
+        return False, str(e)
 
 
 def hf_device_flow(console: Console) -> Optional[str]:

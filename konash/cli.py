@@ -86,12 +86,16 @@ def _arrow_select(console: Console, options: list[dict]) -> int:
 
 from konash.auth import (
     GOOGLE_AI_KEYS_PAGE,
-    TOGETHER_KEYS_PAGE,
     HF_TOKENS_PAGE,
+    OPENAI_KEYS_PAGE,
+    SHADEFORM_KEYS_PAGE,
+    TOGETHER_KEYS_PAGE,
     detect_hf_token,
     hf_device_flow,
     validate_google_key,
     validate_hf_token,
+    validate_openai_key,
+    validate_shadeform_key,
     validate_together_key,
 )
 
@@ -167,6 +171,8 @@ SCALE_PRESETS = [
     },
 ]
 
+DEFAULT_SCALE_PRESET = SCALE_PRESETS[0]
+
 
 def _estimate_training(qa_pairs, rollouts, rollout_steps, iterations):
     """Compute dynamic cost and time estimates."""
@@ -190,6 +196,46 @@ def _estimate_training(qa_pairs, rollouts, rollout_steps, iterations):
     total_secs = synth_secs + rollout_secs + oapl_secs
 
     return cost, total_secs
+
+
+def _estimate_training_plan(
+    qa_pairs: int,
+    rollouts: int,
+    rollout_steps: int,
+    iterations: int,
+    synthesis_backend: str,
+) -> dict[str, float]:
+    """Estimate training cost/time for the visible execution plan."""
+    synthesis_calls = max(1, qa_pairs // 8)
+
+    synth_in = synthesis_calls * iterations * 2000
+    synth_out = synthesis_calls * iterations * 1000
+    rollout_in = qa_pairs * rollouts * iterations * rollout_steps * 500
+    rollout_out = qa_pairs * rollouts * iterations * rollout_steps * 200
+    api_cost = (
+        (synth_in + rollout_in) / 1_000_000 * 0.20
+        + (synth_out + rollout_out) / 1_000_000 * 1.10
+    )
+
+    synth_secs = (synthesis_calls * iterations * 2) / 20
+    rollout_secs = (qa_pairs * rollouts * iterations * 1) / 4
+    oapl_secs = iterations * 15 * 60
+
+    gpu_hourly = 2.29  # rough midpoint for a single H100 on Shadeform
+    if synthesis_backend == "shadeform":
+        gpu_secs = synth_secs + rollout_secs + oapl_secs
+        total_cost = gpu_secs / 3600 * gpu_hourly
+        api_cost = 0.0
+    else:
+        gpu_secs = oapl_secs
+        total_cost = api_cost + (gpu_secs / 3600 * gpu_hourly)
+
+    return {
+        "api_cost": api_cost,
+        "gpu_cost": gpu_secs / 3600 * gpu_hourly,
+        "total_cost": total_cost,
+        "total_secs": synth_secs + rollout_secs + oapl_secs,
+    }
 
 DATASETS = list_datasets()
 
@@ -223,6 +269,14 @@ def _get_together_key() -> str | None:
     return _get_key(["TOGETHER_API_KEY"], "together_api_key")
 
 
+def _get_shadeform_key() -> str | None:
+    return _get_key(["SHADEFORM_API_KEY"], "shadeform_api_key")
+
+
+def _get_zhipu_key() -> str | None:
+    return _get_key(["ZHIPU_API_KEY"], "zhipu_api_key")
+
+
 def _get_google_key() -> str | None:
     return _get_key(["GOOGLE_API_KEY"], "google_api_key")
 
@@ -234,10 +288,286 @@ def _get_hf_token() -> str | None:
     return detect_hf_token()
 
 
+def _get_openai_key() -> str | None:
+    return _get_key(["OPENAI_API_KEY"], "openai_api_key")
+
+
 def _mask(key: str) -> str:
     if len(key) <= 12:
         return key[:4] + "..." + key[-2:]
     return key[:8] + "..." + key[-4:]
+
+
+def _render_capability_summary(config: dict) -> None:
+    together_key = _get_together_key()
+    shadeform_key = _get_shadeform_key()
+    hf_token = _get_hf_token()
+    openai_key = _get_openai_key()
+
+    table = Table(box=box.SIMPLE_HEAVY, pad_edge=False, padding=(0, 2))
+    table.add_column("Stage", style="bold")
+    table.add_column("Status", width=10)
+    table.add_column("What It Enables")
+
+    stages = [
+        (
+            "Core inference",
+            together_key,
+            "Together-backed evals and single-iteration training",
+        ),
+        (
+            "Cloud training",
+            shadeform_key,
+            "Shadeform-backed training and all multi-iteration runs",
+        ),
+        (
+            "HF assets + embeddings",
+            hf_token,
+            "HF-hosted corpora/indexes and HF embedding/query paths",
+        ),
+        (
+            "Optional eval judge",
+            openai_key,
+            "gpt-4o-mini benchmark judging instead of solver-as-judge fallback",
+        ),
+    ]
+
+    for name, key, effect in stages:
+        status = "[green]Enabled[/]" if key else "[yellow]Optional[/]" if name != "Core inference" else "[red]Missing[/]"
+        if name == "Cloud training" and not key:
+            status = "[yellow]Missing[/]"
+        table.add_row(name, status, effect)
+
+    console.print(table)
+    console.print()
+
+    blocked = []
+    if not together_key:
+        blocked.append("Together-backed evals and single-iteration Together training will fail until Core inference is configured.")
+    if not shadeform_key:
+        blocked.append("Shadeform-backed training and all multi-iteration training plans will fail until Cloud training is configured.")
+    if not hf_token:
+        blocked.append("Some HF-hosted corpus/index/embedding flows may prompt later or fall back to slower local paths.")
+    if not openai_key:
+        blocked.append("Benchmark evals will still run, but judging will fall back to the solver model instead of gpt-4o-mini.")
+
+    console.print("[bold]What is enabled[/]")
+    if together_key:
+        console.print("    •  You can run core training and benchmark evals.")
+    if shadeform_key:
+        console.print("    •  Cloud-backed and multi-iteration training is enabled.")
+    if hf_token:
+        console.print("    •  HF-hosted assets and embedding paths are available.")
+    if openai_key:
+        console.print("    •  Benchmark evals can use the OpenAI judge.")
+    console.print()
+
+    console.print("[bold]What may still be limited[/]")
+    if blocked:
+        for item in blocked:
+            console.print(f"    •  {item}")
+    else:
+        console.print("    •  Nothing obvious is blocked by missing credentials.")
+    console.print()
+
+
+def _prompt_optional_key(
+    *,
+    stage_name: str,
+    existing_key: str | None,
+    config_key: str,
+    console_hint: str,
+    open_url: str,
+    validate_fn,
+    prompt_label: str,
+    success_label: str,
+    config: dict,
+) -> None:
+    console.rule(f"[bold]{stage_name}[/]", style="dim")
+    console.print()
+    console.print(f"    [dim]{console_hint}[/]")
+    console.print()
+
+    if existing_key:
+        with console.status("    Validating...", spinner="dots"):
+            result = validate_fn(existing_key)
+        valid = result[0] if isinstance(result, tuple) else bool(result)
+        detail = result[1] if isinstance(result, tuple) and len(result) > 1 else ""
+        if valid:
+            console.print(f"    [green]✓[/]  {success_label}")
+            config[config_key] = existing_key
+            console.print()
+            return
+        console.print(f"    [yellow]–[/]  Existing key not usable: {detail or 'validation failed'}")
+        console.print()
+
+    idx = _arrow_select(console, [
+        {"label": "Set up now", "hint": "Open the provider page and paste a key"},
+        {"label": "Skip for now", "hint": "You can add this later with konash setup"},
+    ])
+    console.print()
+
+    if idx == 1:
+        return
+
+    webbrowser.open(open_url)
+    console.print(f"    [dim]{prompt_label}[/]")
+    console.print()
+
+    while True:
+        entered = Prompt.ask("    Paste your API key or token", default="").strip()
+        if not entered:
+            console.print("    [dim]Skipped.[/]")
+            console.print()
+            return
+        with console.status("    Validating...", spinner="dots"):
+            result = validate_fn(entered)
+        valid = result[0] if isinstance(result, tuple) else bool(result)
+        detail = result[1] if isinstance(result, tuple) and len(result) > 1 else ""
+        if valid:
+            console.print(f"    [green]✓[/]  {success_label}")
+            config[config_key] = entered
+            console.print()
+            return
+        console.print(f"    [red]✗[/]  {detail or 'Validation failed'}")
+        if not Confirm.ask("    Try again?", default=False):
+            console.print()
+            return
+        console.print()
+
+
+def _show_training_plan(
+    *,
+    corpus: str,
+    model: str,
+    qa_pairs: int,
+    rollouts: int,
+    rollout_steps: int,
+    iterations: int,
+    backend: str,
+) -> None:
+    estimate = _estimate_training_plan(
+        qa_pairs, rollouts, rollout_steps, iterations, backend,
+    )
+    oapl_backend = "Shadeform"
+    summary = Table.grid(padding=(0, 2))
+    summary.add_column(style="bold", justify="right", min_width=22)
+    summary.add_column()
+    summary.add_row("Corpus", corpus)
+    summary.add_row("Model", model)
+    summary.add_row("QA pairs", f"~{qa_pairs:,} / iteration")
+    summary.add_row("Rollouts / example", str(rollouts))
+    summary.add_row("Rollout steps", str(rollout_steps))
+    summary.add_row("Iterations", str(iterations))
+    summary.add_row("Synthesis backend", "Together" if backend == "together" else "Shadeform")
+    summary.add_row("Rollout backend", "Together" if backend == "together" else "Shadeform")
+    summary.add_row("OAPL backend", oapl_backend)
+    summary.add_row(
+        "Expected cost",
+        f"~${estimate['total_cost']:,.0f}" if estimate["total_cost"] >= 1 else f"~${estimate['total_cost']:.2f}",
+    )
+    summary.add_row("Expected time", _format_duration(estimate["total_secs"]))
+    console.print(summary)
+    if backend == "shadeform" and iterations > 1:
+        console.print()
+        console.print("    [cyan]Bootstrapped multi-iteration training enabled.[/]")
+    console.print()
+    console.print("    [dim]Estimate includes API and/or GPU cost depending on backend; actual cost depends on corpus difficulty and provider pricing.[/]")
+    console.print()
+
+
+def _pick_eval_model(provider: str) -> str | None:
+    if provider == "together":
+        console.print()
+        console.rule("[bold]Model[/]", style="dim")
+        console.print()
+        opts = [{"label": m["name"], "hint": m["hint"]} for m in MODELS]
+        opts.append({"label": "Custom", "hint": "Enter a model ID manually"})
+        console.print("    [dim]Use arrow keys, press Enter to select[/]")
+        console.print()
+        idx = _arrow_select(console, opts)
+        console.print()
+        if idx < len(MODELS):
+            return MODELS[idx]["id"]
+        return Prompt.ask("    Model ID")
+
+    defaults = {
+        "hf": "meta-llama/Llama-3.1-8B-Instruct",
+        "zhipu": "glm-4.5-air",
+        "vllm": DEFAULT_MODEL,
+    }
+    return Prompt.ask("    Model ID", default=defaults.get(provider, DEFAULT_MODEL))
+
+
+def _run_guided_eval_from_setup() -> None:
+    eval_choices = [ds for ds in DATASETS if ds.benchmark is not None]
+
+    console.rule("[bold]Benchmark[/]", style="dim")
+    console.print()
+    eval_options = [
+        {"label": ds.name, "hint": ds.description}
+        for ds in eval_choices
+    ]
+    console.print("    [dim]Use arrow keys, press Enter to select[/]")
+    console.print()
+    eval_idx = _arrow_select(console, eval_options)
+    console.print()
+    chosen = eval_choices[eval_idx]
+
+    console.rule("[bold]Scope[/]", style="dim")
+    console.print()
+    scope_options = [
+        {"label": "Smoke test", "hint": "Run 1 question first (recommended)"},
+        {"label": "Short run", "hint": "Run 5 questions for a quick signal"},
+        {"label": "Full benchmark", "hint": "Run the full registered benchmark"},
+    ]
+    console.print("    [dim]Use arrow keys, press Enter to select[/]")
+    console.print()
+    scope_idx = _arrow_select(console, scope_options)
+    console.print()
+    limit = None
+    workers = None
+    if scope_idx == 0:
+        limit = 1
+        workers = 1
+    elif scope_idx == 1:
+        limit = 5
+        workers = 2
+
+    providers = []
+    if _get_together_key():
+        providers.append(("together", "Together", "Recommended default backend"))
+    if _get_hf_token():
+        providers.append(("hf", "Hugging Face", "Use the HF router with your chosen model"))
+    if _get_zhipu_key():
+        providers.append(("zhipu", "Zhipu", "Use the native Zhipu backend"))
+
+    console.rule("[bold]Provider[/]", style="dim")
+    console.print()
+    provider_options = [
+        {"label": label, "hint": hint}
+        for _, label, hint in providers
+    ]
+    console.print("    [dim]Use arrow keys, press Enter to select[/]")
+    console.print()
+    provider_idx = _arrow_select(console, provider_options)
+    console.print()
+    provider = providers[provider_idx][0]
+
+    model = _pick_eval_model(provider)
+
+    eval_args = ["--provider", provider]
+    if model:
+        eval_args.extend(["--model", model])
+    if limit is not None:
+        eval_args.extend(["--limit", str(limit)])
+    if workers is not None:
+        eval_args.extend(["--workers", str(workers)])
+
+    cmd_eval(argparse.Namespace(
+        benchmark=chosen.key,
+        eval_args=eval_args,
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -260,9 +590,7 @@ def cmd_default() -> None:
     grid.add_column(style="dim")
     grid.add_row("konash setup", "Configure API keys")
     grid.add_row("konash train", "Train an agent")
-    grid.add_row("konash download browsecomp-plus", "Download benchmark corpus")
-    grid.add_row('konash ask "Q"', "Ask a question")
-    grid.add_row("konash search --corpus ./docs Q", "Search documents")
+    grid.add_row("konash eval financebench", "Run benchmark evals")
     grid.add_row("konash logs", "Stream GPU training logs")
     grid.add_row("konash stop", "Tear down GPU cluster")
     grid.add_row("konash projects", "List trained projects")
@@ -434,7 +762,6 @@ def _animate_logo(con: Console) -> None:
 
 
 def cmd_setup(args: argparse.Namespace) -> None:
-    _start_web_ui()
     _animate_logo(console)
     console.print(f"    [bold]Welcome to KONASH[/]  [dim]{_get_version()}[/]")
     console.print(
@@ -442,8 +769,8 @@ def cmd_setup(args: argparse.Namespace) -> None:
     )
     console.print()
     console.print(
-        "    KONASH uses Together AI to run large language models.\n"
-        "    You'll need a free API key to get started."
+        "    Setup is staged so you can see exactly what is enabled:\n"
+        "    core inference, cloud training, HF assets, and the optional eval judge."
     )
     console.print()
     console.rule(style="dim")
@@ -451,7 +778,12 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     config = _load_config()
 
-    # ── Together AI (the only required key) ───────────────────────────
+    # ── Stage 1: Core inference ───────────────────────────────────────
+    console.rule("[bold]Core Inference[/]", style="dim")
+    console.print()
+    console.print("    [dim]Together AI powers the default solver backend and single-iteration training.[/]")
+    console.print()
+
     together_key = _get_together_key()
 
     if together_key:
@@ -495,30 +827,81 @@ def cmd_setup(args: argparse.Namespace) -> None:
                 console.print(f"    [red]✗[/]  {err}")
                 console.print()
 
-    # ── Save and go ──────────────────────────────────────────────────
+    # ── Stage 2: Cloud training ──────────────────────────────────────
+    _prompt_optional_key(
+        stage_name="Cloud Training",
+        existing_key=_get_shadeform_key(),
+        config_key="shadeform_api_key",
+        console_hint="Shadeform provisions the GPU for cloud-backed training and all multi-iteration runs.",
+        open_url=SHADEFORM_KEYS_PAGE,
+        validate_fn=lambda key: (validate_shadeform_key(key), "Invalid API key"),
+        prompt_label="Open shadeform.ai, create an API key, then paste it here.",
+        success_label="Cloud training enabled",
+        config=config,
+    )
+
+    # ── Stage 3: HF assets and embeddings ────────────────────────────
+    _prompt_optional_key(
+        stage_name="HF Assets And Embeddings",
+        existing_key=_get_hf_token(),
+        config_key="hf_token",
+        console_hint="Hugging Face improves access to hosted corpora, prebuilt indexes, and query embedding paths.",
+        open_url=HF_TOKENS_PAGE,
+        validate_fn=lambda token: (bool(validate_hf_token(token)), "Invalid token"),
+        prompt_label="Open Hugging Face tokens, create a read token, then paste it here.",
+        success_label="HF assets and embeddings enabled",
+        config=config,
+    )
+
+    # ── Stage 4: Optional eval judge ─────────────────────────────────
+    _prompt_optional_key(
+        stage_name="Optional Eval Judge",
+        existing_key=_get_openai_key(),
+        config_key="openai_api_key",
+        console_hint="OpenAI is only used for the benchmark judge; eval still works without it using solver-as-judge fallback.",
+        open_url=OPENAI_KEYS_PAGE,
+        validate_fn=validate_openai_key,
+        prompt_label="Open OpenAI API keys, create a key, then paste it here.",
+        success_label="OpenAI eval judge enabled",
+        config=config,
+    )
+
+    # ── Save and summarize ───────────────────────────────────────────
     _save_config(config)
 
     console.print()
     console.rule(style="dim")
     console.print()
-    console.print("    [green]✓[/]  You're all set. Let's train your first agent.")
+    console.print("    [green]✓[/]  Setup summary")
+    console.print()
+    _render_capability_summary(config)
+
+    next_options = [
+        {"label": "Train", "hint": "Start training on your own documents"},
+        {"label": "Eval", "hint": "Run a benchmark first to verify the system"},
+        {"label": "Exit", "hint": "Come back later"},
+    ]
+    next_idx = _arrow_select(console, next_options)
     console.print()
 
-    # ── Flow directly into training ─────────────────────────────────
-    train_args = argparse.Namespace(
-        corpus=None,
-        model=DEFAULT_MODEL,
-        project="default",
-        iterations=2,
-        qa_pairs=12000,
-        rollouts=8,
-        rollout_steps=50,
-        max_examples=None,
-        lr=1e-5,
-        chunk_size=512,
-        api_key=None,
-    )
-    cmd_train(train_args)
+    if next_idx == 0:
+        train_args = argparse.Namespace(
+            corpus=None,
+            model=DEFAULT_MODEL,
+            project="default",
+            iterations=DEFAULT_SCALE_PRESET["iterations"],
+            qa_pairs=DEFAULT_SCALE_PRESET["qa_pairs"],
+            rollouts=DEFAULT_SCALE_PRESET["rollouts"],
+            rollout_steps=DEFAULT_SCALE_PRESET["rollout_steps"],
+            max_examples=None,
+            lr=1e-5,
+            chunk_size=512,
+            synthesis_backend="auto",
+            api_key=None,
+        )
+        cmd_train(train_args)
+    elif next_idx == 1:
+        _run_guided_eval_from_setup()
 
 
 def _download_dataset(key: str) -> str:
@@ -540,8 +923,9 @@ def _download_dataset(key: str) -> str:
 def cmd_setup_check() -> None:
     """Non-interactive validation of all keys."""
     together_key = _get_together_key()
-    google_key = _get_google_key()
+    shadeform_key = _get_shadeform_key()
     hf_token = _get_hf_token()
+    openai_key = _get_openai_key()
     all_ok = True
 
     console.print()
@@ -558,17 +942,16 @@ def cmd_setup_check() -> None:
         console.print("[red]✗[/] Together AI key not found")
         all_ok = False
 
-    if google_key:
-        with console.status("[cyan]Checking Google AI...", spinner="dots"):
-            valid = validate_google_key(google_key)
+    if shadeform_key:
+        with console.status("[cyan]Checking Shadeform...", spinner="dots"):
+            valid = validate_shadeform_key(shadeform_key)
         if valid:
-            console.print("[green]✓[/] Google AI key valid")
+            console.print("[green]✓[/] Shadeform key valid")
         else:
-            console.print("[red]✗[/] Google AI key invalid")
+            console.print("[red]✗[/] Shadeform key invalid")
             all_ok = False
     else:
-        console.print("[red]✗[/] Google AI key not found")
-        all_ok = False
+        console.print("[yellow]–[/] Shadeform key not found (cloud training unavailable)")
 
     if hf_token:
         with console.status("[cyan]Checking HuggingFace...", spinner="dots"):
@@ -581,41 +964,22 @@ def cmd_setup_check() -> None:
     else:
         console.print("[yellow]–[/] HuggingFace token not found (optional)")
 
+    if openai_key:
+        with console.status("[cyan]Checking OpenAI judge...", spinner="dots"):
+            valid, err = validate_openai_key(openai_key)
+        if valid:
+            console.print("[green]✓[/] OpenAI key valid")
+        else:
+            console.print(f"[red]✗[/] OpenAI: {err}")
+            all_ok = False
+    else:
+        console.print("[yellow]–[/] OpenAI key not found (optional)")
+
     console.print()
     if not all_ok:
         console.print("Run [cyan]konash setup[/] to fix.")
         console.print()
         sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
-# konash download
-# ---------------------------------------------------------------------------
-
-def cmd_download(args: argparse.Namespace) -> None:
-    corpus_name = args.corpus_name.lower().replace("_", "-")
-    valid_keys = {ds.key for ds in DATASETS}
-
-    if corpus_name not in valid_keys:
-        console.print(f"\n[red]Unknown corpus:[/] {corpus_name}")
-        console.print("Available: " + ", ".join(f"[bold]{k}[/]" for k in valid_keys))
-        console.print()
-        sys.exit(1)
-
-    console.print()
-    console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]  Download  [dim]{corpus_name}[/]")
-    console.print()
-    console.rule(style="dim")
-    console.print()
-
-    corpus_path = _download_dataset(corpus_name)
-
-    console.print()
-    console.rule(style="dim")
-    console.print()
-    console.print(f"    [green]✓[/]  Saved to {corpus_path}")
-    console.print(f"    [dim]Train with:[/]  konash train {corpus_path}")
-    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -670,13 +1034,24 @@ def _stop_web_ui() -> None:
 def cmd_train(args: argparse.Namespace) -> None:
     try:
         from konash.api import Agent
+        from konash.training.execution import plan_training_execution
     except ModuleNotFoundError as exc:
         _dependency_error(exc)
 
+    try:
+        plan = plan_training_execution(
+            iterations=args.iterations,
+            synthesis_rollout_backend=args.synthesis_backend,
+        )
+    except ValueError as exc:
+        console.print(f"\n[red]{exc}[/]\n")
+        sys.exit(1)
+
     api_key = _get_together_key() or args.api_key
-    if not api_key:
+    if plan.synthesis_rollout_backend == "together" and not api_key:
         console.print(
-            "\n[red]No API key found.[/] Run [cyan]konash setup[/] first.\n"
+            "\n[red]No Together API key found.[/] Run [cyan]konash setup[/] first "
+            "or choose [cyan]--synthesis-backend shadeform[/].\n"
         )
         sys.exit(1)
 
@@ -722,12 +1097,13 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     # ── Model + Scale (with ability to go back) ────────────────────
     model = args.model or DEFAULT_MODEL
-    qa_pairs = args.qa_pairs if hasattr(args, "qa_pairs") else 12000
+    qa_pairs = args.qa_pairs if hasattr(args, "qa_pairs") else DEFAULT_SCALE_PRESET["qa_pairs"]
     rollouts = args.rollouts
     rollout_steps = args.rollout_steps
     iterations = args.iterations
     lr = args.lr
     chunk_size = args.chunk_size
+    backend_choice = args.synthesis_backend
 
     def _pick_model() -> str:
         console.print()
@@ -768,11 +1144,26 @@ def cmd_train(args: argparse.Namespace) -> None:
         if idx < len(SCALE_PRESETS):
             p = SCALE_PRESETS[idx]
             return p["qa_pairs"], p["rollouts"], p["rollout_steps"], p["iterations"]
-        qp = IntPrompt.ask("    QA pairs to synthesize", default=12000)
-        ro = IntPrompt.ask("    Rollouts per example", default=8)
-        rs = IntPrompt.ask("    Max steps per rollout", default=50)
-        it = IntPrompt.ask("    Training iterations", default=2)
+        qp = IntPrompt.ask("    QA pairs to synthesize", default=DEFAULT_SCALE_PRESET["qa_pairs"])
+        ro = IntPrompt.ask("    Rollouts per example", default=DEFAULT_SCALE_PRESET["rollouts"])
+        rs = IntPrompt.ask("    Max steps per rollout", default=DEFAULT_SCALE_PRESET["rollout_steps"])
+        it = IntPrompt.ask("    Training iterations", default=DEFAULT_SCALE_PRESET["iterations"])
         return qp, ro, rs, it
+
+    def _pick_backend() -> str:
+        console.print()
+        console.rule("[bold]Execution[/]", style="dim")
+        console.print()
+        opts = [
+            {"label": "Auto", "hint": "Use Together for 1 iteration, Shadeform for multi-iteration"},
+            {"label": "Together", "hint": "Synthesis + rollouts on Together, OAPL on Shadeform (single iteration only)"},
+            {"label": "Shadeform", "hint": "Run synthesis + rollouts + OAPL on Shadeform"},
+        ]
+        console.print("    [dim]Use arrow keys, press Enter to select[/]")
+        console.print()
+        idx = _arrow_select(console, opts)
+        console.print()
+        return ["auto", "together", "shadeform"][idx]
 
     # Skip interactive wizard in non-TTY environments (pipes, Colab, CI).
     # CLI args already have sensible defaults from argparse.
@@ -780,36 +1171,39 @@ def cmd_train(args: argparse.Namespace) -> None:
     if _interactive:
         model = _pick_model()
         qa_pairs, rollouts, rollout_steps, iterations = _pick_scale()
+        backend_choice = _pick_backend()
 
     # ── Summary + confirm (with go-back loop) ────────────────────────
     while _interactive:
-        synthesis_calls = max(1, qa_pairs // 8)
-        est_cost, est_total_secs = _estimate_training(
-            qa_pairs, rollouts, rollout_steps, iterations,
+        try:
+            plan = plan_training_execution(
+                iterations=iterations,
+                synthesis_rollout_backend=backend_choice,
+            )
+        except ValueError as exc:
+            console.print(f"    [red]{exc}[/]")
+            console.print()
+            backend_choice = _pick_backend()
+            continue
+
+        console.print()
+        console.rule("[bold]Training Plan[/]", style="dim")
+        console.print()
+        _show_training_plan(
+            corpus=corpus,
+            model=model,
+            qa_pairs=qa_pairs,
+            rollouts=rollouts,
+            rollout_steps=rollout_steps,
+            iterations=iterations,
+            backend=plan.synthesis_rollout_backend,
         )
 
-        console.print()
-        console.rule(style="dim")
-        console.print()
-
-        grid = Table.grid(padding=(0, 2))
-        grid.add_column(style="bold", justify="right", min_width=22)
-        grid.add_column()
-        grid.add_row("Corpus", corpus)
-        grid.add_row("Model", model)
-        grid.add_row("QA pairs", f"~{qa_pairs:,} / iteration")
-        grid.add_row("Rollouts / example", str(rollouts))
-        grid.add_row("Rollout steps", str(rollout_steps))
-        grid.add_row("Iterations", str(iterations))
-        grid.add_row("Est. cost", f"~${est_cost:,.0f}" if est_cost >= 1 else f"~${est_cost:,.2f}")
-        grid.add_row("Est. time", _format_duration(est_total_secs))
-        console.print(grid)
-        console.print()
-
         confirm_options = [
-            {"label": "Start training", "hint": "Begin with these settings"},
+            {"label": "Approve plan", "hint": "Begin training with this execution plan"},
             {"label": "Change model", "hint": f"Currently: {model}"},
             {"label": "Change scale", "hint": f"Currently: ~{qa_pairs:,} QA pairs"},
+            {"label": "Change execution", "hint": f"Currently: {backend_choice}"},
             {"label": "Cancel", "hint": "Exit without training"},
         ]
         confirm_idx = _arrow_select(console, confirm_options)
@@ -821,19 +1215,41 @@ def cmd_train(args: argparse.Namespace) -> None:
             model = _pick_model()
         elif confirm_idx == 2:
             qa_pairs, rollouts, rollout_steps, iterations = _pick_scale()
+        elif confirm_idx == 3:
+            backend_choice = _pick_backend()
         else:
             console.print("    [dim]Cancelled.[/]\n")
             return
 
     # ── Train ────────────────────────────────────────────────────────
+    try:
+        plan = plan_training_execution(
+            iterations=iterations,
+            synthesis_rollout_backend=backend_choice,
+        )
+    except ValueError as exc:
+        console.print(f"\n[red]{exc}[/]\n")
+        return
+
     synthesis_calls = max(1, qa_pairs // 8)
     console.print()
+    console.rule("[bold]Execution Plan[/]", style="dim")
+    console.print()
+    _show_training_plan(
+        corpus=corpus,
+        model=model,
+        qa_pairs=qa_pairs,
+        rollouts=rollouts,
+        rollout_steps=rollout_steps,
+        iterations=iterations,
+        backend=plan.synthesis_rollout_backend,
+    )
 
     agent = Agent(
         base_model=model,
         corpus=corpus,
         project=args.project,
-        api_base=TOGETHER_API_BASE,
+        api_base=TOGETHER_API_BASE if plan.synthesis_rollout_backend == "together" else None,
         api_key=api_key,
         hf_token=_get_hf_token(),
         chunk_size=chunk_size,
@@ -847,6 +1263,7 @@ def cmd_train(args: argparse.Namespace) -> None:
         rollout_max_steps=rollout_steps,
         max_examples=args.max_examples,
         learning_rate=lr,
+        synthesis_rollout_backend=plan.synthesis_rollout_backend,
         verbose=True,
     )
     elapsed = time.monotonic() - train_start
@@ -863,7 +1280,7 @@ def cmd_train(args: argparse.Namespace) -> None:
 
     next_options = [
         {"label": "Ask a question", "hint": "Test your trained agent on the corpus"},
-        {"label": "Exit", "hint": "Come back later with `konash ask`"},
+        {"label": "Exit", "hint": "Come back later with `konash eval` or another `konash train` run"},
     ]
     next_idx = _arrow_select(console, next_options)
     console.print()
@@ -894,140 +1311,11 @@ def cmd_train(args: argparse.Namespace) -> None:
             console.print(f"    [bold]A[/]  {answer}")
             console.print()
     else:
-        project_name = args.project or "default"
-        console.print(f"    [dim]Run [cyan]konash ask --project {project_name} "
-                       f"--corpus {corpus} \"your question\"[/] to query later.[/]")
-        console.print()
-
-
-# ---------------------------------------------------------------------------
-# konash ask
-# ---------------------------------------------------------------------------
-
-def cmd_ask(args: argparse.Namespace) -> None:
-    try:
-        from konash.api import Agent
-    except ModuleNotFoundError as exc:
-        _dependency_error(exc)
-
-    api_key = _get_together_key() or args.api_key
-    if not api_key:
         console.print(
-            "\n[red]No API key found.[/] Run [cyan]konash setup[/] first.\n"
+            "    [dim]Run [cyan]konash eval[/] to benchmark, or rerun "
+            "[cyan]konash train[/] to continue tuning this corpus.[/]"
         )
-        sys.exit(1)
-
-    # Resolve corpus: explicit flag > training metadata > error
-    corpus = args.corpus
-    if not corpus:
-        meta_path = os.path.join(PROJECTS_DIR, args.project, "checkpoints", "training_meta.json")
-        if os.path.exists(meta_path):
-            with open(meta_path) as f:
-                meta = json.load(f)
-            corpus = meta.get("corpus")
-            if corpus:
-                console.print(f"[dim]Using corpus from project \"{args.project}\": {corpus}[/]")
-        if not corpus:
-            console.print(
-                "\n[red]No corpus specified.[/] Use [cyan]--corpus[/] or train first "
-                "with [cyan]konash train[/].\n"
-            )
-            sys.exit(1)
-
-    agent = Agent(
-        base_model=args.model,
-        corpus=corpus,
-        project=args.project,
-        api_base=TOGETHER_API_BASE,
-        api_key=api_key,
-        hf_token=_get_hf_token(),
-    )
-
-    # Try loading value model from checkpoint
-    _use_vgs = args.vgs
-    if _use_vgs:
-        import json as _json
-        vm_path = os.path.join(PROJECTS_DIR, args.project, "checkpoints", "value_model.json")
-        if os.path.exists(vm_path):
-            from konash.inference.value_model import ValueModel
-            with open(vm_path) as f:
-                vm_data = _json.load(f)
-            agent._value_model = ValueModel(
-                weights=vm_data["weights"],
-                bias=vm_data["bias"],
-                feature_dim=vm_data["feature_dim"],
-            )
-        else:
-            console.print("[yellow]No value model found — falling back to standard inference.[/]")
-            _use_vgs = False
-
-    spinner_label = "[cyan]Searching (VGS)..." if _use_vgs else "[cyan]Thinking..."
-    with console.status(spinner_label, spinner="dots"):
-        answer = agent.solve(
-            args.query,
-            parallel_rollouts=args.parallel if args.parallel > 1 else (3 if _use_vgs else 1),
-            top_k=args.top_k,
-            use_vgs=True if _use_vgs else None,
-        )
-
-    console.print()
-    console.rule(style="dim")
-    console.print()
-    console.print(answer)
-    console.print()
-
-
-# ---------------------------------------------------------------------------
-# konash search
-# ---------------------------------------------------------------------------
-
-def cmd_search(args: argparse.Namespace) -> None:
-    try:
-        from konash.corpus import Corpus
-    except ModuleNotFoundError as exc:
-        _dependency_error(exc)
-
-    _cache_dir = os.path.join(CONFIG_DIR, "search", "index_cache")
-    corpus = Corpus(args.corpus, chunk_size=args.chunk_size, cache_dir=_cache_dir)
-
-    _status_msg = console.status("[cyan]Indexing corpus...", spinner="dots")
-    _status_msg.start()
-
-    def _search_progress(phase: str, current: int, total: int) -> None:
-        labels = {"reading": "Reading", "chunking": "Chunking", "embedding": "Embedding"}
-        label = labels.get(phase, phase)
-        if current < total:
-            pct = current * 100 // total if total else 0
-            _status_msg.update(f"[cyan]{label}  {current:,}/{total:,}  ({pct}%)")
-        else:
-            _status_msg.update(f"[cyan]{label}  {total:,} done")
-
-    corpus.ingest(progress_callback=_search_progress)
-    _status_msg.stop()
-
-    console.print(f"[dim]Indexed {corpus.num_documents} chunks[/]\n")
-
-    with console.status("[cyan]Searching...", spinner="dots"):
-        results = corpus.search(args.query, top_k=args.top_k)
-
-    table = Table(
-        title=f'Results for "{args.query}"',
-        box=box.SIMPLE_HEAVY,
-        expand=True,
-    )
-    table.add_column("#", style="dim", width=3)
-    table.add_column("Score", justify="right", width=8)
-    table.add_column("Source", style="cyan", max_width=30)
-    table.add_column("Text")
-
-    for i, r in enumerate(results, 1):
-        score = r.get("score", 0)
-        source = r.get("source", "?")
-        text = r.get("text", "")[:150]
-        table.add_row(str(i), f"{score:.3f}", source, text + "...")
-
-    console.print(table)
-    console.print()
+        console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -1057,29 +1345,8 @@ def cmd_status(args: argparse.Namespace) -> None:
     console.rule(style="dim")
     console.print()
 
-    # Together key (required)
-    together_key = _get_together_key()
-    if together_key:
-        console.print(f"    [green]✓[/]  Together AI    {_mask(together_key)}")
-    else:
-        console.print("    [red]✗[/]  Together AI    not set  [dim](run konash setup)[/]")
-
-    # Shadeform (GPU provider)
     config = _load_config()
-    sf_key = config.get("shadeform_api_key")
-    if sf_key:
-        console.print(f"    [green]✓[/]  Shadeform      {_mask(sf_key)}")
-
-    # Optional keys — only show if configured
-    google_key = _get_google_key()
-    if google_key:
-        console.print(f"    [green]✓[/]  Google AI      {_mask(google_key)}")
-
-    hf_token = _get_hf_token()
-    if hf_token:
-        console.print(f"    [green]✓[/]  HuggingFace    {_mask(hf_token)}")
-
-    # Config
+    _render_capability_summary(config)
     console.print(f"    [dim]Config  {CONFIG_FILE}[/]")
 
     # Training status
@@ -1099,7 +1366,7 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     console.print()
 
-    if not together_key:
+    if not _get_together_key():
         console.print("    Run [bold]konash setup[/] to configure.")
         console.print()
 
@@ -1225,15 +1492,6 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_setup.set_defaults(func=cmd_setup)
 
-    # --- download ---
-    p_dl = subparsers.add_parser(
-        "download", help="Download a benchmark corpus.",
-    )
-    p_dl.add_argument(
-        "corpus_name", help="Corpus to download (e.g. browsecomp-plus).",
-    )
-    p_dl.set_defaults(func=cmd_download)
-
     # --- train ---
     p_train = subparsers.add_parser("train", help="Train a knowledge agent.")
     p_train.add_argument(
@@ -1243,20 +1501,20 @@ def main(argv: list[str] | None = None) -> None:
     p_train.add_argument("--model", default=DEFAULT_MODEL, help="Model ID.")
     p_train.add_argument("--project", default="default", help="Project name.")
     p_train.add_argument(
-        "--iterations", type=int, default=2,
-        help="Training iterations (default: 2).",
+        "--iterations", type=int, default=DEFAULT_SCALE_PRESET["iterations"],
+        help=f"Training iterations (default: {DEFAULT_SCALE_PRESET['iterations']}, Quick scale).",
     )
     p_train.add_argument(
-        "--qa-pairs", type=int, default=12000,
-        help="QA pairs to synthesize per iteration (default: 12000).",
+        "--qa-pairs", type=int, default=DEFAULT_SCALE_PRESET["qa_pairs"],
+        help=f"QA pairs to synthesize per iteration (default: {DEFAULT_SCALE_PRESET['qa_pairs']}, Quick scale).",
     )
     p_train.add_argument(
-        "--rollouts", type=int, default=8,
-        help="Rollouts per example (default: 8).",
+        "--rollouts", type=int, default=DEFAULT_SCALE_PRESET["rollouts"],
+        help=f"Rollouts per example (default: {DEFAULT_SCALE_PRESET['rollouts']}, Quick scale).",
     )
     p_train.add_argument(
-        "--rollout-steps", type=int, default=50,
-        help="Max steps per rollout (default: 50, KARL BCP: 200).",
+        "--rollout-steps", type=int, default=DEFAULT_SCALE_PRESET["rollout_steps"],
+        help=f"Max steps per rollout (default: {DEFAULT_SCALE_PRESET['rollout_steps']}, Quick scale; KARL BCP: 200).",
     )
     p_train.add_argument(
         "--max-examples", type=int, default=None,
@@ -1269,43 +1527,19 @@ def main(argv: list[str] | None = None) -> None:
         "--chunk-size", type=int, default=512, help="Chunk size in words.",
     )
     p_train.add_argument(
+        "--synthesis-backend",
+        choices=["auto", "together", "shadeform"],
+        default="auto",
+        help=(
+            "Where synthesis + rollout generation run. "
+            "auto chooses together for 1 iteration and shadeform for multi-iteration."
+        ),
+    )
+    p_train.add_argument(
         "--api-key", default=None,
         help="Together AI key (or run konash setup).",
     )
     p_train.set_defaults(func=cmd_train)
-
-    # --- ask ---
-    p_ask = subparsers.add_parser("ask", help="Ask your knowledge agent.")
-    p_ask.add_argument("query", help="Your question.")
-    p_ask.add_argument("--corpus", default=None, help="Path to documents folder (auto-detected from training).")
-    p_ask.add_argument("--model", default=DEFAULT_MODEL, help="Model ID.")
-    p_ask.add_argument("--project", default="default", help="Project name.")
-    p_ask.add_argument(
-        "--parallel", type=int, default=1, help="Parallel rollouts."
-    )
-    p_ask.add_argument(
-        "--top-k", type=int, default=10, help="Documents per search."
-    )
-    p_ask.add_argument("--api-key", default=None, help="Together AI key.")
-    p_ask.add_argument(
-        "--vgs", action="store_true", default=False,
-        help="Use Value-Guided Search (requires trained value model).",
-    )
-    p_ask.set_defaults(func=cmd_ask)
-
-    # --- search ---
-    p_search = subparsers.add_parser("search", help="Search your documents.")
-    p_search.add_argument("query", help="Search query.")
-    p_search.add_argument(
-        "--corpus", required=True, help="Path to documents folder."
-    )
-    p_search.add_argument(
-        "--top-k", type=int, default=5, help="Number of results."
-    )
-    p_search.add_argument(
-        "--chunk-size", type=int, default=512, help="Chunk size."
-    )
-    p_search.set_defaults(func=cmd_search)
 
     # --- eval ---
     benchmark_choices = sorted(ds.key for ds in DATASETS if ds.benchmark is not None)

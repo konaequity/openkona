@@ -11,7 +11,7 @@
 #  Prerequisites:
 #    - Together AI account with GPU cluster (2x H100 SXM)
 #    - SSH key added at api.together.ai/settings/ssh-key
-#    - TOGETHER_API_KEY set (for rollout generation via API)
+#    - TOGETHER_API_KEY set only if you plan to use API-backed rollouts
 # ============================================================
 
 set -euo pipefail

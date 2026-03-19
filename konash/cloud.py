@@ -684,7 +684,10 @@ def train_remote(
     base_model: str = "unsloth/GLM-4.5-Air",
     checkpoint_dir: str = "~/.konash/projects/default/checkpoints",
     iterations: int = 1,
+    synthesis_calls: int = 1500,
     rollouts_per_example: int = 8,
+    rollout_max_steps: int = 50,
+    max_examples: Optional[int] = None,
     learning_rate: float = 1e-6,
     cloud: Optional[str] = None,
     gpu: str = "H100",
@@ -729,10 +732,14 @@ def train_remote(
             f"python3 scripts/train_oapl_unsloth.py "
             f"--corpus {corpus_path} "
             f"--iterations {iterations} "
+            f"--synthesis-calls {synthesis_calls} "
             f"--rollouts-per-example {rollouts_per_example} "
+            f"--rollout-max-steps {rollout_max_steps} "
             f"--lr {learning_rate} "
             f"--output {_REMOTE_DIR}/checkpoints"
         )
+        if max_examples is not None:
+            training_cmd += f" --max-examples {max_examples}"
         env_vars = {}
         together_key = _get_together_key()
         if together_key:

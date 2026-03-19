@@ -46,12 +46,10 @@ Setup takes 2 minutes. Training scales from ~1 hour (Quick) to several hours (Ex
 5. **OAPL training** — Off-policy RL with squared advantage loss trains the model on successful search strategies
 6. **Value-Guided Search** — A learned value model scores partial rollouts to guide test-time tree search
 
-### Ask questions
-
-After training, query your agent:
+### Evaluate your agent
 
 ```bash
-konash ask "Which Nobel physicist was born in the same city as the author of The Trial?"
+konash eval financebench --limit 1
 ```
 
 Or in Python:

@@ -77,6 +77,21 @@ def test_resolve_provider_reads_huggingface_token_from_config(monkeypatch, tmp_p
     assert provider["api_key"] == "hf_config_token"
 
 
+def test_resolve_provider_reads_openai_judge_key_from_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ZHIPU_API_KEY", raising=False)
+    monkeypatch.setenv("TOGETHER_API_KEY", "together_token")
+    config_dir = tmp_path / ".konash"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(json.dumps({"openai_api_key": "openai_config_token"}))
+
+    provider = resolve_provider(_args(provider="together"))
+
+    assert provider["judge_api_base"] == "https://api.openai.com/v1"
+    assert provider["judge_key"] == "openai_config_token"
+
+
 def test_resolve_provider_requires_model_for_huggingface(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
