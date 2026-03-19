@@ -105,6 +105,10 @@ def _qampari_extra_output(eval_result: dict) -> dict:
     return {"avg_nugget_completion": avg}
 
 
+def _bcp_progress_detail(result: dict) -> str:
+    return f"[dim]Steps:[/] {result.get('num_steps', 0)} ({result.get('num_searches', 0)} searches)"
+
+
 def _freshstack_progress_detail(result: dict) -> str:
     n_nuggets = result.get("num_nuggets", 0)
     found = sum(1 for s in result.get("nugget_scores", []) if s >= 0.6)
@@ -142,11 +146,25 @@ DATASET_REGISTRY: dict[str, DatasetSpec] = {
     "browsecomp-plus": DatasetSpec(
         key="browsecomp-plus",
         name="BrowseComp-Plus",
-        description="Web retrieval benchmark  ·  40K docs  ·  encrypted",
+        description="Constraint-driven entity search  ·  100K docs  ·  830 questions",
         source="Tevatron/browsecomp-plus",
         root_dirname="browsecomp-plus",
         content_subdir="documents",
         downloader_name="download_browsecomp_plus",
+        benchmark=BenchmarkConfig(
+            name="BrowseComp-Plus",
+            policy_name="BrowseCompPlus",
+            project_name="eval-browsecomp-plus",
+            benchmark_key="browsecomp-plus",
+            top_k=20,
+            get_reference=lambda q: q["answer"],
+            get_nuggets=lambda q: None,
+            get_question_text=lambda q: q["question"],
+            get_progress_ref_display=lambda q: q["answer"][:120],
+            get_progress_detail=_bcp_progress_detail,
+            paper_target="KARL paper target (GLM 4.5 Air base): 44.7%",
+        ),
+        hooks=BenchmarkHooks(),
     ),
     "qampari": DatasetSpec(
         key="qampari",

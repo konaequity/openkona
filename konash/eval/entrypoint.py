@@ -401,7 +401,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Evaluate KONASH on a registered benchmark")
     parser.add_argument("benchmark", choices=sorted(
-        key for key in ("financebench", "qampari", "freshstack")
+        key for key in ("financebench", "qampari", "freshstack", "browsecomp-plus")
     ))
     args, remaining = parser.parse_known_args()
 
