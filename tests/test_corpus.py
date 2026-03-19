@@ -170,8 +170,8 @@ class TestCorpusIngestion:
             doc_ids=np.array(["doc1"]),
             embed_model="Qwen/Qwen3-Embedding-0.6B",
         )
-        (corpus_dir / "pages").mkdir()
-        (corpus_dir / "pages" / "doc1.txt").write_text("alpha facts")
+        (corpus_dir / "documents").mkdir()
+        (corpus_dir / "documents" / "doc1.txt").write_text("alpha facts")
 
         monkeypatch.setenv("HF_TOKEN", "hf_test_token")
 

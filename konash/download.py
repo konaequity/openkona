@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -260,15 +261,15 @@ def download_financebench(
     if output_dir is None:
         output_dir = spec.corpus_root()
 
-    pages_dir = spec.content_path(output_dir)
+    docs_dir = spec.content_path(output_dir)
     index_path = os.path.join(output_dir, "prebuilt_index.npz")
 
     # Check if full page-level corpus is already set up
-    if (os.path.isdir(pages_dir)
-            and len(os.listdir(pages_dir)) > 50000
+    if (os.path.isdir(docs_dir)
+            and len(os.listdir(docs_dir)) > 50000
             and os.path.exists(index_path)):
-        count = len(os.listdir(pages_dir))
-        _print(console, f"    Already downloaded: {count:,} pages in {pages_dir}")
+        count = len(os.listdir(docs_dir))
+        _print(console, f"    Already downloaded: {count:,} documents in {docs_dir}")
         return output_dir
 
     os.makedirs(output_dir, exist_ok=True)
@@ -298,9 +299,10 @@ def download_financebench(
     _download_prebuilt_index_hf(output_dir, "financebench/qwen3-0.6b-pages.npz", console)
     _download_financebench_pages(output_dir, console)
 
-    pages_count = len(os.listdir(pages_dir)) if os.path.isdir(pages_dir) else 0
+    docs_dir = spec.content_path(output_dir)
+    pages_count = len(os.listdir(docs_dir)) if os.path.isdir(docs_dir) else 0
     _print(console, f"    [bold green]Done![/]")
-    _print(console, f"    Pages:      {pages_count:,}")
+    _print(console, f"    Documents:  {pages_count:,}")
     _print(console, f"    Eval Q's:   {len(eval_questions)}")
     _print(console, f"    Saved to:   {output_dir}")
 
@@ -344,8 +346,8 @@ def _download_financebench_pages(
     console: Optional["Console"] = None,
 ) -> None:
     """Download page-level text files for FinanceBench from HuggingFace."""
-    pages_dir = os.path.join(output_dir, "pages")
-    if os.path.isdir(pages_dir) and len(os.listdir(pages_dir)) > 50000:
+    docs_dir = os.path.join(output_dir, "documents")
+    if os.path.isdir(docs_dir) and len(os.listdir(docs_dir)) > 50000:
         return  # Already have them
 
     try:
@@ -362,15 +364,14 @@ def _download_financebench_pages(
         import tarfile
         with tarfile.open(tarball, "r:gz") as tf:
             tf.extractall(output_dir)
-        # The tarball extracts as all_pages/, rename to pages/
+        # The tarball extracts as all_pages/, rename to documents/
         extracted = os.path.join(output_dir, "all_pages")
         if os.path.isdir(extracted):
-            if os.path.isdir(pages_dir):
-                import shutil
-                shutil.rmtree(pages_dir)
-            os.rename(extracted, pages_dir)
-        count = len(os.listdir(pages_dir))
-        _print(console, f"    [green]✓[/]  {count:,} page files installed")
+            if os.path.isdir(docs_dir):
+                shutil.rmtree(docs_dir)
+            os.rename(extracted, docs_dir)
+        count = len(os.listdir(docs_dir))
+        _print(console, f"    [green]✓[/]  {count:,} document files installed")
     except Exception as exc:
         _print(console, f"    [dim]Could not download pages ({exc}).[/]")
 
@@ -419,15 +420,15 @@ def download_qampari(
     if output_dir is None:
         output_dir = spec.corpus_root()
 
-    pages_dir = spec.content_path(output_dir)
+    docs_dir = spec.content_path(output_dir)
     index_path = os.path.join(output_dir, "prebuilt_index.npz")
 
     # Check if full corpus is already set up
-    if (os.path.isdir(pages_dir)
-            and len(os.listdir(pages_dir)) > 250000
+    if (os.path.isdir(docs_dir)
+            and len(os.listdir(docs_dir)) > 250000
             and os.path.exists(index_path)):
-        count = len(os.listdir(pages_dir))
-        _print(console, f"    Already downloaded: {count:,} chunks in {pages_dir}")
+        count = len(os.listdir(docs_dir))
+        _print(console, f"    Already downloaded: {count:,} chunks in {docs_dir}")
         return output_dir
 
     os.makedirs(output_dir, exist_ok=True)
@@ -464,7 +465,8 @@ def download_qampari(
     # Step 3: Download chunk text files from HuggingFace
     _download_qampari_chunks(output_dir, console)
 
-    pages_count = len(os.listdir(pages_dir)) if os.path.isdir(pages_dir) else 0
+    docs_dir = spec.content_path(output_dir)
+    pages_count = len(os.listdir(docs_dir)) if os.path.isdir(docs_dir) else 0
     _print(console, f"    [bold green]Done![/]")
     _print(console, f"    Chunks:     {pages_count:,}")
     _print(console, f"    Eval Q's:   {len(eval_questions)}")
@@ -478,8 +480,8 @@ def _download_qampari_chunks(
     console: Optional["Console"] = None,
 ) -> None:
     """Download chunk text files for QAMPARI from HuggingFace."""
-    pages_dir = os.path.join(output_dir, "pages")
-    if os.path.isdir(pages_dir) and len(os.listdir(pages_dir)) > 250000:
+    docs_dir = os.path.join(output_dir, "documents")
+    if os.path.isdir(docs_dir) and len(os.listdir(docs_dir)) > 250000:
         return  # Already have them
 
     try:
@@ -496,19 +498,21 @@ def _download_qampari_chunks(
         import tarfile
         with tarfile.open(tarball, "r:gz") as tf:
             tf.extractall(output_dir)
-        # Ensure the pages/ directory exists after extraction
-        if not os.path.isdir(pages_dir):
+        # Ensure the documents/ directory exists after extraction
+        if not os.path.isdir(docs_dir):
             # Try common extracted directory names
-            for candidate in ("chunks", "all_pages", "pages"):
+            for candidate in ("chunks", "all_pages"):
                 extracted = os.path.join(output_dir, candidate)
-                if os.path.isdir(extracted) and extracted != pages_dir:
-                    os.rename(extracted, pages_dir)
+                if os.path.isdir(extracted) and extracted != docs_dir:
+                    if os.path.isdir(docs_dir):
+                        shutil.rmtree(docs_dir)
+                    os.rename(extracted, docs_dir)
                     break
-        if os.path.isdir(pages_dir):
-            count = len(os.listdir(pages_dir))
+        if os.path.isdir(docs_dir):
+            count = len(os.listdir(docs_dir))
             _print(console, f"    [green]\u2713[/]  {count:,} chunk files installed")
         else:
-            _print(console, "    [dim]Warning: pages/ directory not found after extraction.[/]")
+            _print(console, "    [dim]Warning: documents/ directory not found after extraction.[/]")
     except Exception as exc:
         _print(console, f"    [dim]Could not download chunks ({exc}).[/]")
 

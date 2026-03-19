@@ -179,12 +179,9 @@ class Corpus:
             docs_dir = self.path if self.path.is_dir() else self.path.parent
 
             # Check if documents live in a subdirectory.
-            # Prefer pages/ (page-level indexes) over documents/ (whole-doc).
-            pages_sub = docs_dir / "pages"
+            # Built-in corpora use documents/; otherwise use the provided path.
             docs_sub = docs_dir / "documents"
-            if pages_sub.is_dir():
-                self._docs_dir = pages_sub
-            elif docs_sub.is_dir():
+            if docs_sub.is_dir():
                 self._docs_dir = docs_sub
             else:
                 self._docs_dir = docs_dir

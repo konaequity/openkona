@@ -711,12 +711,15 @@ def train_remote(
         # For named corpora, download on remote. For local paths, upload.
         named_corpora = {"financebench", "browsecomp-plus", "qampari", "freshstack"}
         if corpus in named_corpora:
+            from konash.benchmarks import get_dataset
+
             dl_cmd = f"cd {_REMOTE_DIR} && PYTHONPATH=. python3 -c \"from konash.download import download_{corpus.replace('-', '_')}; download_{corpus.replace('-', '_')}()\""
             subprocess.run(
                 _ssh_cmd(ip, dl_cmd, ssh_key, port, user),
                 capture_output=True, timeout=600,
             )
-            corpus_path = f"/root/.konash/corpora/{corpus}/documents"
+            dataset = get_dataset(corpus)
+            corpus_path = f"/root/.konash/corpora/{dataset.root_dirname}/{dataset.content_subdir}"
         else:
             _print(f"  Uploading corpus...")
             _scp_upload(ip, corpus, f"{_REMOTE_DIR}/corpus/", ssh_key, port, user)

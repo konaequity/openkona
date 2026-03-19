@@ -10,11 +10,11 @@ def test_dataset_registry_captures_corpus_layouts():
     browsecomp = get_dataset("browsecomp-plus")
 
     assert financebench.corpus_root() == f"{DEFAULT_CORPUS_DIR}/financebench"
-    assert financebench.content_path() == f"{DEFAULT_CORPUS_DIR}/financebench/pages"
-    assert qampari.content_path() == f"{DEFAULT_CORPUS_DIR}/qampari/pages"
+    assert financebench.content_path() == f"{DEFAULT_CORPUS_DIR}/financebench/documents"
+    assert qampari.content_path() == f"{DEFAULT_CORPUS_DIR}/qampari/documents"
     assert freshstack.content_path() == f"{DEFAULT_CORPUS_DIR}/freshstack/documents"
     assert browsecomp.content_path() == f"{DEFAULT_CORPUS_DIR}/browsecomp-plus/documents"
-    assert financebench.content_path("/tmp/financebench") == "/tmp/financebench/pages"
+    assert financebench.content_path("/tmp/financebench") == "/tmp/financebench/documents"
     assert financebench.eval_questions_path("/tmp/financebench") == "/tmp/financebench/eval_questions.json"
 
 
