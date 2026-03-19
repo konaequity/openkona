@@ -10,4 +10,8 @@ build/
 .env
 stage2_training_data.json
 eval_results/
+glm_test_results/
+docs/
+notebooks/
 tools/trace_viewer/data/financebench_*.json
+tools/arena/data/runs.jsonl

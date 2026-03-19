@@ -108,12 +108,19 @@ GLM 4.5 Air on FinanceBench — no training, base model only:
 
 | Mode | Accuracy | Avg Score | Avg Latency |
 |------|----------|-----------|-------------|
-| Single rollout | 48% | 0.487 | 7.7s |
-| Parallel thinking (N=3) | 51% | 0.520 | 30.8s |
+| Single rollout | **69%** (103/150) | 0.720 | 35.0s |
 
-Scored with LLM-based nugget evaluation (KARL paper, Appendix D.1). Parallel thinking runs 3 independent rollouts and aggregates answers, improving accuracy by +3%.
+Scored with LLM-based nugget evaluation (gpt-4o-mini judge, KARL paper Appendix D.1). Each question runs a multi-step search agent over 53K embedded SEC filing pages with Qwen3 embeddings + FAISS vector search.
 
-The KARL paper reports **76%** on FinanceBench after RL training (2 iterations, 12K synthesized QA pairs). KONASH implements this training pipeline — the gap between 48% (base) and 76% (trained) is what OAPL training closes.
+The KARL paper reports **76%** on FinanceBench after RL training (2 iterations, 12K synthesized QA pairs). KONASH implements this training pipeline — the gap between 69% (base) and 76% (trained) is what OAPL training closes.
+
+### QAMPARI (Wikipedia entity search)
+
+| Mode | Accuracy | Avg Score | Avg Latency |
+|------|----------|-----------|-------------|
+| Single rollout | **60%** (3/5) | 0.614 | 44.5s |
+
+Exhaustive entity retrieval over 293K Wikipedia sentence-level chunks. Each question requires finding ALL entities satisfying a condition.
 
 <details>
 <summary>Reproduce these results</summary>
@@ -122,11 +129,12 @@ The KARL paper reports **76%** on FinanceBench after RL training (2 iterations, 
 pip install konash
 konash setup
 konash eval financebench
-konash eval financebench --parallel 5
-konash eval financebench --train
+konash eval qampari
+konash eval financebench --parallel 5   # add parallel thinking
+konash eval financebench --train        # train + eval
 ```
 
-Results are saved to `eval_results/financebench_eval.json`. Traces are written to `tools/trace_viewer/data/` for visualization.
+Results are saved to `eval_results/` and viewable in the eval trace viewer at `http://localhost:5050/eval/` (run `python tools/server.py`).
 </details>
 
 ---
@@ -138,46 +146,50 @@ Results are saved to `eval_results/financebench_eval.json`. Traces are written t
 | Service | Purpose | Cost |
 |---------|---------|------|
 | **Together AI** | LLM inference (synthesis, rollouts, solving) | Pay-as-you-go (~$5 for a quick training run) |
-| **HuggingFace** | Pre-built embedding indexes, model hosting | Free |
-| **Google AI** *(optional)* | Corpus embeddings via Gemini (when no pre-built index) | Free tier available |
+| **HuggingFace** | Pre-built embedding indexes, query embeddings via Inference API | Free |
+| **OpenAI** *(optional)* | Judge model for eval scoring (gpt-4o-mini) | ~$0.01 per eval question |
 
 ### Python
 
 - Python >= 3.11
-- Core dependencies: `numpy`, `rich`, `together`, `google-genai`
+- Core dependencies: `numpy`, `rich`, `together`, `huggingface_hub`
 - Optional: `faiss-cpu` (fast vector search), `torch` + `transformers` + `peft` (local training)
 
 ---
 
-## Cloud Training
+## Cloud Training & Eval
 
-KONASH automatically provisions cloud GPUs when training needs gradient updates. Synthesis and rollout generation run locally via API — only the OAPL step (which takes minutes, not hours) uses a GPU.
+KONASH uses cloud GPUs for training and can run evals on remote servers. Synthesis and rollout generation run via API — only the OAPL gradient step needs a GPU.
+
+We recommend **[Shadeform](https://shadeform.ai)** for GPU provisioning — it aggregates 20+ cloud providers and finds the cheapest available H100 automatically.
 
 ```bash
 pip install konash
-konash setup    # Together AI key
+konash setup    # Together AI key + Shadeform API key
 konash train    # GPU provisioning is automatic when needed
 ```
 
-When `konash train` reaches the OAPL gradient step, it finds the cheapest available H100 across 20+ cloud providers via [Shadeform](https://shadeform.ai), runs training, downloads the trained model, and tears down the GPU. You just need a Shadeform API key (prompted automatically the first time).
+When `konash train` reaches the OAPL gradient step, it provisions the cheapest available H100 via Shadeform, runs training, downloads the trained LoRA adapter, and tears down the GPU.
 
-| GPU | Typical price | OAPL step cost |
-|-----|---------------|----------------|
-| H100 | $1.90–2.69/hr | ~$0.50 (minutes, not hours) |
+| GPU | Typical price | OAPL step cost | Full eval (150q) |
+|-----|---------------|----------------|------------------|
+| H100 SXM | $1.90–2.69/hr | ~$0.50 | ~$5 via Together AI |
+
+For running evals on remote GPUs (e.g., with vLLM), see the [Shadeform eval guide](scripts/shadeform_eval_guide.md).
 
 ---
 
 ## Supported Datasets
 
-Datasets download automatically when selected in `konash train`:
+Datasets download automatically when selected in `konash train` or `konash eval`:
 
-| Dataset | Domain | Docs | Pre-built Index |
-|---------|--------|------|-----------------|
-| **BrowseComp-Plus** | Web documents (67K articles) | 67,707 | Qwen3-Embedding-8B via Tevatron |
-| **FinanceBench** | SEC filings, financial reports | ~150 | — |
-| **QAMPARI** | Encyclopedic entity search | 250K+ chunks | — |
-| **FreshStack** | Technical documentation | Varies | — |
-| **Local folder** | Your own documents | Any | Built on first run |
+| Dataset | Domain | Chunks | Pre-built Index | Eval Questions |
+|---------|--------|--------|-----------------|----------------|
+| **FinanceBench** | SEC filings, financial reports | 53,803 | Qwen3-Embedding-0.6B | 150 |
+| **QAMPARI** | Wikipedia entity search | 292,825 | Qwen3-Embedding-0.6B | 1,000 |
+| **BrowseComp-Plus** | Web documents | 67,707 | Qwen3-Embedding-8B (Tevatron) | 289 |
+| **FreshStack** | Technical docs (LangChain) | 48,068 | Qwen3-Embedding-0.6B | 203 |
+| **Local folder** | Your own documents | Any | Built on first run | — |
 
 ### Supported file formats (local folders)
 
@@ -187,26 +199,19 @@ Datasets download automatically when selected in `konash train`:
 
 ## Supported Models
 
-Any model available on [Together AI](https://api.together.xyz/models):
+Any model available on [Together AI](https://api.together.xyz/models) or [HuggingFace Inference API](https://huggingface.co/inference-api):
 
 | Model | Type | Notes |
 |-------|------|-------|
+| **GLM 5** | Frontier | Latest generation, strongest |
 | **GLM 4.5 Air** | Frontier MoE | Default — best for KARL, fast + cheap |
-| **Qwen3 80B-A3B** | MoE | Good value |
-| **Llama 3.3 70B Turbo** | Dense | Strong general-purpose |
+| **Qwen 3.5 397B** | MoE | Largest open MoE |
+| **Qwen3 80B-A3B** | MoE | Good value — $0.0017/run |
 | **DeepSeek R1** | MoE | Reasoning-focused |
-| **Mixtral 8x22B** | MoE | Balanced |
-| Custom | Any | Enter any Together AI model ID |
+| **Llama 3.3 70B Turbo** | Dense | Strong general-purpose |
+| Custom | Any | Enter any Together AI or HF model ID |
 
----
-
-## 📓 Notebooks
-
-| Agent Task | Notebook | Description |
-|---|---|---|
-| **Trivia Night** | *Coming soon* | Train a model to answer multi-constraint trivia by searching Wikipedia |
-| **20 Questions** | *Coming soon* | Train an agent to identify entities through iterative yes/no questioning |
-| **GeoGuessr** | *Coming soon* | Train an agent to geolocate images by searching geographic knowledge bases |
+Compare models head-to-head in the [Arena](http://localhost:5050/arena/) (run `python tools/server.py`).
 
 ---
 
