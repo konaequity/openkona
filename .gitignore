@@ -14,4 +14,4 @@ glm_test_results/
 docs/
 notebooks/
 tools/trace_viewer/data/financebench_*.json
-tools/arena/data/runs.jsonl
+tools/arena/data/*.jsonl
