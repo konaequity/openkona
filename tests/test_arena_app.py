@@ -6,12 +6,14 @@ import time
 from pathlib import Path
 
 import konash.benchmarks as benchmarks
+import pytest
 
 
 _ARENA_APP_PATH = Path(__file__).resolve().parents[1] / "tools" / "arena" / "app.py"
 _ARENA_SPEC = importlib.util.spec_from_file_location("arena_app_module", _ARENA_APP_PATH)
 arena_app = importlib.util.module_from_spec(_ARENA_SPEC)
 assert _ARENA_SPEC is not None and _ARENA_SPEC.loader is not None
+pytest.importorskip("flask")
 _ARENA_SPEC.loader.exec_module(arena_app)
 
 
