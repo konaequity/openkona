@@ -15,7 +15,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, os.path.dirname(__file__))
 
-from flask import Flask, redirect
+from flask import Flask, redirect, send_from_directory
 from werkzeug.serving import run_simple
 
 from arena.app import app as arena_app
@@ -24,11 +24,22 @@ from eval.app import app as eval_app
 
 # Root app just redirects to /arena
 root_app = Flask(__name__)
+root_app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 
 @root_app.route("/")
 def home():
     return redirect("/training/")
+
+
+@root_app.route("/assets/<path:filename>")
+def assets(filename: str):
+    response = send_from_directory(os.path.join(PROJECT_ROOT, "assets"), filename)
+    response.cache_control.no_cache = True
+    response.cache_control.no_store = True
+    response.cache_control.must_revalidate = True
+    response.expires = 0
+    return response
 
 
 # Combine via WSGI dispatch
@@ -55,6 +66,25 @@ app = PathDispatcher(root_app, {
     "/eval": eval_app,
 })
 
+
+def _collect_dev_watch_files() -> list[str]:
+    """Include templates and other frontend-facing files in the reloader watch set."""
+    watch_files: list[str] = []
+    watch_roots = [
+        os.path.join(PROJECT_ROOT, "assets"),
+        os.path.join(os.path.dirname(__file__), "arena", "templates"),
+        os.path.join(os.path.dirname(__file__), "eval", "templates"),
+        os.path.join(os.path.dirname(__file__), "trace_viewer", "templates"),
+        os.path.join(os.path.dirname(__file__), "shared", "templates"),
+    ]
+    for root in watch_roots:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for filename in filenames:
+                watch_files.append(os.path.join(dirpath, filename))
+    return watch_files
+
 if __name__ == "__main__":
     port = int(os.environ.get("KONASH_PORT", 5050))
     print(f"\n  KONASH Eval Tools")
@@ -63,4 +93,12 @@ if __name__ == "__main__":
     print(f"  /arena    — Model comparison arena")
     print(f"  /traces   — Rollout trace viewer")
     print(f"  /eval     — Eval trace viewer\n")
-    run_simple("0.0.0.0", port, app, use_debugger=True, use_reloader=True, threaded=True)
+    run_simple(
+        "0.0.0.0",
+        port,
+        app,
+        use_debugger=True,
+        use_reloader=True,
+        threaded=True,
+        extra_files=_collect_dev_watch_files(),
+    )

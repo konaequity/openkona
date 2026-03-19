@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KONASH Arena</title>
+{% include "favicon.html" %}
 <style>
 /* ================================================================
    CSS Variables — Swiss (International Typographic Style) Light Theme
@@ -143,6 +144,35 @@ body {
 
 .btn-run:hover { background: #B00000; }
 .btn-run:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-stop {
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--accent-red);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: var(--font-sans);
+  display: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-stop.visible {
+  display: flex;
+}
+
+.btn-stop:hover {
+  background: rgba(213, 0, 0, 0.05);
+}
+
+.btn-stop:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -1303,6 +1333,10 @@ body {
     <div class="question-bar">
       <textarea class="question-input" id="questionInput" placeholder="Enter your question here..." rows="1"></textarea>
       <div class="question-actions">
+        <button class="btn-stop" id="btnStop">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          Stop
+        </button>
         <button class="btn-run" id="btnRun">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
           Run
@@ -1521,10 +1555,13 @@ body {
     presets: {},
     runId: null,
     running: false,
+    stopping: false,
     voted: false,
     blindMode: false,
     doneA: false,
     doneB: false,
+    hasAnswerA: false,
+    hasAnswerB: false,
     eventSource: null,
     modelA: '',
     modelB: '',
@@ -1540,6 +1577,7 @@ body {
 
   const questionInput = $('questionInput');
   const btnRun = $('btnRun');
+  const btnStop = $('btnStop');
   const selectModelA = $('selectModelA');
   const selectModelB = $('selectModelB');
   const blindToggle = $('blindToggle');
@@ -1768,6 +1806,7 @@ body {
   // Run comparison
   // ----------------------------------------------------------------
   btnRun.addEventListener('click', startRun);
+  btnStop.addEventListener('click', stopRun);
   function startRun() {
     const question = questionInput.value.trim();
     if (!question || state.running) return;
@@ -1781,8 +1820,11 @@ body {
 
     resetUI();
     state.running = true;
+    state.stopping = false;
     btnRun.disabled = true;
     btnRun.innerHTML = '<div class="spinner"></div> Running...';
+    btnStop.classList.add('visible');
+    btnStop.disabled = false;
 
     const body = {
       question,
@@ -1818,6 +1860,20 @@ body {
         showError('a', err.message);
         endRun();
       });
+  }
+
+  function stopRun() {
+    if (!state.runId || !state.running || state.stopping) return;
+    state.stopping = true;
+    btnStop.disabled = true;
+    btnStop.innerHTML = `
+      <div class="spinner" style="width:12px;height:12px;border-width:2px;"></div>
+      Stopping...
+    `;
+    fetch(`/arena/api/run/${state.runId}/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }).catch(err => console.error('Stop request failed:', err));
   }
 
   function startStreaming(runId) {
@@ -1869,6 +1925,10 @@ body {
       judgeBody.innerHTML = '<div class="judge-empty">Scoring both answers against the benchmark reference...</div>';
     } else if (data.event === 'judge_done') {
       renderJudgeReview(data.review || {});
+    } else if (data.event === 'stop_requested') {
+      state.stopping = true;
+      setStatus('a', 'running', 'Stopping...');
+      setStatus('b', 'running', 'Stopping...');
     } else if (data.event === 'end') {
       endRun();
     } else if (data.event === 'timeout') {
@@ -1883,7 +1943,7 @@ body {
 
     if (data.error) {
       showError(side, data.error);
-    } else if (data.final_answer) {
+    } else if (data.final_answer && !hasAnswerStep(side)) {
       // Add final answer as a visible step card
       appendStep(side, {
         type: 'answer',
@@ -1892,7 +1952,10 @@ body {
       });
     }
 
-    if (data.error) {
+    if (data.error === 'Stopped by user') {
+      showError(side, data.error);
+      setStatus(side, 'idle', 'Stopped');
+    } else if (data.error) {
       setStatus(side, 'error', 'Error');
     } else {
       setStatus(side, 'complete', 'Complete');
@@ -1902,7 +1965,7 @@ body {
     timingEl.textContent = `TTFT: ${data.ttft}s | Total: ${data.total_time}s`;
 
     // If both done, enable voting
-    if (state.doneA && state.doneB) {
+    if (state.doneA && state.doneB && !state.stopping) {
       votingPanel.classList.add('active');
 
       // In blind mode, reveal model names after both complete
@@ -1919,10 +1982,17 @@ body {
 
   function endRun() {
     state.running = false;
+    state.stopping = false;
     btnRun.disabled = false;
     btnRun.innerHTML = `
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
       Run
+    `;
+    btnStop.classList.remove('visible');
+    btnStop.disabled = false;
+    btnStop.innerHTML = `
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+      Stop
     `;
 
     if (state.eventSource) {
@@ -1934,8 +2004,11 @@ body {
   function resetUI() {
     state.doneA = false;
     state.doneB = false;
+    state.hasAnswerA = false;
+    state.hasAnswerB = false;
     state.voted = false;
     state.runId = null;
+    state.stopping = false;
 
     colABody.innerHTML = '';
     colBBody.innerHTML = '';
@@ -1994,9 +2067,21 @@ body {
   // ----------------------------------------------------------------
   function appendStep(side, step) {
     const body = side === 'a' ? colABody : colBBody;
+    if ((step.type || 'unknown') === 'answer') {
+      setAnswerStep(side, true);
+    }
     const card = createStepCard(step);
     body.appendChild(card);
     body.scrollTop = body.scrollHeight;
+  }
+
+  function hasAnswerStep(side) {
+    return side === 'a' ? state.hasAnswerA : state.hasAnswerB;
+  }
+
+  function setAnswerStep(side, value) {
+    if (side === 'a') state.hasAnswerA = value;
+    if (side === 'b') state.hasAnswerB = value;
   }
 
   function createStepCard(step) {

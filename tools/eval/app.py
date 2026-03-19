@@ -39,6 +39,9 @@ app = Flask(
     __name__,
     template_folder=os.path.join(_EVAL_DIR, "templates"),
 )
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+app.jinja_env.auto_reload = True
 
 _SHARED_TEMPLATES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared", "templates")
 app.jinja_loader = ChoiceLoader([

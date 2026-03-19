@@ -58,6 +58,9 @@ app = Flask(
     __name__,
     template_folder=os.path.join(_ARENA_DIR, "templates"),
 )
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+app.jinja_env.auto_reload = True
 
 _SHARED_TEMPLATES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared", "templates")
 app.jinja_loader = ChoiceLoader([
@@ -76,6 +79,7 @@ RUNS_FILE = DATA_DIR / "runs.jsonl"
 # In-memory stores
 _active_runs: Dict[str, Dict[str, Any]] = {}
 _event_queues: Dict[str, queue.Queue] = {}
+_stop_flags: Dict[str, threading.Event] = {}
 
 # Default corpus path (can be overridden via env or request)
 DEFAULT_CORPUS = os.environ.get(
@@ -501,6 +505,7 @@ def _run_agent(
     event_queue: queue.Queue,
     max_steps: int = 10,
     top_k: int = 10,
+    stop_event: Optional[threading.Event] = None,
 ):
     """Run a single agent using Agent.solve() — same path as eval scripts.
 
@@ -530,6 +535,9 @@ def _run_agent(
         })
 
     try:
+        if stop_event and stop_event.is_set():
+            raise RuntimeError("Stopped by user")
+
         preset_cfg = MODEL_PRESETS.get(preset_name)
         if not preset_cfg:
             raise ValueError(f"Unknown preset: {preset_name}")
@@ -571,6 +579,12 @@ def _run_agent(
                     "ttft": round(ttft, 2),
                 })
 
+        class _StopRunPlugin:
+            def before_step(self, step_index, history):
+                if stop_event and stop_event.is_set():
+                    return {"terminate": True}
+                return None
+
         # Inject the SSE plugin into the agent's solve() call
         from konash.harness.environment import Environment
         from konash.plugins.control import StepBudgetPlugin
@@ -596,6 +610,8 @@ def _run_agent(
             return str(tool_call)
 
         def tool_executor(tool_call):
+            if stop_event and stop_event.is_set():
+                return {"role": "tool", "content": "[Run stopped by user]"}
             query_text = _extract_tool_query(tool_call)
             results = agent.corpus.search(query_text, top_k=top_k)
             result_text = "\n\n".join(
@@ -610,6 +626,7 @@ def _run_agent(
         env = Environment(
             tool_executor=tool_executor,
             plugins=[
+                _StopRunPlugin(),
                 _SSEStepPlugin(),
                 StepBudgetPlugin(max_steps=max_steps),
             ],
@@ -634,6 +651,10 @@ def _run_agent(
         final_answer = episode.get("final_answer", "") or ""
         if ttft is None:
             ttft = time.time() - t_start
+        if stop_event and stop_event.is_set():
+            error_msg = "Stopped by user"
+            if not final_answer:
+                final_answer = f"Error: {error_msg}"
 
     except Exception as e:
         logger.exception("arena_agent_run_failed run_id=%s side=%s preset=%s", run_id, side, preset_name)
@@ -933,6 +954,8 @@ def api_run():
 
     eq: queue.Queue = queue.Queue()
     _event_queues[run_id] = eq
+    stop_event = threading.Event()
+    _stop_flags[run_id] = stop_event
 
     run_record = {
         "run_id": run_id,
@@ -945,6 +968,7 @@ def api_run():
         "eval_context": eval_case,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "status": "running",
+        "stop_requested": False,
         "results": {},
     }
     _active_runs[run_id] = run_record
@@ -953,11 +977,11 @@ def api_run():
         with ThreadPoolExecutor(max_workers=2) as pool:
             future_a = pool.submit(
                 _run_agent, run_id, "a", question, model_a,
-                corpus_path, eq, max_steps, top_k,
+                corpus_path, eq, max_steps, top_k, stop_event,
             )
             future_b = pool.submit(
                 _run_agent, run_id, "b", question, model_b,
-                corpus_path, eq, max_steps, top_k,
+                corpus_path, eq, max_steps, top_k, stop_event,
             )
 
             result_a = future_a.result()
@@ -966,7 +990,7 @@ def api_run():
         run_record["results"]["a"] = result_a
         run_record["results"]["b"] = result_b
 
-        if eval_case:
+        if eval_case and not stop_event.is_set():
             try:
                 eq.put({
                     "run_id": run_id,
@@ -992,18 +1016,42 @@ def api_run():
                     "review": {"error": str(exc)},
                 })
 
-        run_record["status"] = "complete"
+        run_record["status"] = "stopped" if stop_event.is_set() else "complete"
 
         # Persist full run (with steps) for trace viewer
         _save_run(run_record)
 
         # Signal stream end
         eq.put({"run_id": run_id, "event": "end"})
+        _stop_flags.pop(run_id, None)
 
     thread = threading.Thread(target=_run_both, daemon=True)
     thread.start()
 
     return jsonify({"run_id": run_id, "status": "started"})
+
+
+@app.route("/arena/api/run/<run_id>/stop", methods=["POST"])
+def api_stop_run(run_id):
+    run = _active_runs.get(run_id)
+    stop_event = _stop_flags.get(run_id)
+    eq = _event_queues.get(run_id)
+    if not run or stop_event is None:
+        return jsonify({"error": "Run not found"}), 404
+
+    if run.get("status") not in {"running", "stopping"}:
+        return jsonify({"status": run.get("status", "unknown")})
+
+    stop_event.set()
+    run["status"] = "stopping"
+    run["stop_requested"] = True
+    if eq is not None:
+        eq.put({
+            "run_id": run_id,
+            "event": "stop_requested",
+            "message": "Stop requested. Waiting for the current model call to finish...",
+        })
+    return jsonify({"status": "stopping"})
 
 
 @app.route("/arena/api/stream/<run_id>")
