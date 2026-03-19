@@ -41,41 +41,9 @@ from konash.eval.harness import (
     TOGETHER_API_BASE,
     ZHIPU_API_BASE,
 )
+from konash.models import get_arena_preset_order
 
-# ---------------------------------------------------------------------------
-# Extend MODEL_PRESETS with additional Together AI models for arena testing
-# ---------------------------------------------------------------------------
-def _together_preset(model_id: str, desc: str, **extra) -> Dict[str, Any]:
-    return {
-        "base_model": model_id,
-        "api_base": "https://api.together.xyz/v1",
-        "api_key_env": "TOGETHER_API_KEY",
-        "temperature": 0.7,
-        "description": desc,
-        **extra,
-    }
-
-# Ordered list — UI will display in this order
-_ARENA_EXTRA_PRESETS_ORDERED = [
-    ("glm-5",              _together_preset("zai-org/GLM-5", "GLM 5")),
-    ("qwen3.5-397b",       _together_preset("Qwen/Qwen3.5-397B-A17B", "Qwen 3.5 397B MoE")),
-    ("minimax-m2.5",       _together_preset("MiniMaxAI/MiniMax-M2.5", "MiniMax M2.5")),
-    ("kimi-k2.5",          _together_preset("moonshotai/Kimi-K2.5", "Kimi K2.5")),
-    ("glm-4.7",            _together_preset("zai-org/GLM-4.7", "GLM 4.7")),
-    ("qwen3.5-9b",         _together_preset("Qwen/Qwen3.5-9B", "Qwen 3.5 9B")),
-    ("deepseek-r1",        _together_preset("deepseek-ai/DeepSeek-R1", "DeepSeek R1")),
-    ("qwen3-80b-a3b",      _together_preset("Qwen/Qwen3-Next-80B-A3B-Instruct", "Qwen3 80B-A3B MoE")),
-    ("llama-3.3-70b-turbo", _together_preset("meta-llama/Llama-3.3-70B-Turbo", "Llama 3.3 70B Turbo")),
-    ("mixtral-8x22b",      _together_preset("mistralai/Mixtral-8x22B-Instruct-v0.1", "Mixtral 8x22B MoE")),
-    ("qwen-2.5-72b",       _together_preset("Qwen/Qwen2.5-72B-Instruct-Turbo", "Qwen 2.5 72B Turbo")),
-]
-
-_ARENA_EXTRA_PRESETS = dict(_ARENA_EXTRA_PRESETS_ORDERED)
-
-# Merge without overwriting existing presets
-for k, v in _ARENA_EXTRA_PRESETS.items():
-    if k not in MODEL_PRESETS:
-        MODEL_PRESETS[k] = v
+_ARENA_PRESET_ORDER = get_arena_preset_order()
 
 # ---------------------------------------------------------------------------
 # Flask setup
@@ -812,8 +780,8 @@ def api_presets():
     seen = set()
     presets = []
 
-    # Arena models first, in the order defined above
-    for name, _ in _ARENA_EXTRA_PRESETS_ORDERED:
+    # Arena models first, in the shared order defined by the catalog
+    for name in _ARENA_PRESET_ORDER:
         cfg = MODEL_PRESETS.get(name, {})
         if not cfg.get("api_base"):
             continue

@@ -203,6 +203,7 @@ Any model available on [Together AI](https://api.together.xyz/models) or [Huggin
 |-------|------|-------|
 | **GLM 5** | Frontier | Latest generation, strongest |
 | **GLM 4.5 Air** | Frontier MoE | Default — best for KARL, fast + cheap |
+| **MiniMax M2.5** | MoE | Strong frontier MoE available on Together AI |
 | **Qwen 3.5 397B** | MoE | Largest open MoE |
 | **Qwen3 80B-A3B** | MoE | Good value — $0.0017/run |
 | **DeepSeek R1** | MoE | Reasoning-focused |

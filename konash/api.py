@@ -29,36 +29,14 @@ from konash.synthesis.rollouts import RolloutGenerator
 from konash.training.dataset import OfflineRolloutDataset
 from konash.training.oapl import OAPLTrainer
 from konash.training.iteration import IterativeTrainingPipeline
+from konash.models import get_model_presets
 
 
 # ---------------------------------------------------------------------------
 # Model presets
 # ---------------------------------------------------------------------------
 
-MODEL_PRESETS: Dict[str, Dict[str, Any]] = {
-    "glm-4.5-air-together": {
-        "base_model": "zai-org/GLM-4.5-Air-FP8",
-        "api_base": "https://api.together.xyz/v1",
-        "api_key_env": "TOGETHER_API_KEY",
-        "temperature": 0.7,
-        "description": "GLM 4.5 Air (106B MoE, 12B active) on Together AI",
-        "pricing": {"input_per_m": 0.20, "output_per_m": 1.10},
-    },
-    "glm-4.5-air-unsloth": {
-        "base_model": "unsloth/GLM-4.5-Air",
-        "use_unsloth": True,
-        "load_in_fp8": True,
-        "temperature": 0.7,
-        "description": "GLM 4.5 Air via Unsloth (local OAPL training, FP8)",
-    },
-    "glm-4.5-air-zhipu": {
-        "base_model": "glm-4.5-air",
-        "api_base": "https://api.z.ai/api/paas/v4",
-        "api_key_env": "ZHIPU_API_KEY",
-        "temperature": 0.7,
-        "description": "GLM 4.5 Air on Zhipu (native provider)",
-    },
-}
+MODEL_PRESETS: Dict[str, Dict[str, Any]] = get_model_presets()
 
 
 # ---------------------------------------------------------------------------

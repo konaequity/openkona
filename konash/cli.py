@@ -10,6 +10,7 @@ import time
 import webbrowser
 
 from konash.benchmarks import get_dataset, list_datasets
+from konash.models import get_cli_models
 from rich import box
 from rich.console import Console
 from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
@@ -111,39 +112,7 @@ CONFIG_DIR = os.path.expanduser("~/.konash")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 PROJECTS_DIR = os.path.join(CONFIG_DIR, "projects")
 
-# Models available on Together AI
-MODELS = [
-    {
-        "id": "zai-org/GLM-4.5-Air-FP8",
-        "name": "GLM 4.5 Air",
-        "hint": "Frontier MoE  ·  best for KARL  ·  fast + cheap",
-    },
-    {
-        "id": "Qwen/Qwen3-Next-80B-A3B-Instruct",
-        "name": "Qwen3 80B-A3B",
-        "hint": "MoE  ·  3B active params  ·  very cheap",
-    },
-    {
-        "id": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        "name": "Llama 3.3 70B Turbo",
-        "hint": "Dense 70B  ·  strong reasoning  ·  moderate cost",
-    },
-    {
-        "id": "Qwen/Qwen2.5-72B-Instruct-Turbo",
-        "name": "Qwen 2.5 72B Turbo",
-        "hint": "Dense 72B  ·  multilingual  ·  moderate cost",
-    },
-    {
-        "id": "mistralai/Mixtral-8x22B-Instruct-v0.1",
-        "name": "Mixtral 8x22B",
-        "hint": "MoE  ·  176B total / 39B active  ·  balanced",
-    },
-    {
-        "id": "deepseek-ai/DeepSeek-R1",
-        "name": "DeepSeek R1",
-        "hint": "Reasoning model  ·  671B MoE  ·  chain-of-thought",
-    },
-]
+MODELS = get_cli_models()
 
 # Training scale presets
 # qa_pairs is the user-facing number; internally divided by 8 to get API calls
