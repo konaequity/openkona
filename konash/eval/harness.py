@@ -515,6 +515,7 @@ def save_results(
     bench_config: BenchmarkConfig,
     solver_model: str, provider: str,
     console: Console,
+    run_meta: Optional[dict] = None,
 ) -> str:
     """Save results to a timestamped JSON file. Returns the output path."""
     results_dir = "eval_results"
@@ -523,6 +524,7 @@ def save_results(
     output = {
         "model": solver_model,
         "benchmark": bench_config.name,
+        "benchmark_key": bench_config.benchmark_key,
         "num_questions": baseline["total"],
         "single": {k: v for k, v in baseline.items() if k != "results"},
         "single_details": baseline["results"],
@@ -538,6 +540,8 @@ def save_results(
     output["run_id"] = f"{bench_config.benchmark_key}_{solver_model.split('/')[-1]}_{ts.strftime('%Y%m%d_%H%M%S')}"
     output["timestamp"] = ts.isoformat()
     output["provider"] = provider
+    if run_meta:
+        output["run_meta"] = run_meta
 
     safe_model = solver_model.split("/")[-1].lower().replace(" ", "_")
     timestamp = ts.strftime("%Y%m%d_%H%M%S")

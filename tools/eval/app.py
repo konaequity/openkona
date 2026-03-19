@@ -141,6 +141,12 @@ def _extract_benchmark_type(data: Dict[str, Any], filename_stem: str) -> str:
 
 def _extract_model_display(data: Dict[str, Any]) -> Optional[str]:
     """Extract a short model display name from the data's ``model`` field."""
+    run_meta = data.get("run_meta", {})
+    if isinstance(run_meta, dict):
+        meta_model = run_meta.get("model_display")
+        if meta_model and isinstance(meta_model, str):
+            return meta_model
+
     model = data.get("model")
     if not model or not isinstance(model, str):
         return None
@@ -160,6 +166,84 @@ def _extract_timestamp(data: Dict[str, Any], filepath: Path) -> Optional[str]:
     if ts and isinstance(ts, str):
         return ts
     return None
+
+
+def _extract_project_name(filepath: Path) -> Optional[str]:
+    """Infer a project name for eval artifacts under ~/.konash/projects/*/eval_results/."""
+    parts = filepath.resolve().parts
+    try:
+        idx = parts.index("projects")
+    except ValueError:
+        return None
+    project_idx = idx + 1
+    if project_idx < len(parts):
+        return parts[project_idx]
+    return None
+
+
+def _normalize_run_meta(data: Dict[str, Any], filepath: Path) -> Dict[str, Any]:
+    """Build a normalized run metadata dict with fallbacks for older files."""
+    raw_meta = data.get("run_meta", {})
+    meta = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+
+    model_display = meta.get("model_display") or _extract_model_display(data)
+    if model_display:
+        meta["model_display"] = model_display
+
+    provider = meta.get("provider") or data.get("provider")
+    if provider:
+        meta["provider"] = provider
+
+    project = meta.get("project") or _extract_project_name(filepath)
+    if project:
+        meta["project"] = project
+
+    parallel = data.get("parallel")
+    pass_at_k = data.get("pass_at_k")
+
+    parallel_rollouts = meta.get("parallel_rollouts")
+    if parallel_rollouts is None:
+        parallel_rollouts = 0
+        if isinstance(parallel, dict):
+            parallel_rollouts = parallel.get("parallel_rollouts") or parallel.get("n_rollouts") or 0
+    meta["parallel_rollouts"] = parallel_rollouts
+    meta["has_parallel"] = bool(meta.get("has_parallel") or parallel_rollouts or parallel)
+
+    passk_rollouts = meta.get("passk_rollouts")
+    if passk_rollouts is None:
+        passk_rollouts = 0
+        if isinstance(pass_at_k, dict):
+            passk_rollouts = pass_at_k.get("n_rollouts") or 0
+    meta["passk_rollouts"] = passk_rollouts
+
+    if not meta.get("training_state"):
+        if data.get("quick_train"):
+            meta["training_state"] = "quick-train"
+        elif project:
+            meta["training_state"] = "trained"
+        else:
+            meta["training_state"] = "base"
+
+    if not meta.get("scope"):
+        num_questions = data.get("num_questions")
+        benchmark_key = str(data.get("benchmark_key") or "").lower()
+        full_sizes = {"financebench": 150, "qampari": 1000, "freshstack": 830}
+        if num_questions == 1:
+            meta["scope"] = "smoke"
+        elif num_questions == 5:
+            meta["scope"] = "short"
+        elif num_questions and full_sizes.get(benchmark_key) == num_questions:
+            meta["scope"] = "full"
+
+    if not meta.get("mode_label"):
+        mode_parts = ["single"]
+        if meta["has_parallel"]:
+            mode_parts.append(f"parallel x{meta['parallel_rollouts']}")
+        if meta["passk_rollouts"]:
+            mode_parts.append(f"pass@k x{meta['passk_rollouts']}")
+        meta["mode_label"] = " + ".join(mode_parts)
+
+    return meta
 
 
 def _get_sort_key(data: Dict[str, Any], filepath: Path) -> float:
@@ -203,8 +287,9 @@ def _discover_all() -> Dict[str, Dict[str, Any]]:
 
     Runs within each benchmark are sorted newest-first.
     """
-    # Collect all valid eval files, keyed by run_id (filename stem).
-    # Earlier scan dirs take priority for duplicate stems.
+    # Collect all valid eval files, keyed by the embedded run_id when present.
+    # This avoids showing both the real file and a *_eval symlink as separate runs.
+    # Earlier scan dirs still take priority for true duplicates across locations.
     all_runs: Dict[str, Dict[str, Any]] = {}
 
     for scan_dir in _SCAN_DIRS:
@@ -214,10 +299,10 @@ def _discover_all() -> Dict[str, Dict[str, Any]]:
             data = _load_eval_file(json_file)
             if data is None:
                 continue
-            run_id = json_file.stem
+            run_id = data.get("run_id") or json_file.stem
             if run_id not in all_runs:
                 all_runs[run_id] = {
-                    "run_id": run_id,
+                    "run_id": str(run_id),
                     "file": json_file,
                     "data": data,
                 }
@@ -240,6 +325,7 @@ def _discover_all() -> Dict[str, Dict[str, Any]]:
 
         run_entry["model"] = _extract_model_display(data)
         run_entry["timestamp"] = _extract_timestamp(data, filepath)
+        run_entry["run_meta"] = _normalize_run_meta(data, filepath)
         run_entry["_sort_key"] = _get_sort_key(data, filepath)
         grouped[btype]["runs"].append(run_entry)
 
@@ -388,6 +474,7 @@ def _build_run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
         "pass_count": pass_count,
         "fail_count": fail_count,
         "total_time": round(total_time, 2),
+        "run_meta": run.get("run_meta") or _normalize_run_meta(data, run["file"]),
     }
 
 

@@ -342,7 +342,37 @@ def main_for_benchmark(benchmark_key: str) -> None:
     else:
         display_results(baseline, parallel, bench_config, args, console)
 
-    out_path = save_results(baseline, parallel, bench_config, solver_model, provider, console)
+    scope = "custom"
+    if args.limit == 1 and args.offset == 0:
+        scope = "smoke"
+    elif args.limit == 5 and args.offset == 0:
+        scope = "short"
+    elif args.limit is None and args.offset == 0:
+        scope = "full"
+
+    mode_parts = ["single"]
+    if parallel:
+        mode_parts.append(f"parallel x{args.parallel}")
+    if passk_result:
+        mode_parts.append(f"pass@k x{args.passk}")
+
+    run_meta = {
+        "model_display": solver_model.split("/")[-1],
+        "provider": provider,
+        "training_state": "quick-train" if getattr(args, "train", False) else "base",
+        "scope": scope,
+        "num_questions": len(questions),
+        "mode_label": " + ".join(mode_parts),
+        "parallel_rollouts": args.parallel if args.parallel > 0 else 0,
+        "has_parallel": bool(parallel),
+        "passk_rollouts": getattr(args, "passk", None) or 0,
+        "project": bench_config.project_name,
+    }
+
+    out_path = save_results(
+        baseline, parallel, bench_config, solver_model, provider, console,
+        run_meta=run_meta,
+    )
     if passk_result:
         with open(out_path) as f:
             output = json.load(f)

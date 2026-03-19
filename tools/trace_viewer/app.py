@@ -633,6 +633,7 @@ def list_traces():
                 "session_id": fp.stem,
                 "filename": fp.name,
                 "query_id": data.get("query_id"),
+                "question": data.get("question", ""),
                 "question_preview": (data.get("question", "")[:120] + "..."
                                      if len(data.get("question", "")) > 120
                                      else data.get("question", "")),
@@ -657,6 +658,7 @@ def list_traces():
             "session_id": sid,
             "filename": None,
             "query_id": d.get("query_id"),
+            "question": d.get("question", ""),
             "question_preview": (d.get("question", "")[:120] + "..."
                                  if len(d.get("question", "")) > 120
                                  else d.get("question", "")),

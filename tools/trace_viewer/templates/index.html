@@ -108,32 +108,123 @@ body {
   gap: 12px;
 }
 
+.session-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: min(720px, 100%);
+}
+
+.session-picker-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .session-selector label {
   color: var(--text-secondary);
   font-size: 0.85rem;
   font-weight: 500;
 }
 
-.session-selector select {
+.session-search {
+  flex: 1 1 320px;
+  min-width: 260px;
   background: var(--bg-input);
   color: var(--text-primary);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
-  padding: 8px 36px 8px 12px;
+  padding: 8px 12px;
   font-size: 0.85rem;
   font-family: var(--font-sans);
-  cursor: pointer;
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23555555' d='M6 8.5L1 3.5h10z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  min-width: 300px;
 }
 
-.session-selector select:focus {
+.session-search:focus {
   outline: none;
   border-color: var(--accent-blue);
   box-shadow: 0 0 0 2px rgba(0, 85, 204, 0.1);
+}
+
+.session-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.session-nav .btn {
+  padding: 8px 10px;
+  min-width: 38px;
+  justify-content: center;
+}
+
+.session-results {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 292px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.session-list-empty {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  padding: 10px 0;
+}
+
+.session-option {
+  width: 100%;
+  text-align: left;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+}
+
+.session-option:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--text-tertiary);
+}
+
+.session-option.active {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-bg);
+}
+
+.session-option-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.session-option-meta {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.session-current-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  width: 100%;
+}
+
+.session-current {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  line-height: 1.4;
 }
 
 .btn {
@@ -724,8 +815,9 @@ body {
     padding: 8px 16px;
   }
 
-  .session-selector select {
-    min-width: 200px;
+  .session-picker {
+    min-width: 0;
+    width: 100%;
   }
 
   .query-header {
@@ -748,10 +840,23 @@ body {
   <!-- Session selector + Upload -->
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
     <div class="session-selector">
-      <label for="session-select">Session:</label>
-      <select id="session-select">
-        <option value="">Loading sessions...</option>
-      </select>
+      <div class="session-picker">
+        <div class="session-picker-top">
+          <label for="session-search">Query</label>
+          <input id="session-search" class="session-search" type="text" placeholder="Search by query text or query number">
+          <div class="session-nav">
+            <button class="btn" id="prev-session-btn" type="button" aria-label="Previous query">←</button>
+            <button class="btn" id="next-session-btn" type="button" aria-label="Next query">→</button>
+          </div>
+          <div class="session-results" id="session-results-count"></div>
+        </div>
+        <div class="session-current-card">
+          <div class="session-current" id="session-current-label">Loading queries...</div>
+        </div>
+        <div class="session-list" id="session-list">
+          <div class="session-list-empty">Loading queries...</div>
+        </div>
+      </div>
     </div>
     <button class="topbar-btn" onclick="openUploadModal()">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
@@ -802,6 +907,7 @@ body {
    ================================================================ */
 let currentSession = null;
 let sessions = [];
+let filteredSessions = [];
 
 /* ================================================================
    API Helpers
@@ -818,19 +924,14 @@ async function fetchJSON(url, opts) {
 async function loadSessions() {
   try {
     sessions = await fetchJSON('/traces/api/traces');
-    const sel = document.getElementById('session-select');
-    sel.innerHTML = '';
     if (sessions.length === 0) {
-      sel.innerHTML = '<option value="">No sessions available</option>';
+      filteredSessions = [];
+      renderSessionOptions();
       showEmpty();
       return;
     }
-    sessions.forEach(s => {
-      const opt = document.createElement('option');
-      opt.value = s.session_id;
-      opt.textContent = `Query ${s.query_id} — ${s.question_preview}`;
-      sel.appendChild(opt);
-    });
+    filteredSessions = sessions.slice();
+    renderSessionOptions();
     // Load first session by default
     loadSession(sessions[0].session_id);
   } catch (err) {
@@ -839,11 +940,90 @@ async function loadSessions() {
   }
 }
 
+function sessionOptionLabel(session) {
+  const prefix = session.query_id != null ? `Query ${session.query_id}` : 'Query';
+  const preview = session.question_preview || session.question || '(untitled)';
+  return `${prefix} — ${preview}`;
+}
+
+function getCurrentSessionIndex() {
+  if (!currentSession) return -1;
+  return filteredSessions.findIndex(s => s.session_id === currentSession.session_id);
+}
+
+function renderSessionOptions(selectedId = null) {
+  const listEl = document.getElementById('session-list');
+  const countEl = document.getElementById('session-results-count');
+  const currentEl = document.getElementById('session-current-label');
+  const prevBtn = document.getElementById('prev-session-btn');
+  const nextBtn = document.getElementById('next-session-btn');
+
+  listEl.innerHTML = '';
+
+  if (filteredSessions.length === 0) {
+    listEl.innerHTML = '<div class="session-list-empty">No matching queries</div>';
+    countEl.textContent = sessions.length ? '0 matches' : 'No sessions';
+    currentEl.textContent = sessions.length ? 'Try a different search.' : '';
+    prevBtn.disabled = true;
+    nextBtn.disabled = true;
+    return;
+  }
+
+  const activeId = selectedId || (currentSession && currentSession.session_id) || filteredSessions[0].session_id;
+  const active = filteredSessions.find(s => s.session_id === activeId) || filteredSessions[0];
+
+  filteredSessions.forEach(session => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'session-option' + (active && session.session_id === active.session_id ? ' active' : '');
+    btn.innerHTML = `
+      <div class="session-option-title">${escapeHtml(sessionOptionLabel(session))}</div>
+      <div class="session-option-meta">${escapeHtml(session.source || 'trace')} · ${session.num_models || 0} model${(session.num_models || 0) === 1 ? '' : 's'}</div>
+    `;
+    btn.addEventListener('click', function() {
+      loadSession(session.session_id);
+    });
+    listEl.appendChild(btn);
+  });
+
+  countEl.textContent = filteredSessions.length === sessions.length
+    ? `${sessions.length} queries`
+    : `${filteredSessions.length} of ${sessions.length} queries`;
+  currentEl.textContent = active ? `Selected: ${sessionOptionLabel(active)}` : '';
+
+  const idx = filteredSessions.findIndex(s => s.session_id === active.session_id);
+  prevBtn.disabled = idx <= 0;
+  nextBtn.disabled = idx < 0 || idx >= filteredSessions.length - 1;
+}
+
+function filterSessions(query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) {
+    filteredSessions = sessions.slice();
+  } else {
+    filteredSessions = sessions.filter(session => {
+      const idMatch = session.query_id != null && String(session.query_id) === q;
+      const haystack = `${session.question || ''} ${session.question_preview || ''} ${session.source || ''}`.toLowerCase();
+      return idMatch || haystack.includes(q);
+    });
+  }
+  renderSessionOptions();
+}
+
+function navigateSession(delta) {
+  const idx = getCurrentSessionIndex();
+  if (idx < 0) return;
+  const next = filteredSessions[idx + delta];
+  if (!next) return;
+  loadSession(next.session_id);
+}
+
 async function loadSession(sessionId) {
   if (!sessionId) return;
   showLoading();
   try {
     currentSession = await fetchJSON(`/traces/api/trace/${sessionId}`);
+    renderSessionOptions(sessionId);
     renderSession(currentSession);
   } catch (err) {
     console.error('Failed to load session:', err);
@@ -1151,8 +1331,7 @@ async function submitUpload() {
     closeUploadModal();
     // Reload sessions and switch to new one
     await loadSessions();
-    const sel = document.getElementById('session-select');
-    sel.value = result.session_id;
+    renderSessionOptions(result.session_id);
     loadSession(result.session_id);
   } catch (err) {
     alert('Upload failed: ' + err.message);
@@ -1162,8 +1341,16 @@ async function submitUpload() {
 /* ================================================================
    Event Listeners
    ================================================================ */
-document.getElementById('session-select').addEventListener('change', function() {
-  loadSession(this.value);
+document.getElementById('session-search').addEventListener('input', function() {
+  filterSessions(this.value);
+});
+
+document.getElementById('prev-session-btn').addEventListener('click', function() {
+  navigateSession(-1);
+});
+
+document.getElementById('next-session-btn').addEventListener('click', function() {
+  navigateSession(1);
 });
 
 // Close modal on overlay click

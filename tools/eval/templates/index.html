@@ -1094,6 +1094,21 @@ mark.search-highlight.active {
     } catch (e) { return ''; }
   }
 
+  function formatDateTime(isoString) {
+    if (!isoString) return '';
+    try {
+      const d = new Date(isoString);
+      if (isNaN(d.getTime())) return '';
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      let hours = d.getHours();
+      const minutes = String(d.getMinutes()).padStart(2, '0');
+      const seconds = String(d.getSeconds()).padStart(2, '0');
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12 || 12;
+      return `${months[d.getMonth()]} ${d.getDate()} ${hours}:${minutes}:${seconds} ${ampm}`;
+    } catch (e) { return ''; }
+  }
+
   function getSelectedRun(bm) {
     const runId = state.activeRuns[bm.benchmark_type];
     if (!bm.runs || bm.runs.length === 0) return null;
@@ -1105,12 +1120,35 @@ mark.search-highlight.active {
   }
 
   function runLabel(run) {
-    const model = run.model || '(unnamed)';
-    const date = formatShortDate(run.timestamp);
+    const meta = run.run_meta || {};
+    const model = meta.model_display || run.model || run.run_id || '(unnamed)';
+    const providerMap = {
+      together: 'Together',
+      zhipu: 'Zhipu',
+      hf: 'Hugging Face',
+      vllm: 'vLLM',
+      openai: 'OpenAI',
+    };
+    const providerKey = meta.provider ? String(meta.provider).toLowerCase() : '';
+    const provider = providerMap[providerKey] || meta.provider || '';
+    const project = meta.project || '';
+    const trainingState = meta.training_state || '';
+    const scope = meta.scope || '';
+    const modeLabel = meta.mode_label || '';
+    const qCount = run.num_questions != null ? `${run.num_questions}q` : '';
     const acc = run.accuracy != null ? Math.round(run.accuracy * 100) + '%' : '';
+    const date = formatDateTime(run.timestamp);
     const parts = [model];
-    if (date) parts.push(date);
+    if (project && project !== 'financebench' && project !== 'qampari' && project !== 'freshstack') {
+      parts.push(project);
+    }
+    if (provider) parts.push(provider);
+    if (trainingState) parts.push(trainingState);
+    if (scope) parts.push(scope);
+    if (modeLabel && modeLabel !== 'single') parts.push(modeLabel);
+    if (qCount) parts.push(qCount);
     if (acc) parts.push(acc);
+    if (date) parts.push(date);
     return parts.join(' \u00b7 ');
   }
 
