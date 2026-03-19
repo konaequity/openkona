@@ -547,7 +547,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
 
 def _download_dataset(key: str) -> str:
-    """Download a dataset by key and return the documents path."""
+    """Download a dataset by key and return the corpus root path."""
     from konash.download import (
         download_browsecomp_plus,
         download_financebench,
@@ -568,8 +568,7 @@ def _download_dataset(key: str) -> str:
         sys.exit(1)
 
     console.print()
-    output_dir = fn(console=console)
-    return os.path.join(output_dir, "documents")
+    return fn(console=console)
 
 
 # ---------------------------------------------------------------------------
@@ -647,13 +646,13 @@ def cmd_download(args: argparse.Namespace) -> None:
     console.rule(style="dim")
     console.print()
 
-    docs_path = _download_dataset(corpus_name)
+    corpus_path = _download_dataset(corpus_name)
 
     console.print()
     console.rule(style="dim")
     console.print()
-    console.print(f"    [green]✓[/]  Saved to {os.path.dirname(docs_path)}")
-    console.print(f"    [dim]Train with:[/]  konash train {docs_path}")
+    console.print(f"    [green]✓[/]  Saved to {corpus_path}")
+    console.print(f"    [dim]Train with:[/]  konash train {corpus_path}")
     console.print()
 
 
