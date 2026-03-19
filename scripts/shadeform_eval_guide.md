@@ -135,14 +135,13 @@ $SSH << 'REMOTE'
 cd openkona
 export PYTHONPATH=/home/shadeform/openkona
 export OPENAI_API_KEY="$OPENAI_API_KEY"
-nohup python3 -u scripts/eval_financebench.py \
+nohup konash eval financebench \
   --provider vllm \
   --api-base http://localhost:8000/v1 \
   --model zai-org/GLM-4.5-Air-FP8 \
   --workers 1 \
   --parallel 3 \
   --limit 2 \
-  --verbose \
   > eval.log 2>&1 &
 echo "PID=$!"
 REMOTE
@@ -164,7 +163,7 @@ $SSH << 'REMOTE'
 cd openkona
 export PYTHONPATH=/home/shadeform/openkona
 export OPENAI_API_KEY="$OPENAI_API_KEY"
-nohup python3 -u scripts/eval_financebench.py \
+nohup konash eval financebench \
   --provider vllm \
   --api-base http://localhost:8000/v1 \
   --model zai-org/GLM-4.5-Air-FP8 \
@@ -185,10 +184,10 @@ $SSH "grep '/150' openkona/eval_full.log | tail -5"
 $SSH "grep -E '(Answer:|Ref:)' openkona/eval_full.log | tail -20"
 
 # Check if still running
-$SSH "ps aux | grep eval_financebench | grep -v grep"
+$SSH "ps aux | grep 'konash eval financebench' | grep -v grep"
 
 # Kill if needed
-$SSH "pkill -f eval_financebench"
+$SSH "pkill -f 'konash eval financebench'"
 ```
 
 ### Download results (DO THIS BEFORE TEARDOWN)

@@ -9,6 +9,7 @@ import sys
 import time
 import webbrowser
 
+from konash.benchmarks import get_dataset, list_datasets
 from rich import box
 from rich.console import Console
 from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
@@ -190,33 +191,7 @@ def _estimate_training(qa_pairs, rollouts, rollout_steps, iterations):
 
     return cost, total_secs
 
-# Available datasets for the corpus picker
-DATASETS = [
-    {
-        "name": "FinanceBench",
-        "key": "financebench",
-        "desc": "Financial QA  ·  SEC filings  ·  150 questions",
-        "source": "PatronusAI/financebench",
-    },
-    {
-        "name": "BrowseComp-Plus",
-        "key": "browsecomp-plus",
-        "desc": "Web retrieval benchmark  ·  40K docs  ·  encrypted",
-        "source": "Tevatron/browsecomp-plus",
-    },
-    {
-        "name": "QAMPARI",
-        "key": "qampari",
-        "desc": "Multi-answer QA  ·  Wikipedia  ·  entity-rich",
-        "source": "momo4382/QAMPARI",
-    },
-    {
-        "name": "FreshStack",
-        "key": "freshstack",
-        "desc": "Multi-domain retrieval  ·  5 domains  ·  recent docs",
-        "source": "freshstack",
-    },
-]
+DATASETS = list_datasets()
 
 
 # ---------------------------------------------------------------------------
@@ -548,27 +523,14 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
 def _download_dataset(key: str) -> str:
     """Download a dataset by key and return the corpus root path."""
-    from konash.download import (
-        download_browsecomp_plus,
-        download_financebench,
-        download_freshstack,
-        download_qampari,
-    )
-
-    downloaders = {
-        "browsecomp-plus": download_browsecomp_plus,
-        "financebench": download_financebench,
-        "qampari": download_qampari,
-        "freshstack": download_freshstack,
-    }
-
-    fn = downloaders.get(key)
-    if not fn:
+    try:
+        dataset = get_dataset(key)
+    except KeyError:
         console.print(f"    [red]Unknown dataset:[/] {key}")
         sys.exit(1)
 
     console.print()
-    return fn(console=console)
+    return dataset.download(console=console)
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +594,7 @@ def cmd_setup_check() -> None:
 
 def cmd_download(args: argparse.Namespace) -> None:
     corpus_name = args.corpus_name.lower().replace("_", "-")
-    valid_keys = {ds["key"] for ds in DATASETS}
+    valid_keys = {ds.key for ds in DATASETS}
 
     if corpus_name not in valid_keys:
         console.print(f"\n[red]Unknown corpus:[/] {corpus_name}")
@@ -736,7 +698,7 @@ def cmd_train(args: argparse.Namespace) -> None:
     corpus = args.corpus
     if not corpus:
         options = [
-            {"label": ds["name"], "hint": ds["desc"]}
+            {"label": ds.name, "hint": ds.description}
             for ds in DATASETS
         ]
         options.append(
@@ -750,7 +712,7 @@ def cmd_train(args: argparse.Namespace) -> None:
 
         if idx < len(DATASETS):
             ds = DATASETS[idx]
-            corpus = _download_dataset(ds["key"])
+            corpus = _download_dataset(ds.key)
         else:
             corpus = _interactive_path_picker(console)
 
@@ -1069,6 +1031,22 @@ def cmd_search(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# konash eval
+# ---------------------------------------------------------------------------
+
+def cmd_eval(args: argparse.Namespace) -> None:
+    from konash.eval.entrypoint import main_for_benchmark
+
+    argv = [sys.argv[0], *(args.eval_args or [])]
+    old_argv = sys.argv
+    try:
+        sys.argv = argv
+        main_for_benchmark(args.benchmark)
+    finally:
+        sys.argv = old_argv
+
+
+# ---------------------------------------------------------------------------
 # konash status
 # ---------------------------------------------------------------------------
 
@@ -1328,6 +1306,16 @@ def main(argv: list[str] | None = None) -> None:
         "--chunk-size", type=int, default=512, help="Chunk size."
     )
     p_search.set_defaults(func=cmd_search)
+
+    # --- eval ---
+    benchmark_choices = sorted(ds.key for ds in DATASETS if ds.benchmark is not None)
+    p_eval = subparsers.add_parser("eval", help="Evaluate a registered benchmark.")
+    p_eval.add_argument("benchmark", choices=benchmark_choices, help="Benchmark key.")
+    p_eval.add_argument(
+        "eval_args", nargs=argparse.REMAINDER,
+        help="Additional benchmark eval args, e.g. --parallel 3 --limit 5.",
+    )
+    p_eval.set_defaults(func=cmd_eval)
 
     # --- logs ---
     p_logs = subparsers.add_parser("logs", help="Stream GPU training logs.")

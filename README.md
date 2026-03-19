@@ -121,9 +121,9 @@ The KARL paper reports **76%** on FinanceBench after RL training (2 iterations, 
 ```bash
 pip install konash
 konash setup
-python scripts/eval_financebench.py              # single + parallel
-python scripts/eval_financebench.py --parallel 5  # try N=5
-python scripts/eval_financebench.py --train       # train + eval
+konash eval financebench
+konash eval financebench --parallel 5
+konash eval financebench --train
 ```
 
 Results are saved to `eval_results/financebench_eval.json`. Traces are written to `tools/trace_viewer/data/` for visualization.

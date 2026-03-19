@@ -251,6 +251,25 @@ class Corpus:
         if not model or model == "":
             return
 
+        config_path = os.path.expanduser("~/.konash/config.json")
+        hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        if not hf_token and os.path.exists(config_path):
+            try:
+                with open(config_path) as f:
+                    hf_token = json.load(f).get("hf_token")
+            except Exception:
+                hf_token = None
+
+        # For shipped Qwen3 indexes, prefer the HF router path when a token
+        # exists so eval does not need to load a local embedding model just to
+        # encode queries.
+        if "qwen3" in model.lower() and hf_token:
+            try:
+                self._set_qwen3_query_fn(model)
+                return
+            except Exception:
+                pass
+
         # Try local embedding model first, fall back to HF Inference API
         loaded = False
         if "0.6B" in model or "0.6b" in model:

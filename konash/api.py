@@ -293,7 +293,9 @@ class Agent:
         if isinstance(corpus, Corpus):
             self.corpus = corpus
         else:
-            embed_fn = self._make_embed_fn()
+            embed_fn = None
+            if not self._should_defer_embed_init(corpus):
+                embed_fn = self._make_embed_fn()
             # Cache embeddings next to checkpoint dir for instant reload
             _ckpt = checkpoint_dir or os.path.join(
                 os.path.expanduser("~/.konash/projects"), project, "checkpoints"
@@ -332,6 +334,23 @@ class Agent:
         self._trained = False
         self._iteration = 0
         self._task_name = self._infer_task_name()
+
+    def _should_defer_embed_init(self, corpus: str | Path | Corpus) -> bool:
+        """Skip eager embedding-model loading when a bundled index exists.
+
+        Downloaded benchmark corpora ship with ``prebuilt_index.npz`` and
+        ``Corpus.ingest()`` already knows how to align the query embedder
+        from that metadata. Avoiding eager local model init keeps eval from
+        pulling in heavy native dependencies unnecessarily.
+        """
+        if self.embedding_provider != "local":
+            return False
+        corpus_path = Path(corpus)
+        if corpus_path.is_file():
+            candidates = [corpus_path.parent]
+        else:
+            candidates = [corpus_path, corpus_path.parent]
+        return any((candidate / "prebuilt_index.npz").exists() for candidate in candidates)
 
     def _infer_task_name(self) -> Optional[str]:
         """Infer the KARL task name from the corpus path.

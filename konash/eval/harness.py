@@ -1,8 +1,7 @@
-"""Shared eval harness for KONASH benchmark evaluation scripts.
+"""Shared eval harness for KONASH benchmarks.
 
-Extracts common logic from eval_financebench.py, eval_qampari.py, and
-eval_freshstack.py: provider resolution, question evaluation, threaded
-execution, results display, and JSON output.
+Handles provider resolution, question evaluation, threaded execution,
+results display, and JSON output for registered benchmarks.
 """
 
 from __future__ import annotations
@@ -13,10 +12,10 @@ import sys
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from konash.benchmarks import BenchmarkConfig, get_dataset
 from rich.console import Console
 from rich.table import Table
 from rich import box
@@ -28,56 +27,10 @@ from rich import box
 TOGETHER_API_BASE = "https://api.together.xyz/v1"
 ZHIPU_API_BASE = "https://api.z.ai/api/paas/v4"
 OPENAI_API_BASE = "https://api.openai.com/v1"
+HF_ROUTER_API_BASE = "https://router.huggingface.co/v1"
 DEFAULT_MODEL_TOGETHER = "zai-org/GLM-4.5-Air-FP8"
 DEFAULT_MODEL_ZHIPU = "glm-4.5-air"
 DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
-
-
-# ---------------------------------------------------------------------------
-# Benchmark configuration dataclass
-# ---------------------------------------------------------------------------
-
-@dataclass
-class BenchmarkConfig:
-    """Per-benchmark configuration that each eval script provides."""
-
-    # Identity
-    name: str                       # e.g. "FinanceBench", "QAMPARI", "FreshStack"
-    policy_name: str                # key for NuggetPolicyRegistry.get()
-    project_name: str               # e.g. "eval-financebench"
-    benchmark_key: str              # e.g. "financebench" — used in filenames
-
-    # Scoring
-    top_k: int = 20                 # search results per step
-
-    # Question accessors: callables that take a question dict
-    # and return the appropriate values
-    get_reference: Callable[[dict], str] = None     # -> reference string for scoring
-    get_nuggets: Callable[[dict], Optional[List[str]]] = None  # -> pre-defined nuggets or None
-    get_question_text: Callable[[dict], str] = None  # -> question string
-
-    # Judge context: callable that takes (question_str, config) -> context string
-    # If None, just uses the question text as context.
-    get_judge_context: Callable[[str, "BenchmarkConfig"], str] = None
-
-    # Progress display customization
-    get_progress_ref_display: Callable[[dict], str] = None  # -> reference preview for progress
-    get_progress_detail: Callable[[dict], Optional[str]] = None  # -> extra detail line
-
-    # KARL paper target score (for display)
-    paper_target: Optional[str] = None
-
-    # Extra columns for the summary table: list of (column_name, result_key)
-    extra_table_columns: List[tuple] = field(default_factory=list)
-
-    # Extra output fields: callable that takes run_eval results and returns dict
-    get_extra_output: Callable[[dict], dict] = None
-
-    # Download function: callable that takes (console=) and returns corpus_dir
-    download_fn: Callable = None
-
-    # Whether to include FreshStack-specific domain in output
-    extra_output_fields: Dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +53,11 @@ def resolve_provider(args) -> dict:
 
     provider = args.provider
     api_key = args.api_key
+    hf_token = (
+        os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        or config.get("hf_token")
+    )
 
     if args.api_base:
         provider = provider or "vllm"
@@ -120,18 +78,32 @@ def resolve_provider(args) -> dict:
             elif together_key:
                 provider = "together"
                 api_key = api_key or together_key
+            elif hf_token and args.model:
+                provider = "hf"
+                api_key = api_key or hf_token
 
         if provider == "zhipu":
             solver_api_base = ZHIPU_API_BASE
             solver_model = args.model or DEFAULT_MODEL_ZHIPU
             api_key = api_key or os.environ.get("ZHIPU_API_KEY") or config.get("zhipu_api_key")
+        elif provider == "hf":
+            if not args.model:
+                console.print("[red]Hugging Face eval requires --model.[/]")
+                console.print("Set [cyan]--model org/model[/] and provide [cyan]HF_TOKEN[/] or run [cyan]konash setup[/].")
+                sys.exit(1)
+            solver_api_base = HF_ROUTER_API_BASE
+            solver_model = args.model
+            api_key = api_key or hf_token
         else:
             solver_api_base = TOGETHER_API_BASE
             solver_model = args.model or DEFAULT_MODEL_TOGETHER
             api_key = api_key or os.environ.get("TOGETHER_API_KEY") or config.get("together_api_key")
 
     if not api_key:
-        console.print("[red]No API key found.[/] Run [cyan]konash setup[/] or set ZHIPU_API_KEY / TOGETHER_API_KEY.")
+        console.print(
+            "[red]No API key found.[/] Run [cyan]konash setup[/] or set "
+            "ZHIPU_API_KEY / TOGETHER_API_KEY / HF_TOKEN."
+        )
         sys.exit(1)
 
     # Resolve judge
@@ -165,12 +137,12 @@ def add_common_args(parser):
     """Add the standard eval CLI arguments to an argparse parser."""
     parser.add_argument("--limit", type=int, default=None, help="Limit eval questions")
     parser.add_argument("--offset", type=int, default=0, help="Skip first N eval questions")
-    parser.add_argument("--parallel", type=int, default=3, help="Parallel rollouts for PT mode (default: 3, 0 to skip)")
-    parser.add_argument("--single-only", action="store_true", help="Only run single rollout, skip parallel thinking")
+    parser.add_argument("--parallel", type=int, default=0, help="Run an additional parallel-thinking eval with N rollouts")
     parser.add_argument("--workers", type=int, default=4, help="Concurrent eval threads (default: 4)")
-    parser.add_argument("--verbose", action="store_true", help="Print full trace for each question")
-    parser.add_argument("--model", default=None, help="Model ID (auto-detected from provider)")
-    parser.add_argument("--provider", default=None, choices=["zhipu", "together", "vllm"], help="LLM provider (default: auto-detect from available keys)")
+    parser.add_argument("--no-verbose", dest="verbose", action="store_false", help="Hide full traces during eval")
+    parser.set_defaults(verbose=True)
+    parser.add_argument("--model", default=None, help="Model ID (required for Hugging Face)")
+    parser.add_argument("--provider", default=None, choices=["hf", "zhipu", "together", "vllm"], help="LLM provider (default: auto-detect from available keys)")
     parser.add_argument("--api-base", default=None, help="Custom API base URL (e.g. http://localhost:8000/v1 for vLLM)")
     parser.add_argument("--api-key", default=None, help="API key for solver provider")
     parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL, help="Judge model (default: gpt-4o-mini)")
@@ -574,7 +546,7 @@ def save_results(
 class EvalHarness:
     """Orchestrates a full benchmark evaluation run.
 
-    Usage from a benchmark script::
+    Usage from a benchmark entrypoint::
 
         harness = EvalHarness(bench_config)
         harness.run()
@@ -621,10 +593,11 @@ class EvalHarness:
         self.console.print()
         self.console.rule(style="dim")
 
-        corpus_dir = bc.download_fn(console=self.console)
+        dataset = get_dataset(bc.benchmark_key)
+        corpus_dir = dataset.download(console=self.console)
 
         # Load eval questions
-        eval_path = os.path.join(corpus_dir, "eval_questions.json")
+        eval_path = dataset.eval_questions_path(corpus_dir)
         if not os.path.exists(eval_path):
             self.console.print(f"[red]No eval questions at {eval_path}[/]")
             sys.exit(1)

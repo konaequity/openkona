@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {
+    background: #0a0a0a;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  .container { position: relative; }
+
+  svg { width: 550px; }
+
+  /* All paths start invisible, draw in via stroke */
+  .canoe path {
+    fill: none;
+    stroke: #E8C840;
+    stroke-width: 25;
+    stroke-dasharray: 10000;
+    stroke-dashoffset: 10000;
+    opacity: 0;
+  }
+
+  /* Main hull+sail shape */
+  .canoe path:nth-child(1) {
+    animation: draw 2.5s ease-in-out 0.2s forwards, fill-gold 0.8s ease-out 2.2s forwards;
+  }
+  /* Sail detail */
+  .canoe path:nth-child(2) {
+    animation: draw 1.5s ease-in-out 0.8s forwards, fill-gold 0.8s ease-out 2.0s forwards;
+  }
+  /* Left hull detail */
+  .canoe path:nth-child(3) {
+    animation: draw 1.2s ease-in-out 1.2s forwards, fill-gold 0.6s ease-out 2.2s forwards;
+  }
+  /* Right hull detail */
+  .canoe path:nth-child(4) {
+    animation: draw 1.2s ease-in-out 1.4s forwards, fill-gold 0.6s ease-out 2.4s forwards;
+  }
+
+  @keyframes draw {
+    0% { stroke-dashoffset: 10000; opacity: 1; }
+    100% { stroke-dashoffset: 0; opacity: 1; }
+  }
+
+  @keyframes fill-gold {
+    0% { fill: none; stroke-width: 25; }
+    100% { fill: #E8C840; stroke-width: 0; }
+  }
+
+  /* After assembly: gentle ocean bob */
+  .canoe {
+    animation: bob 5s ease-in-out infinite;
+    animation-delay: 3s;
+  }
+
+  @keyframes bob {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    30% { transform: translateY(-5px) rotate(0.4deg); }
+    60% { transform: translateY(2px) rotate(-0.2deg); }
+  }
+
+  /* Glow breathing */
+  .glow {
+    animation: glow-pulse 4s ease-in-out infinite;
+    animation-delay: 3s;
+  }
+
+  @keyframes glow-pulse {
+    0%, 100% { filter: drop-shadow(0 0 5px rgba(232, 200, 64, 0.05)); }
+    50% { filter: drop-shadow(0 0 30px rgba(232, 200, 64, 0.25)); }
+  }
+
+  /* Water lines */
+  .water { position: absolute; bottom: 18%; width: 100%; }
+  .water line {
+    stroke: rgba(232, 200, 64, 0.12);
+    stroke-width: 1;
+    stroke-dasharray: 200;
+    animation: wave 6s ease-in-out infinite;
+    opacity: 0;
+  }
+  .water line:nth-child(1) { animation-delay: 3.5s; }
+  .water line:nth-child(2) { animation-delay: 4.2s; }
+  .water line:nth-child(3) { animation-delay: 4.9s; }
+
+  @keyframes wave {
+    0% { opacity: 0; stroke-dashoffset: 200; }
+    30% { opacity: 0.5; stroke-dashoffset: 0; }
+    100% { opacity: 0; stroke-dashoffset: -200; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="glow">
+    <svg xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 677 369" preserveAspectRatio="xMidYMid meet">
+      <g class="canoe" transform="translate(0,369) scale(0.1,-0.1)" stroke="none">
+        <path d="M3245 3173 c-4 -21 -24 -101 -45 -178 -31 -115 -79 -311 -106 -434
+-10 -47 -12 -14 -3 69 5 55 5 88 -2 95 -17 17 -26 -12 -33 -108 -4 -51 -29
+-272 -56 -492 -27 -220 -63 -515 -80 -655 -42 -346 -28 -308 -111 -316 -48 -5
+-69 -11 -69 -20 0 -11 17 -14 68 -14 l67 0 -3 -60 -4 -60 -179 0 -179 0 0 -25
+0 -25 120 0 c66 0 120 -3 120 -7 0 -8 -51 -77 -107 -146 -23 -29 -64 -80 -90
+-114 l-48 -62 -252 -1 c-138 0 -254 -4 -257 -9 -8 -13 34 -48 86 -71 26 -11
+93 -28 150 -38 92 -15 196 -17 1003 -17 813 0 909 2 997 17 139 25 228 69 228
+112 0 3 -151 6 -336 6 l-336 0 17 27 c10 16 52 68 94 116 42 48 78 93 80 100
+2 7 17 29 33 50 l30 37 109 0 109 0 0 25 0 25 -655 0 -655 0 0 28 c0 15 3 43
+6 63 l6 36 107 23 c115 24 277 79 381 129 36 17 70 31 77 31 27 0 285 186 375
+269 99 94 245 257 268 301 7 14 38 63 68 109 52 80 142 258 142 282 0 21 -24
+3 -34 -27 -47 -126 -272 -444 -401 -566 -70 -66 -231 -198 -241 -198 -6 0 -36
+-18 -66 -39 -78 -54 -216 -124 -323 -161 -111 -39 -263 -85 -310 -94 -34 -7
+-35 -6 -35 26 0 42 46 529 60 628 5 41 17 138 25 215 26 254 66 481 141 800
+73 314 77 330 82 343 2 6 -3 12 -11 12 -11 0 -18 -13 -22 -37z m-383 -2264
+c-4 -34 -30 -71 -107 -154 -76 -82 -117 -75 437 -74 l493 0 58 73 c33 39 63
+79 68 89 9 16 -18 17 -431 17 l-441 0 3 43 3 42 508 3 c303 1 507 -2 507 -7 0
+-9 -60 -86 -129 -168 -20 -22 -54 -66 -76 -97 l-40 -55 -568 -1 -567 0 72 93
+c141 180 190 238 202 234 6 -2 10 -18 8 -38z"/>
+        <path d="M3286 3028 c-8 -29 -20 -71 -26 -93 -6 -22 -15 -67 -20 -100 -5 -33
+-22 -123 -39 -200 -60 -277 -132 -769 -146 -1000 -7 -121 -24 -320 -30 -357
+-3 -18 0 -28 8 -28 21 0 247 66 302 88 72 29 269 137 347 191 96 66 151 114
+256 220 80 81 232 268 232 285 0 3 16 31 35 63 39 65 43 83 18 83 -34 0 -189
+77 -289 143 -64 42 -141 106 -215 179 -161 160 -217 236 -332 445 -39 73 -75
+133 -79 133 -4 0 -14 -24 -22 -52z"/>
+        <path d="M1865 1069 c-4 -6 -4 -31 -1 -57 21 -151 63 -244 136 -297 l48 -35
+215 0 215 0 36 48 c19 26 52 66 72 90 l37 42 -79 0 c-131 0 -345 19 -409 35
+-33 9 -84 27 -113 40 -48 22 -56 30 -79 85 -21 48 -31 60 -49 60 -13 0 -26 -5
+-29 -11z"/>
+        <path d="M4846 1048 c-56 -134 -179 -174 -567 -185 l-236 -6 -66 -86 -65 -86
+304 -3 304 -2 0 -30 c0 -35 4 -36 91 -12 182 51 286 179 292 360 2 73 1 77
+-21 80 -17 3 -26 -4 -36 -30z"/>
+      </g>
+    </svg>
+  </div>
+
+  <svg class="water" viewBox="0 0 600 20" preserveAspectRatio="none">
+    <line x1="100" y1="5" x2="500" y2="5"/>
+    <line x1="130" y1="10" x2="470" y2="10"/>
+    <line x1="160" y1="15" x2="440" y2="15"/>
+  </svg>
+</div>
+
+</body>
+</html>

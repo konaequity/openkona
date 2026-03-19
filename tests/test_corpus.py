@@ -161,6 +161,38 @@ class TestCorpusIngestion:
         assert corpus.num_documents == 0
         assert not corpus.indexed
 
+    def test_prebuilt_qwen3_index_prefers_hf_query_fn_when_token_exists(self, tmp_path, monkeypatch):
+        corpus_dir = tmp_path / "financebench"
+        corpus_dir.mkdir()
+        np.savez(
+            corpus_dir / "prebuilt_index.npz",
+            vectors=np.array([[1.0, 0.0]], dtype=np.float32),
+            doc_ids=np.array(["doc1"]),
+            embed_model="Qwen/Qwen3-Embedding-0.6B",
+        )
+        (corpus_dir / "pages").mkdir()
+        (corpus_dir / "pages" / "doc1.txt").write_text("alpha facts")
+
+        monkeypatch.setenv("HF_TOKEN", "hf_test_token")
+
+        def fail_load_embedding_model(*args, **kwargs):
+            raise AssertionError("local embedding model should not be loaded")
+
+        called = {"hf": False}
+
+        def fake_set_qwen3_query_fn(self, model_name=""):
+            called["hf"] = True
+            self.vector_search.embed_fn = lambda texts: np.array([[1.0, 0.0]], dtype=np.float32)
+            self.embed_fn = self.vector_search.embed_fn
+
+        monkeypatch.setattr("konash.retrieval.vector_search.load_embedding_model", fail_load_embedding_model)
+        monkeypatch.setattr(Corpus, "_set_qwen3_query_fn", fake_set_qwen3_query_fn)
+
+        corpus = Corpus(str(corpus_dir))
+        corpus.ingest()
+
+        assert called["hf"] is True
+
 
 class TestCorpusBatchSearch:
 

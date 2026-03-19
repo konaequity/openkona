@@ -165,6 +165,26 @@ def test_train_runs_local_synthesis_then_cloud_oapl(tmp_path, monkeypatch):
     assert result["stats"] == []  # no stats since synthesis produced nothing
 
 
+def test_agent_defers_local_embed_model_when_prebuilt_index_exists(tmp_path, monkeypatch):
+    corpus_dir = tmp_path / "financebench"
+    corpus_dir.mkdir()
+    (corpus_dir / "prebuilt_index.npz").write_bytes(b"stub")
+
+    def fail_make_embed_fn(self):
+        raise AssertionError("local embed model should not be loaded eagerly")
+
+    monkeypatch.setattr(Agent, "_make_embed_fn", fail_make_embed_fn)
+
+    agent = Agent(
+        base_model="stub",
+        corpus=corpus_dir,
+        api_base="http://example",
+        api_key="k",
+    )
+
+    assert agent.embedding_provider == "local"
+
+
 # ------------------------------------------------------------------
 # Parallel thinking concurrency tests
 # ------------------------------------------------------------------

@@ -377,11 +377,9 @@ curl -s -H "X-API-KEY: $SHADEFORM_API_KEY" \
 PYTHONPATH=/Users/joeyroth/Desktop/openkona \
 OPENAI_API_KEY="$OPENAI_API_KEY" \
 TOGETHER_API_KEY="$TOGETHER_API_KEY" \
-python3 -u scripts/eval_qampari.py \
+konash eval qampari \
   --provider together \
   --limit 5 \
-  --single-only \
-  --verbose \
   --workers 1
 ```
 
