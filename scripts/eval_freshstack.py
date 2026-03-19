@@ -40,96 +40,6 @@ DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
 FRESHSTACK_DOMAIN = "langchain"
 
 
-def download_freshstack(console_obj=None):
-    """Download FreshStack LangChain corpus and questions."""
-    from datasets import load_dataset
-
-    output_dir = os.path.expanduser("~/.konash/corpora/freshstack")
-    docs_dir = os.path.join(output_dir, "documents")
-    eval_path = os.path.join(output_dir, "eval_questions.json")
-    index_path = os.path.join(output_dir, "prebuilt_index.npz")
-
-    # Check if already set up
-    if (os.path.isdir(docs_dir) and os.path.exists(eval_path)
-            and os.path.exists(index_path)):
-        doc_count = len(os.listdir(docs_dir))
-        with open(eval_path) as f:
-            q_count = len(json.load(f))
-        if console_obj:
-            console_obj.print(f"    Already downloaded: {doc_count:,} docs, {q_count} questions")
-        return output_dir
-
-    os.makedirs(docs_dir, exist_ok=True)
-
-    # Download corpus
-    if console_obj:
-        console_obj.print(f"    Downloading FreshStack {FRESHSTACK_DOMAIN} corpus...")
-    corpus = load_dataset("freshstack/corpus-oct-2024", FRESHSTACK_DOMAIN, split="train")
-    if console_obj:
-        console_obj.print(f"    {len(corpus):,} documents")
-
-    # Save documents as text files
-    for rec in corpus:
-        doc_id = rec["_id"]
-        text = rec["text"]
-        safe_id = doc_id.replace("/", "_").replace("\\", "_")[:120]
-        filepath = os.path.join(docs_dir, f"{safe_id}.txt")
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(text)
-
-    # Download questions (filtered version)
-    if console_obj:
-        console_obj.print(f"    Downloading FreshStack {FRESHSTACK_DOMAIN} questions...")
-    queries = load_dataset("freshstack/queries-oct-2024", FRESHSTACK_DOMAIN, split="test")
-
-    eval_questions = []
-    for rec in queries:
-        nuggets = []
-        for n in rec.get("nuggets", []):
-            nuggets.append({
-                "id": n.get("_id", ""),
-                "text": n.get("text", ""),
-                "relevant_ids": n.get("relevant_corpus_ids", []),
-            })
-
-        eval_questions.append({
-            "question_id": rec.get("query_id", ""),
-            "question": rec.get("query_text", "") or rec.get("query_title", ""),
-            "question_title": rec.get("query_title", ""),
-            "answer": rec.get("answer_text", ""),
-            "nuggets": nuggets,
-        })
-
-    with open(eval_path, "w") as f:
-        json.dump(eval_questions, f, indent=2)
-
-    if console_obj:
-        console_obj.print(f"    {len(eval_questions)} eval questions saved")
-
-    # Download prebuilt index
-    try:
-        from huggingface_hub import hf_hub_download
-        import shutil
-        if not os.path.exists(index_path):
-            if console_obj:
-                console_obj.print(f"    Downloading prebuilt index...")
-            path = hf_hub_download(
-                "konaeq/konash-indexes", "freshstack/qwen3-0.6b.npz",
-                repo_type="dataset",
-            )
-            shutil.copy2(path, index_path)
-            if console_obj:
-                console_obj.print(f"    Index installed")
-    except Exception as e:
-        if console_obj:
-            console_obj.print(f"    [dim]Index download failed: {e}[/]")
-
-    if console_obj:
-        console_obj.print(f"    [bold green]Done![/]")
-
-    return output_dir
-
-
 def eval_one_question(
     agent, question: str, nuggets: list[dict], scorer, policy,
     *, parallel_rollouts: int = 1, max_steps: int = 50, top_k: int = 10,
@@ -391,7 +301,8 @@ def main():
     console.print()
     console.rule(style="dim")
 
-    corpus_dir = download_freshstack(console_obj=console)
+    from konash.download import download_freshstack as _download
+    corpus_dir = _download(console=console)
 
     eval_path = os.path.join(corpus_dir, "eval_questions.json")
     with open(eval_path) as f:

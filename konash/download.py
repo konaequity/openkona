@@ -487,9 +487,12 @@ def download_freshstack(
     output_dir: Optional[str] = None,
     console: Optional[Console] = None,
 ) -> str:
-    """Download FreshStack and save as text files.
+    """Download FreshStack LangChain corpus, eval questions, and prebuilt index.
 
-    Returns path to the documents directory.
+    The KARL paper evaluates on the LangChain domain only (203 questions,
+    49,514 docs). Questions use the filtered dataset with pre-defined nuggets.
+
+    Returns path to the corpus directory.
     """
     try:
         from datasets import load_dataset
@@ -501,68 +504,68 @@ def download_freshstack(
         output_dir = os.path.join(DEFAULT_CORPUS_DIR, "freshstack")
 
     docs_dir = os.path.join(output_dir, "documents")
+    eval_path = os.path.join(output_dir, "eval_questions.json")
+    index_path = os.path.join(output_dir, "prebuilt_index.npz")
 
-    if os.path.isdir(docs_dir) and len(os.listdir(docs_dir)) > 10:
-        count = len([f for f in os.listdir(docs_dir) if f.endswith(".txt")])
-        _print(console, f"    Already downloaded: {count} documents in {docs_dir}")
-        _download_prebuilt_index_hf(output_dir, "freshstack/qwen3-0.6b.npz", console)
+    # Check if already set up
+    if (os.path.isdir(docs_dir)
+            and len(os.listdir(docs_dir)) > 40000
+            and os.path.exists(index_path)
+            and os.path.exists(eval_path)):
+        doc_count = len(os.listdir(docs_dir))
+        _print(console, f"    Already downloaded: {doc_count:,} docs in {docs_dir}")
         return output_dir
 
     os.makedirs(docs_dir, exist_ok=True)
 
-    # FreshStack Oct 2024: 5 software/ML domains
-    domains = ["angular", "godot", "langchain", "laravel", "yolo"]
+    # Step 1: Download LangChain corpus
+    _print(console, "    Downloading FreshStack LangChain corpus...")
+    ds = load_dataset("freshstack/corpus-oct-2024", "langchain", split="train")
+    _print(console, f"    {len(ds):,} documents")
+
     doc_count = 0
-    eval_questions: List[Dict] = []
-
-    for domain in domains:
-        _print(console, f"    Downloading {domain}...")
-        try:
-            ds = load_dataset("freshstack/corpus-oct-2024", domain, split="train")
-        except Exception:
-            _print(console, f"    [dim]Skipped {domain} (not available)[/]")
+    for rec in ds:
+        docid = rec.get("_id", f"doc_{doc_count}")
+        text = rec.get("text", "")
+        if not text or len(text.strip()) < 5:
             continue
+        safe = docid.replace("/", "_").replace("\\", "_")[:120]
+        filepath = os.path.join(docs_dir, f"{safe}.txt")
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(text)
+        doc_count += 1
 
-        _print(console, f"    {domain}: {len(ds)} documents")
+    # Step 2: Download filtered eval questions with pre-defined nuggets
+    _print(console, "    Downloading FreshStack LangChain eval questions...")
+    queries = load_dataset("freshstack/queries-oct-2024", "langchain", split="test")
 
-        for rec in ds:
-            docid = rec.get("_id", "") or rec.get("id", f"{domain}_{doc_count}")
-            title = rec.get("title", "")
-            text = rec.get("text", "")
-            if not text:
-                continue
+    eval_questions: List[Dict] = []
+    for rec in queries:
+        nuggets = []
+        for n in rec.get("nuggets", []):
+            nuggets.append({
+                "id": n.get("_id", ""),
+                "text": n.get("text", ""),
+                "relevant_ids": n.get("relevant_corpus_ids", []),
+            })
+        eval_questions.append({
+            "question_id": rec.get("query_id", ""),
+            "question": rec.get("query_text", "") or rec.get("query_title", ""),
+            "question_title": rec.get("query_title", ""),
+            "answer": rec.get("answer_text", ""),
+            "nuggets": nuggets,
+        })
 
-            safe = f"{domain}_{docid}".replace("/", "_").replace("\\", "_")[:100]
-            filepath = os.path.join(docs_dir, f"{safe}.txt")
-            with open(filepath, "w", encoding="utf-8") as f:
-                if title:
-                    f.write(f"{title}\n\n")
-                f.write(text)
-            doc_count += 1
-
-        # Try to get queries for eval
-        try:
-            qs = load_dataset(
-                "freshstack/queries-oct-2024-unfiltered", domain, split="train",
-            )
-            for rec in qs:
-                if len(eval_questions) < 20:
-                    eval_questions.append({
-                        "question": rec.get("text", ""),
-                        "domain": domain,
-                    })
-        except Exception:
-            pass
-
-    eval_path = os.path.join(output_dir, "eval_questions.json")
     with open(eval_path, "w", encoding="utf-8") as f:
         json.dump(eval_questions, f, indent=2)
+    _print(console, f"    {len(eval_questions)} eval questions saved")
 
-    # Download pre-built Qwen3-0.6B embedding index from HuggingFace
+    # Step 3: Download prebuilt index
     _download_prebuilt_index_hf(output_dir, "freshstack/qwen3-0.6b.npz", console)
 
     _print(console, f"    [bold green]Done![/]")
-    _print(console, f"    Documents:  {doc_count}")
+    _print(console, f"    Documents:  {doc_count:,}")
+    _print(console, f"    Eval Q's:   {len(eval_questions)}")
     _print(console, f"    Saved to:   {output_dir}")
 
     return output_dir
