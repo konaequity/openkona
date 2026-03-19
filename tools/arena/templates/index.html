@@ -75,112 +75,6 @@ body {
 }
 
 /* ================================================================
-   Top Bar
-   ================================================================ */
-.topbar {
-  background: var(--bg-primary);
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: 100;
-}
-
-.topbar-inner {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 0 24px;
-  height: 52px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.topbar-left {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-}
-
-.logo {
-  font-size: 1.15rem;
-  font-weight: 700;
-  color: var(--text-primary);
-  letter-spacing: 0.04em;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  text-transform: uppercase;
-}
-
-.logo-icon {
-  width: 26px;
-  height: 26px;
-  background: var(--accent-red);
-  border-radius: var(--radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  color: white;
-  font-weight: 800;
-}
-
-.nav-tabs {
-  display: flex;
-  gap: 0;
-}
-
-.nav-tab {
-  padding: 6px 16px;
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  font-family: var(--font-sans);
-  text-decoration: none;
-}
-
-.nav-tab.active {
-  color: var(--text-primary);
-  border-bottom-color: var(--accent-red);
-}
-
-.nav-tab:hover:not(.active) {
-  color: var(--text-secondary);
-}
-
-.topbar-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.topbar-btn {
-  padding: 6px 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg-primary);
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  font-family: var(--font-sans);
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.topbar-btn:hover {
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  border-color: var(--border);
-}
-
-/* ================================================================
    Main Layout
    ================================================================ */
 .container {
@@ -1209,22 +1103,10 @@ body {
 <body>
 
 <!-- ================================================================
-     Top Bar
+     Top Bar (shared component)
      ================================================================ -->
-<div class="topbar">
-<div class="topbar-inner">
-  <div class="topbar-left">
-    <div class="logo">
-      <div class="logo-icon">K</div>
-      KONASH
-    </div>
-    <div class="nav-tabs">
-      <a href="/arena/" class="nav-tab active">Arena</a>
-      <a href="/traces/" class="nav-tab">Traces</a>
-      <a href="/training/" class="nav-tab">Training</a>
-    </div>
-  </div>
-  <div class="topbar-right" style="position:relative;">
+{% set active_tab = "arena" %}
+{% set topbar_right_content %}
     <button class="topbar-btn" id="btnLeaderboard" title="Leaderboard">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="12" width="5" height="10" rx="1"/><rect x="9.5" y="4" width="5" height="18" rx="1"/><rect x="17" y="8" width="5" height="14" rx="1"/></svg>
       Leaderboard
@@ -1255,9 +1137,8 @@ body {
         </div>
       </div>
     </div>
-  </div>
-</div>
-</div>
+{% endset %}
+{% include "topbar.html" %}
 
 <!-- ================================================================
      Main Content

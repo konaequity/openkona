@@ -100,115 +100,6 @@ body {
 }
 
 /* ================================================================
-   Header
-   ================================================================ */
-.topbar {
-  background: var(--bg-primary);
-  border-bottom: 1px solid var(--border-default);
-  position: sticky;
-  top: 0;
-  z-index: 100;
-}
-
-.topbar-inner {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 0 24px;
-  height: 52px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.topbar-left {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-}
-
-.logo {
-  font-size: 1.15rem;
-  font-weight: 700;
-  color: var(--text-primary);
-  letter-spacing: 0.04em;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  text-transform: uppercase;
-}
-
-.logo-icon {
-  width: 26px;
-  height: 26px;
-  background: var(--brand-red);
-  border-radius: 3px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  color: white;
-  font-weight: 800;
-}
-
-.nav-tabs {
-  display: flex;
-  gap: 0;
-  border-bottom: none;
-}
-
-.nav-tab {
-  padding: 8px 18px;
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--text-tertiary);
-  font-size: 0.82rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: color 0.15s ease, border-color 0.15s ease;
-  font-family: inherit;
-  text-decoration: none;
-  letter-spacing: 0.02em;
-}
-
-.nav-tab.active {
-  color: var(--text-primary);
-  border-bottom-color: var(--brand-red);
-  font-weight: 600;
-}
-
-.nav-tab:hover:not(.active) {
-  color: var(--text-secondary);
-}
-
-.topbar-right {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.topbar-btn {
-  padding: 6px 14px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-default);
-  background: var(--bg-primary);
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  font-family: inherit;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-weight: 500;
-}
-
-.topbar-btn:hover {
-  border-color: var(--text-tertiary);
-  color: var(--text-primary);
-}
-
-/* ================================================================
    Session Selector
    ================================================================ */
 .session-selector {
@@ -849,20 +740,13 @@ body {
 </head>
 <body>
 
-<div class="topbar">
-<div class="topbar-inner">
-  <div class="topbar-left">
-    <div class="logo">
-      <div class="logo-icon">K</div>
-      KONASH
-    </div>
-    <div class="nav-tabs">
-      <a href="/arena/" class="nav-tab">Arena</a>
-      <a href="/traces/" class="nav-tab active">Traces</a>
-      <a href="/training/" class="nav-tab">Training</a>
-    </div>
-  </div>
-  <div class="topbar-right">
+{% set active_tab = "traces" %}
+{% include "topbar.html" %}
+
+<div class="app-container">
+
+  <!-- Session selector + Upload -->
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
     <div class="session-selector">
       <label for="session-select">Session:</label>
       <select id="session-select">
@@ -876,10 +760,6 @@ body {
       Upload
     </button>
   </div>
-</div>
-</div>
-
-<div class="app-container">
 
   <!-- Legend -->
   <div class="legend">

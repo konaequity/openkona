@@ -73,11 +73,19 @@ for k, v in _ARENA_EXTRA_PRESETS.items():
 # ---------------------------------------------------------------------------
 from flask import Flask, Response, jsonify, render_template, request
 
+from jinja2 import ChoiceLoader, FileSystemLoader
+
 _ARENA_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
     __name__,
     template_folder=os.path.join(_ARENA_DIR, "templates"),
 )
+
+_SHARED_TEMPLATES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared", "templates")
+app.jinja_loader = ChoiceLoader([
+    app.jinja_loader,
+    FileSystemLoader(_SHARED_TEMPLATES),
+])
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -471,12 +479,18 @@ def api_corpora():
     if corpus_root.exists():
         for d in sorted(corpus_root.iterdir()):
             if d.is_dir():
-                # Count documents
-                doc_count = sum(1 for _ in d.rglob("*") if _.is_file() and _.suffix in {
-                    ".txt", ".md", ".rst", ".csv", ".log", ".json",
-                    ".html", ".htm", ".py", ".js", ".ts", ".java",
-                    ".go", ".rs", ".c", ".cpp", ".h",
-                })
+                # Quick doc count: check for prebuilt index first, else count top-level files only
+                index_file = d / "prebuilt_index.npz"
+                if index_file.exists():
+                    # Use metadata from index if available
+                    try:
+                        import numpy as np
+                        idx = np.load(index_file, allow_pickle=True)
+                        doc_count = len(idx.get("doc_ids", idx.get("sources", [])))
+                    except Exception:
+                        doc_count = sum(1 for f in d.iterdir() if f.is_file())
+                else:
+                    doc_count = sum(1 for f in d.iterdir() if f.is_file())
                 corpora.append({
                     "name": d.name,
                     "path": str(d),

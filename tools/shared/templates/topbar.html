@@ -1,0 +1,120 @@
+<!-- Shared KONASH topbar — included by all four pages.
+     Set `active_tab` before including: arena | traces | training | eval
+     Override `topbar_right` block for page-specific controls. -->
+
+<style>
+/* ── Shared Topbar ──────────────────────────────────────── */
+.topbar {
+  background: #FFFFFF;
+  border-bottom: 1px solid #E2E2E2;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.topbar-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+}
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: #000000;
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+.logo-icon {
+  width: 26px;
+  height: 26px;
+  background: #E50012;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 800;
+  color: #FFFFFF;
+}
+.nav-tabs {
+  display: flex;
+  gap: 0;
+  height: 52px;
+}
+.nav-tab {
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #888888;
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s;
+  letter-spacing: 0.3px;
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+.nav-tab:hover { color: #000000; }
+.nav-tab.active {
+  color: #000000;
+  font-weight: 600;
+  border-bottom-color: #E50012;
+}
+.topbar-btn {
+  padding: 6px 14px;
+  border-radius: 3px;
+  border: 1px solid #E2E2E2;
+  background: #FFFFFF;
+  color: #444444;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 500;
+}
+.topbar-btn:hover {
+  border-color: #888888;
+  color: #000000;
+}
+</style>
+
+<div class="topbar">
+<div class="topbar-inner">
+  <div class="topbar-left">
+    <div class="logo">
+      <div class="logo-icon">K</div>
+      KONASH
+    </div>
+    <div class="nav-tabs">
+      <a href="/arena/" class="nav-tab{{ ' active' if active_tab == 'arena' else '' }}">Arena</a>
+      <a href="/traces/" class="nav-tab{{ ' active' if active_tab == 'traces' else '' }}">Traces</a>
+      <a href="/training/" class="nav-tab{{ ' active' if active_tab == 'training' else '' }}">Training</a>
+      <a href="/eval/" class="nav-tab{{ ' active' if active_tab == 'eval' else '' }}">Eval</a>
+    </div>
+  </div>
+  <div class="topbar-right">
+    {{ topbar_right_content | default('') | safe }}
+  </div>
+</div>
+</div>

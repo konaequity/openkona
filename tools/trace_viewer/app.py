@@ -25,11 +25,18 @@ sys.path.insert(0, _PROJECT_ROOT)
 from collections import defaultdict
 
 from flask import Flask, jsonify, render_template, request
+from jinja2 import ChoiceLoader, FileSystemLoader
 
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
+
+_SHARED_TEMPLATES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared", "templates")
+app.jinja_loader = ChoiceLoader([
+    app.jinja_loader,
+    FileSystemLoader(_SHARED_TEMPLATES),
+])
 
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)

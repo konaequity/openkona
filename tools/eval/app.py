@@ -32,12 +32,19 @@ sys.path.insert(0, PROJECT_ROOT)
 # Flask setup
 # ---------------------------------------------------------------------------
 from flask import Flask, jsonify, render_template, request
+from jinja2 import ChoiceLoader, FileSystemLoader
 
 _EVAL_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
     __name__,
     template_folder=os.path.join(_EVAL_DIR, "templates"),
 )
+
+_SHARED_TEMPLATES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared", "templates")
+app.jinja_loader = ChoiceLoader([
+    app.jinja_loader,
+    FileSystemLoader(_SHARED_TEMPLATES),
+])
 
 # ---------------------------------------------------------------------------
 # Configuration
