@@ -20,6 +20,7 @@ from werkzeug.serving import run_simple
 
 from arena.app import app as arena_app
 from trace_viewer.app import app as trace_app
+from eval.app import app as eval_app
 
 # Root app just redirects to /arena
 root_app = Flask(__name__)
@@ -51,6 +52,7 @@ app = PathDispatcher(root_app, {
     "/arena": arena_app,
     "/traces": trace_app,
     "/training": trace_app,
+    "/eval": eval_app,
 })
 
 if __name__ == "__main__":
@@ -59,5 +61,6 @@ if __name__ == "__main__":
     print(f"  http://localhost:{port}\n")
     print(f"  /training — Training monitor")
     print(f"  /arena    — Model comparison arena")
-    print(f"  /traces   — Rollout trace viewer\n")
+    print(f"  /traces   — Rollout trace viewer")
+    print(f"  /eval     — Eval trace viewer\n")
     run_simple("0.0.0.0", port, app, use_debugger=True, use_reloader=True, threaded=True)
