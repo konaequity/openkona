@@ -165,6 +165,12 @@ body {
   gap: 6px;
 }
 
+.config-group.config-column {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
 .config-label {
   font-size: 0.7rem;
   color: var(--text-muted);
@@ -643,6 +649,143 @@ body {
 }
 
 /* ================================================================
+   Eval Review
+   ================================================================ */
+.judge-panel {
+  display: none;
+  margin-bottom: 24px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+}
+
+.judge-panel.visible {
+  display: block;
+}
+
+.judge-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.judge-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.judge-subtitle {
+  margin-top: 4px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.judge-status {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.judge-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.judge-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  background: var(--bg-secondary);
+}
+
+.judge-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.judge-card-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.judge-score {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--accent-green);
+  font-weight: 600;
+}
+
+.judge-meta {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.judge-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.judge-item {
+  display: grid;
+  grid-template-columns: 82px 1fr;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 0.75rem;
+}
+
+.judge-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border: 1px solid transparent;
+}
+
+.judge-pill.support {
+  color: var(--accent-green-dim);
+  background: rgba(27, 122, 61, 0.08);
+  border-color: rgba(27, 122, 61, 0.2);
+}
+
+.judge-pill.partial_support {
+  color: var(--accent-yellow-dim);
+  background: rgba(204, 136, 0, 0.08);
+  border-color: rgba(204, 136, 0, 0.2);
+}
+
+.judge-pill.not_support {
+  color: var(--accent-red);
+  background: rgba(213, 0, 0, 0.08);
+  border-color: rgba(213, 0, 0, 0.2);
+}
+
+.judge-empty,
+.judge-error {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.judge-error {
+  color: var(--accent-red);
+}
+
+/* ================================================================
    Voting Panel
    ================================================================ */
 .voting-panel {
@@ -1088,6 +1231,9 @@ body {
   .columns {
     grid-template-columns: 1fr;
   }
+  .judge-grid {
+    grid-template-columns: 1fr;
+  }
   .config-bar {
     flex-direction: column;
     align-items: flex-start;
@@ -1184,6 +1330,13 @@ body {
           <option value="">(none — direct LLM)</option>
         </select>
       </div>
+      <div class="config-group config-column" style="flex:1.2; min-width:320px;">
+        <span class="config-label">Eval Question</span>
+        <select class="config-select" id="questionSelect" style="min-width:320px;" disabled>
+          <option value="">Manual question</option>
+        </select>
+        <div class="col-subtitle" id="questionMeta">Choose a benchmark corpus to load its eval questions.</div>
+      </div>
       <div class="config-group config-toggle" id="toggleBlind">
         <div class="toggle-switch" id="blindToggle"></div>
         <span class="toggle-label">Blind mode</span>
@@ -1248,6 +1401,17 @@ body {
         </div>
       </div>
     </div>
+  </div>
+
+  <div class="judge-panel" id="judgePanel">
+    <div class="judge-header">
+      <div>
+        <div class="judge-title">Eval Review</div>
+        <div class="judge-subtitle" id="judgeSubtitle">Pick a benchmark question to enable eval-style judging.</div>
+      </div>
+      <div class="judge-status" id="judgeStatus">Idle</div>
+    </div>
+    <div id="judgeBody" class="judge-empty">The judge review appears after both answers finish.</div>
   </div>
 
   <!-- Voting Panel -->
@@ -1364,6 +1528,9 @@ body {
     eventSource: null,
     modelA: '',
     modelB: '',
+    benchmarkKey: null,
+    benchmarkName: null,
+    questionIndex: null,
   };
 
   // ----------------------------------------------------------------
@@ -1376,6 +1543,9 @@ body {
   const selectModelA = $('selectModelA');
   const selectModelB = $('selectModelB');
   const blindToggle = $('blindToggle');
+  const corpusSelect = $('corpusSelect');
+  const questionSelect = $('questionSelect');
+  const questionMeta = $('questionMeta');
   const colABody = $('colABody');
   const colBBody = $('colBBody');
   const colATitle = $('colATitle');
@@ -1392,6 +1562,10 @@ body {
   const voteConfirmation = $('voteConfirmation');
   const shareBanner = $('shareBanner');
   const shareLink = $('shareLink');
+  const judgePanel = $('judgePanel');
+  const judgeSubtitle = $('judgeSubtitle');
+  const judgeStatus = $('judgeStatus');
+  const judgeBody = $('judgeBody');
 
   // ----------------------------------------------------------------
   // Init: Load presets
@@ -1459,7 +1633,6 @@ body {
     .catch(() => {});
 
   // Load available corpora
-  const corpusSelect = $('corpusSelect');
   fetch('/arena/api/corpora')
     .then(r => r.json())
     .then(corpora => {
@@ -1471,6 +1644,21 @@ body {
       });
     })
     .catch(() => {});
+
+  corpusSelect.addEventListener('change', () => {
+    loadEvalQuestions(corpusSelect.value);
+  });
+
+  questionSelect.addEventListener('change', () => {
+    const selected = questionSelect.options[questionSelect.selectedIndex];
+    const question = selected?.dataset?.question || '';
+    const indexValue = questionSelect.value;
+    state.questionIndex = indexValue === '' ? null : parseInt(indexValue, 10);
+    if (question) {
+      questionInput.value = question;
+      questionInput.dispatchEvent(new Event('input'));
+    }
+  });
 
   // Check for shared run in URL
   const urlParams = new URLSearchParams(window.location.search);
@@ -1605,6 +1793,10 @@ body {
       top_k: topK,
     };
     if (corpusPath) body.corpus_path = corpusPath;
+    if (state.benchmarkKey && state.questionIndex !== null) {
+      body.benchmark_key = state.benchmarkKey;
+      body.question_index = state.questionIndex;
+    }
 
     fetch('/arena/api/run', {
       method: 'POST',
@@ -1671,6 +1863,12 @@ body {
       }
     } else if (data.event === 'done') {
       handleDone(data);
+    } else if (data.event === 'judge_status') {
+      judgePanel.classList.add('visible');
+      judgeStatus.textContent = data.message || 'Judge reviewing answers...';
+      judgeBody.innerHTML = '<div class="judge-empty">Scoring both answers against the benchmark reference...</div>';
+    } else if (data.event === 'judge_done') {
+      renderJudgeReview(data.review || {});
     } else if (data.event === 'end') {
       endRun();
     } else if (data.event === 'timeout') {
@@ -1683,8 +1881,10 @@ body {
     if (side === 'a') state.doneA = true;
     if (side === 'b') state.doneB = true;
 
-    // Add final answer as a visible step card
-    if (data.final_answer && !data.error) {
+    if (data.error) {
+      showError(side, data.error);
+    } else if (data.final_answer) {
+      // Add final answer as a visible step card
       appendStep(side, {
         type: 'answer',
         answer: data.final_answer,
@@ -1750,6 +1950,12 @@ body {
     voteComments.value = '';
     charCount.textContent = '0';
     shareBanner.classList.remove('visible');
+    judgePanel.classList.remove('visible');
+    judgeSubtitle.textContent = state.benchmarkName
+      ? `${state.benchmarkName} question selected. The judge review appears after both answers finish.`
+      : 'Pick a benchmark question to enable eval-style judging.';
+    judgeStatus.textContent = 'Idle';
+    judgeBody.innerHTML = '<div class="judge-empty">The judge review appears after both answers finish.</div>';
 
     document.querySelectorAll('.vote-btn').forEach(b => {
       b.classList.remove('selected');
@@ -1915,6 +2121,113 @@ body {
     setStatus(side, 'error', 'Error');
   }
 
+  function loadEvalQuestions(corpusPath) {
+    questionSelect.innerHTML = '<option value="">Manual question</option>';
+    questionSelect.disabled = true;
+    state.benchmarkKey = null;
+    state.benchmarkName = null;
+    state.questionIndex = null;
+    questionMeta.textContent = corpusPath
+      ? 'Loading eval questions...'
+      : 'Choose a benchmark corpus to load its eval questions.';
+
+    if (!corpusPath) {
+      return;
+    }
+
+    const params = new URLSearchParams({ corpus_path: corpusPath });
+    fetch(`/arena/api/questions?${params.toString()}`)
+      .then(r => r.json())
+      .then(data => {
+        const questions = data.questions || [];
+        state.benchmarkKey = data.benchmark_key || null;
+        state.benchmarkName = data.benchmark_name || null;
+
+        if (!state.benchmarkKey || questions.length === 0) {
+          questionMeta.textContent = 'This corpus has no registered eval question set.';
+          return;
+        }
+
+        questionSelect.disabled = false;
+        questions.forEach(item => {
+          const opt = document.createElement('option');
+          opt.value = item.index;
+          opt.textContent = item.label;
+          opt.dataset.question = item.question || '';
+          questionSelect.appendChild(opt);
+        });
+        questionMeta.textContent = `${state.benchmarkName} loaded with ${questions.length} eval questions.`;
+        judgeSubtitle.textContent = `${state.benchmarkName} question selected. The judge review appears after both answers finish.`;
+      })
+      .catch(() => {
+        questionMeta.textContent = 'Failed to load eval questions.';
+      });
+  }
+
+  function renderJudgeReview(review) {
+    judgePanel.classList.add('visible');
+    if (review.error) {
+      judgeStatus.textContent = 'Judge failed';
+      judgeBody.innerHTML = `<div class="judge-error">${escapeHtml(review.error)}</div>`;
+      return;
+    }
+
+    const winner = review.winner === 'tie'
+      ? 'Tie'
+      : review.winner === 'a'
+        ? 'A leads'
+        : 'B leads';
+    judgeStatus.textContent = winner;
+    judgeSubtitle.textContent = `${escapeHtml(review.benchmark_name || state.benchmarkName || 'Benchmark')} • ${escapeHtml(review.judge_model || 'Judge')}`;
+    judgeBody.innerHTML = `
+      <div class="judge-grid">
+        ${renderJudgeCard('A', review.a || {})}
+        ${renderJudgeCard('B', review.b || {})}
+      </div>
+    `;
+  }
+
+  function renderJudgeCard(label, result) {
+    const nuggets = result.nuggets || [];
+    const labels = result.labels || [];
+    const items = nuggets.length
+      ? nuggets.slice(0, 6).map((nugget, idx) => {
+          const verdict = labels[idx] || scoreToLabel((result.nugget_scores || [])[idx]);
+          return `
+            <div class="judge-item">
+              <span class="judge-pill ${escapeHtml(verdict)}">${escapeHtml(verdict.replace('_', ' '))}</span>
+              <span>${escapeHtml(nugget)}</span>
+            </div>
+          `;
+        }).join('')
+      : '<div class="judge-empty">No nugget breakdown available.</div>';
+
+    return `
+      <div class="judge-card">
+        <div class="judge-card-header">
+          <div class="judge-card-title">Model ${label}</div>
+          <div class="judge-score">${formatScore(result.score)}</div>
+        </div>
+        <div class="judge-meta">
+          Supported ${result.supported || 0}/${result.total_nuggets || 0}
+          ${result.partial ? ` • Partial ${result.partial}` : ''}
+        </div>
+        <div class="judge-list">${items}</div>
+      </div>
+    `;
+  }
+
+  function formatScore(score) {
+    const numeric = typeof score === 'number' ? score : Number(score || 0);
+    return `${numeric.toFixed(3)} score`;
+  }
+
+  function scoreToLabel(score) {
+    if (score >= 1) return 'support';
+    if (score > 0) return 'partial_support';
+    return 'not_support';
+  }
+
   // ----------------------------------------------------------------
   // Voting
   // ----------------------------------------------------------------
@@ -2015,7 +2328,13 @@ body {
         state.runId = runId;
         state.modelA = data.model_a || '';
         state.modelB = data.model_b || '';
+        state.benchmarkKey = data.benchmark_key || null;
+        state.benchmarkName = data.eval_review?.benchmark_name || null;
+        state.questionIndex = data.question_index === null || data.question_index === undefined
+          ? null
+          : Number(data.question_index);
         questionInput.value = data.question || '';
+        questionInput.dispatchEvent(new Event('input'));
 
         if (data.status === 'complete') {
           updateColumnHeaders();
@@ -2051,6 +2370,10 @@ body {
             document.querySelectorAll('.vote-btn').forEach(b => b.disabled = true);
             voteConfirmation.style.display = 'block';
             voteConfirmation.textContent = 'Vote already recorded.';
+          }
+
+          if (data.eval_review) {
+            renderJudgeReview(data.eval_review);
           }
 
           showShareLink();

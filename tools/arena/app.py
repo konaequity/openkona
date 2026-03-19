@@ -18,6 +18,9 @@ import sys
 import threading
 import time
 import uuid
+import ast
+import re
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,8 +33,14 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 sys.path.insert(0, PROJECT_ROOT)
 
 from konash.api import Agent, MODEL_PRESETS
+from konash.benchmarks import DatasetSpec, get_dataset, list_datasets
 from konash.corpus import Corpus
-from konash.synthesis.rollouts import RolloutGenerator
+from konash.eval.harness import (
+    DEFAULT_JUDGE_MODEL,
+    OPENAI_API_BASE,
+    TOGETHER_API_BASE,
+    ZHIPU_API_BASE,
+)
 
 # ---------------------------------------------------------------------------
 # Extend MODEL_PRESETS with additional Together AI models for arena testing
@@ -76,6 +85,7 @@ from flask import Flask, Response, jsonify, render_template, request
 from jinja2 import ChoiceLoader, FileSystemLoader
 
 _ARENA_DIR = os.path.dirname(os.path.abspath(__file__))
+logger = logging.getLogger(__name__)
 app = Flask(
     __name__,
     template_folder=os.path.join(_ARENA_DIR, "templates"),
@@ -124,6 +134,7 @@ def _get_corpus(corpus_path: str) -> Corpus:
 
 _KONASH_CONFIG_PATH = os.path.expanduser("~/.konash/config.json")
 _ENV_TO_CONFIG_KEY = {
+    "OPENAI_API_KEY": "openai_api_key",
     "TOGETHER_API_KEY": "together_api_key",
     "ZHIPU_API_KEY": "zhipu_api_key",
     "HF_TOKEN": "hf_token",
@@ -142,6 +153,240 @@ def _load_konash_api_key(env_var: str) -> str:
         return cfg.get(config_key, "")
     except (OSError, json.JSONDecodeError):
         return ""
+
+
+def _load_konash_config() -> Dict[str, Any]:
+    try:
+        with open(_KONASH_CONFIG_PATH) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _resolve_corpus_path(corpus_path: str) -> Path:
+    return Path(corpus_path).expanduser().resolve()
+
+
+def _detect_dataset(corpus_path: Optional[str]) -> tuple[Optional[DatasetSpec], Optional[Path]]:
+    if not corpus_path:
+        return None, None
+
+    resolved = _resolve_corpus_path(corpus_path)
+    candidates = [resolved, resolved.parent]
+
+    for spec in list_datasets():
+        for candidate in candidates:
+            if candidate.name != spec.root_dirname:
+                continue
+            eval_path = candidate / spec.eval_filename
+            if eval_path.exists():
+                return spec, candidate
+
+        default_root = Path(spec.corpus_root()).expanduser().resolve()
+        if resolved == default_root or str(resolved).startswith(f"{default_root}{os.sep}"):
+            eval_path = default_root / spec.eval_filename
+            if eval_path.exists():
+                return spec, default_root
+
+    return None, None
+
+
+def _load_dataset_questions(
+    corpus_path: str,
+    benchmark_key: Optional[str] = None,
+) -> tuple[Optional[DatasetSpec], Optional[Path], list[dict]]:
+    spec: Optional[DatasetSpec]
+    root: Optional[Path]
+    if benchmark_key:
+        spec = get_dataset(benchmark_key)
+        root = _resolve_corpus_path(corpus_path)
+        if root.name != spec.root_dirname and root.parent.name == spec.root_dirname:
+            root = root.parent
+    else:
+        spec, root = _detect_dataset(corpus_path)
+
+    if not spec or not root:
+        return None, None, []
+
+    eval_path = root / spec.eval_filename
+    if not eval_path.exists():
+        return spec, root, []
+
+    try:
+        with open(eval_path, encoding="utf-8") as f:
+            questions = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return spec, root, []
+
+    if not isinstance(questions, list):
+        return spec, root, []
+    return spec, root, questions
+
+
+def _extract_eval_case(
+    corpus_path: str,
+    benchmark_key: Optional[str],
+    question_index: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    if question_index is None:
+        return None
+
+    spec, root, questions = _load_dataset_questions(corpus_path, benchmark_key=benchmark_key)
+    if not spec or not root:
+        return None
+    if question_index < 0 or question_index >= len(questions):
+        return None
+
+    bench = spec.benchmark
+    if bench is None:
+        return None
+
+    record = questions[question_index]
+    question_text = bench.get_question_text(record) if bench.get_question_text else record.get("question", "")
+    reference = bench.get_reference(record) if bench.get_reference else record.get("answer", "")
+    nuggets = bench.get_nuggets(record) if bench.get_nuggets else None
+    judge_context = (
+        bench.get_judge_context(question_text, bench)
+        if bench.get_judge_context else question_text
+    )
+
+    return {
+        "benchmark_key": spec.key,
+        "benchmark_name": spec.name,
+        "question_index": question_index,
+        "question_record": record,
+        "question_text": question_text,
+        "reference": reference,
+        "nuggets": nuggets,
+        "judge_context": judge_context,
+        "policy_name": bench.policy_name,
+    }
+
+
+def _parse_judge_labels(raw_response: str) -> List[str]:
+    if not raw_response:
+        return []
+    match = re.search(r"\[.*?\]", raw_response, re.DOTALL)
+    if not match:
+        return []
+    try:
+        parsed = ast.literal_eval(match.group())
+    except (SyntaxError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(label).strip().lower() for label in parsed]
+
+
+def _resolve_judge_client() -> tuple[Optional[Any], Optional[str], Optional[str]]:
+    from konash.api import _OpenAILLMClient
+
+    config = _load_konash_config()
+    openai_key = os.environ.get("OPENAI_API_KEY") or config.get("openai_api_key")
+    if openai_key:
+        model = os.environ.get("KONASH_ARENA_JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
+        client = _OpenAILLMClient(
+            api_base=OPENAI_API_BASE,
+            api_key=openai_key,
+            model=model,
+            temperature=0.0,
+        )
+        return client, model, "openai"
+
+    together_key = os.environ.get("TOGETHER_API_KEY") or config.get("together_api_key")
+    if together_key:
+        model = os.environ.get("KONASH_ARENA_JUDGE_MODEL", "zai-org/GLM-4.5-Air-FP8")
+        client = _OpenAILLMClient(
+            api_base=TOGETHER_API_BASE,
+            api_key=together_key,
+            model=model,
+            temperature=0.0,
+        )
+        return client, model, "together"
+
+    zhipu_key = os.environ.get("ZHIPU_API_KEY") or config.get("zhipu_api_key")
+    if zhipu_key:
+        model = os.environ.get("KONASH_ARENA_JUDGE_MODEL", "glm-4.5-air")
+        client = _OpenAILLMClient(
+            api_base=ZHIPU_API_BASE,
+            api_key=zhipu_key,
+            model=model,
+            temperature=0.0,
+        )
+        return client, model, "zhipu"
+
+    return None, None, None
+
+
+def _score_answer_with_judge(answer: str, eval_case: Dict[str, Any]) -> Dict[str, Any]:
+    from konash.eval.nuggets import LLMNuggetJudge, NuggetPolicyRegistry, NuggetScorer
+
+    judge_client, judge_model, judge_provider = _resolve_judge_client()
+    if judge_client is None or judge_model is None or judge_provider is None:
+        raise RuntimeError("No judge model configured. Set OPENAI_API_KEY, TOGETHER_API_KEY, or ZHIPU_API_KEY.")
+
+    policy = NuggetPolicyRegistry.get(eval_case["policy_name"])
+    judge = LLMNuggetJudge(
+        llm_fn=judge_client.generate,
+        question_context=eval_case["judge_context"],
+    )
+    scorer = NuggetScorer(judge=judge, policy=policy)
+    result = scorer.score(
+        answer,
+        eval_case["reference"],
+        policy=policy,
+        nuggets=eval_case["nuggets"],
+    )
+    labels = _parse_judge_labels(getattr(judge, "last_raw_response", ""))
+    nugget_scores = result.get("nugget_scores", [])
+    total_nuggets = len(result.get("nuggets", []))
+    supported = sum(1 for score in nugget_scores if score >= 1.0)
+    partial = sum(1 for score in nugget_scores if 0.0 < score < 1.0)
+
+    return {
+        "score": result.get("score", 0.0),
+        "nuggets": result.get("nuggets", []),
+        "nugget_scores": nugget_scores,
+        "labels": labels,
+        "supported": supported,
+        "partial": partial,
+        "total_nuggets": total_nuggets,
+        "judge_model": judge_model,
+        "judge_provider": judge_provider,
+        "judge_raw": getattr(judge, "last_raw_response", ""),
+    }
+
+
+def _judge_arena_answers(
+    answer_a: str,
+    answer_b: str,
+    eval_case: Dict[str, Any],
+) -> Dict[str, Any]:
+    review_a = _score_answer_with_judge(answer_a, eval_case)
+    review_b = _score_answer_with_judge(answer_b, eval_case)
+
+    score_a = float(review_a.get("score", 0.0))
+    score_b = float(review_b.get("score", 0.0))
+    if score_a > score_b:
+        winner = "a"
+    elif score_b > score_a:
+        winner = "b"
+    else:
+        winner = "tie"
+
+    return {
+        "benchmark_key": eval_case["benchmark_key"],
+        "benchmark_name": eval_case["benchmark_name"],
+        "question_index": eval_case["question_index"],
+        "question_text": eval_case["question_text"],
+        "reference": eval_case["reference"],
+        "winner": winner,
+        "score_delta": round(score_a - score_b, 3),
+        "judge_model": review_a.get("judge_model"),
+        "judge_provider": review_a.get("judge_provider"),
+        "a": review_a,
+        "b": review_b,
+    }
 
 
 def _make_llm_fn(preset_cfg: Dict[str, Any]) -> Any:
@@ -256,6 +501,7 @@ def _run_agent_direct(
         steps_out.append(_serialize_step(answer_step))
 
     except Exception as e:
+        logger.exception("arena_direct_run_failed run_id=%s side=%s preset=%s", run_id, side, preset_name)
         error_msg = str(e)
         final_answer = f"Error: {error_msg}"
 
@@ -422,6 +668,7 @@ def _run_agent(
             ttft = time.time() - t_start
 
     except Exception as e:
+        logger.exception("arena_agent_run_failed run_id=%s side=%s preset=%s", run_id, side, preset_name)
         error_msg = str(e)
         final_answer = f"Error: {error_msg}"
 
@@ -595,13 +842,14 @@ def api_presets():
 @app.route("/arena/api/corpora")
 def api_corpora():
     """Return available corpora (downloaded + any local folders)."""
+    corpora = []
     from konash.download import DEFAULT_CORPUS_DIR
 
-    corpora = []
     corpus_root = Path(DEFAULT_CORPUS_DIR)
     if corpus_root.exists():
         for d in sorted(corpus_root.iterdir()):
             if d.is_dir():
+                spec, root = _detect_dataset(str(d))
                 # Quick doc count: check for prebuilt index first, else count top-level files only
                 index_file = d / "prebuilt_index.npz"
                 if index_file.exists():
@@ -618,9 +866,44 @@ def api_corpora():
                     "name": d.name,
                     "path": str(d),
                     "doc_count": doc_count,
+                    "benchmark_key": spec.key if spec and root else None,
+                    "benchmark_name": spec.name if spec and root else None,
+                    "has_eval_questions": bool(spec and root),
                 })
 
     return jsonify(corpora)
+
+
+@app.route("/arena/api/questions")
+def api_questions():
+    corpus_path = request.args.get("corpus_path", "").strip()
+    benchmark_key = request.args.get("benchmark_key", "").strip() or None
+    if not corpus_path:
+        return jsonify({"questions": []})
+
+    spec, _, questions = _load_dataset_questions(corpus_path, benchmark_key=benchmark_key)
+    if not spec or spec.benchmark is None:
+        return jsonify({"questions": [], "benchmark_key": None, "benchmark_name": None})
+
+    bench = spec.benchmark
+    items = []
+    for idx, record in enumerate(questions):
+        question_text = bench.get_question_text(record) if bench.get_question_text else record.get("question", "")
+        if not question_text:
+            continue
+        items.append({
+            "index": idx,
+            "label": f"Q{idx + 1}: {question_text[:120]}",
+            "question": question_text,
+            "reference_preview": (bench.get_reference(record) if bench.get_reference else record.get("answer", ""))[:200],
+            "query_id": record.get("query_id"),
+        })
+
+    return jsonify({
+        "benchmark_key": spec.key,
+        "benchmark_name": spec.name,
+        "questions": items,
+    })
 
 
 def _ensure_preset(model_key: str) -> str:
@@ -658,9 +941,19 @@ def api_run():
     model_a = _ensure_preset(data.get("model_a", "glm-4.5-air-together"))
     model_b = _ensure_preset(data.get("model_b", "glm-4.5-air-together"))
     corpus_path = data.get("corpus_path", DEFAULT_CORPUS)
+    benchmark_key = data.get("benchmark_key")
+    question_index_raw = data.get("question_index")
     blind_mode = data.get("blind_mode", False)
     max_steps = data.get("max_steps", 10)
     top_k = data.get("top_k", 10)
+    question_index = None
+    if question_index_raw is not None and str(question_index_raw) != "":
+        try:
+            question_index = int(question_index_raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "question_index must be an integer"}), 400
+
+    eval_case = _extract_eval_case(corpus_path, benchmark_key, question_index)
 
     run_id = str(uuid.uuid4())[:12]
 
@@ -679,6 +972,9 @@ def api_run():
         "model_a": model_a,
         "model_b": model_b,
         "blind_mode": blind_mode,
+        "benchmark_key": eval_case.get("benchmark_key") if eval_case else benchmark_key,
+        "question_index": eval_case.get("question_index") if eval_case else question_index,
+        "eval_context": eval_case,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "status": "running",
         "results": {},
@@ -701,6 +997,33 @@ def api_run():
 
         run_record["results"]["a"] = result_a
         run_record["results"]["b"] = result_b
+
+        if eval_case:
+            try:
+                eq.put({
+                    "run_id": run_id,
+                    "event": "judge_status",
+                    "message": "Judge reviewing both answers...",
+                })
+                review = _judge_arena_answers(
+                    result_a.get("final_answer", ""),
+                    result_b.get("final_answer", ""),
+                    eval_case,
+                )
+                run_record["eval_review"] = review
+                eq.put({
+                    "run_id": run_id,
+                    "event": "judge_done",
+                    "review": review,
+                })
+            except Exception as exc:
+                run_record["eval_review"] = {"error": str(exc)}
+                eq.put({
+                    "run_id": run_id,
+                    "event": "judge_done",
+                    "review": {"error": str(exc)},
+                })
+
         run_record["status"] = "complete"
 
         # Persist full run (with steps) for trace viewer
@@ -899,6 +1222,9 @@ def api_share(run_id):
         "model_b": run.get("model_b", ""),
         "status": run.get("status", ""),
         "vote": run.get("vote"),
+        "benchmark_key": run.get("benchmark_key"),
+        "question_index": run.get("question_index"),
+        "eval_review": run.get("eval_review"),
     }
 
     if run.get("status") == "complete":
