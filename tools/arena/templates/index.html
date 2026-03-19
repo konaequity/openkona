@@ -1683,6 +1683,15 @@ body {
     if (side === 'a') state.doneA = true;
     if (side === 'b') state.doneB = true;
 
+    // Add final answer as a visible step card
+    if (data.final_answer && !data.error) {
+      appendStep(side, {
+        type: 'answer',
+        answer: data.final_answer,
+        step: data.num_steps || 0,
+      });
+    }
+
     if (data.error) {
       setStatus(side, 'error', 'Error');
     } else {
@@ -1793,20 +1802,21 @@ body {
 
     if (type === 'retrieval') {
       icon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
-      title = 'vector_search';
-      subtitle = 'Tool execution';
+      title = step.query ? `"${(step.query || '').substring(0, 60)}${(step.query || '').length > 60 ? '...' : ''}"` : 'Search';
+      subtitle = step.thought ? (step.thought || '').substring(0, 80).replace(/\n/g, ' ') + '...' : `${step.num_results || 0} results`;
       meta = `${step.num_results || 0} results`;
     } else if (type === 'reasoning') {
       icon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/><path d="M12 6v6l4 2"/></svg>`;
       const thought = step.thought || '';
+      title = 'Reasoning';
+      subtitle = thought.substring(0, 80).replace(/\n/g, ' ') + (thought.length > 80 ? '...' : '');
       const tokenEstimate = Math.round(thought.length / 4);
-      title = 'Internal Reasoning';
-      subtitle = `Step ${step.step}`;
       meta = `~${tokenEstimate} tokens`;
     } else if (type === 'answer') {
       icon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>`;
-      title = 'Assistant';
-      subtitle = 'Final answer';
+      title = 'Answer';
+      const ans = step.answer || '';
+      subtitle = ans.substring(0, 80).replace(/\n/g, ' ') + (ans.length > 80 ? '...' : '');
       meta = '';
     } else {
       icon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>`;
@@ -1844,37 +1854,49 @@ body {
     const type = step.type || 'unknown';
 
     if (type === 'retrieval') {
-      let html = `<div class="search-query"><span class="search-query-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>${escapeHtml(step.query || '')}</div>`;
-      html += '<div class="retrieval-results">';
+      let html = '';
+      // Show reasoning/thinking first
+      if (step.thought) {
+        html += `<div class="thought-text" style="margin-bottom:10px;">${escapeHtml(step.thought)}</div>`;
+      }
+      // Search query
+      html += `<div class="search-query"><span class="search-query-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>${escapeHtml(step.query || '')}</div>`;
+      // Results
       const results = step.results || [];
-      results.forEach((r, i) => {
-        const score = typeof r.score === 'number' ? r.score.toFixed(3) : '0.000';
-        const source = r.source || '';
-        const sourceShort = source.split('/').pop() || source;
-        html += `
-          <div class="retrieval-result">
-            <div class="retrieval-result-header">
-              <span class="retrieval-score">${score}</span>
-              <span class="retrieval-source" title="${escapeHtml(source)}">${escapeHtml(sourceShort)}</span>
+      if (results.length > 0) {
+        html += '<div class="retrieval-results">';
+        results.forEach((r, i) => {
+          const score = typeof r.score === 'number' ? r.score.toFixed(3) : '0.000';
+          const source = r.source || '';
+          const sourceShort = source.split('/').pop() || source;
+          html += `
+            <div class="retrieval-result">
+              <div class="retrieval-result-header">
+                <span class="retrieval-score">${score}</span>
+                <span class="retrieval-source" title="${escapeHtml(source)}">${escapeHtml(sourceShort)}</span>
+              </div>
+              ${escapeHtml(r.text || '')}
             </div>
-            ${escapeHtml(r.text || '')}
-          </div>
-        `;
-      });
-      html += '</div>';
-      return html;
-    }
-
-    if (type === 'reasoning') {
-      let html = `<div class="thought-text">${escapeHtml(step.thought || '')}</div>`;
-      if (step.sub_retrieval) {
-        html += `<div class="search-query" style="margin-top:8px;"><span class="search-query-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>Follow-up: ${escapeHtml(step.sub_retrieval.query || '')} (${step.sub_retrieval.num_results || 0} results)</div>`;
+          `;
+        });
+        html += '</div>';
+      } else {
+        html += `<div style="font-size:0.75rem;color:var(--text-muted);padding:6px 0;">${step.num_results || 0} results retrieved (expand in trace viewer for details)</div>`;
       }
       return html;
     }
 
+    if (type === 'reasoning') {
+      return `<div class="thought-text">${escapeHtml(step.thought || '')}</div>`;
+    }
+
     if (type === 'answer') {
-      return `<div class="answer-text">${escapeHtml(step.answer || '')}</div>`;
+      let html = '';
+      if (step.thought) {
+        html += `<div class="thought-text" style="margin-bottom:10px;">${escapeHtml(step.thought)}</div>`;
+      }
+      html += `<div class="answer-text">${escapeHtml(step.answer || '')}</div>`;
+      return html;
     }
 
     return `<pre style="white-space:pre-wrap;font-size:0.75rem;color:var(--text-muted);">${escapeHtml(JSON.stringify(step, null, 2))}</pre>`;
