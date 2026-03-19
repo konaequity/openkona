@@ -956,6 +956,30 @@ mark.search-highlight.active {
   color: var(--text-2);
   margin: 8px 0;
 }
+
+/* ── Run selector ───────────────────────────────────────── */
+.run-selector {
+  width: 100%;
+  padding: 6px 28px 6px 10px;
+  font-size: 12px;
+  font-family: var(--font);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-2);
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  cursor: pointer;
+  margin: 4px 14px 6px;
+  width: calc(100% - 28px);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.run-selector:hover { border-color: var(--text-3); }
+.run-selector:focus { border-color: var(--blue); }
 .md-content table {
   border-collapse: collapse;
   margin: 8px 0;
@@ -1071,8 +1095,9 @@ mark.search-highlight.active {
   // State
   // ----------------------------------------------------------------
   const state = {
-    benchmarks: [],
-    activeBenchmarkId: null,
+    benchmarks: [],          // [{benchmark_type, name, runs: [{run_id, model, timestamp, ...}]}]
+    activeRuns: {},          // {benchmark_type: run_id} — selected run per benchmark
+    activeBenchmarkId: null, // currently loaded run_id
     questions: [],
     activeQuestionIndex: null,
     expandedSteps: new Set(),
@@ -1123,6 +1148,36 @@ mark.search-highlight.active {
     if (seconds < 0.1) return '<0.1s';
     if (seconds < 60) return seconds.toFixed(1) + 's';
     return Math.floor(seconds / 60) + 'm ' + Math.round(seconds % 60) + 's';
+  }
+
+  function formatShortDate(isoString) {
+    if (!isoString) return '';
+    try {
+      const d = new Date(isoString);
+      if (isNaN(d.getTime())) return '';
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return months[d.getMonth()] + ' ' + d.getDate();
+    } catch (e) { return ''; }
+  }
+
+  function getSelectedRun(bm) {
+    const runId = state.activeRuns[bm.benchmark_type];
+    if (!bm.runs || bm.runs.length === 0) return null;
+    if (runId) {
+      const found = bm.runs.find(r => r.run_id === runId);
+      if (found) return found;
+    }
+    return bm.runs[0];
+  }
+
+  function runLabel(run) {
+    const model = run.model || '(unnamed)';
+    const date = formatShortDate(run.timestamp);
+    const acc = run.accuracy != null ? Math.round(run.accuracy * 100) + '%' : '';
+    const parts = [model];
+    if (date) parts.push(date);
+    if (acc) parts.push(acc);
+    return parts.join(' \u00b7 ');
   }
 
   function renderMarkdown(text) {
@@ -1256,6 +1311,14 @@ mark.search-highlight.active {
       if (!resp.ok) throw new Error('Failed to load benchmarks');
       const data = await resp.json();
       state.benchmarks = data.benchmarks || [];
+
+      // Default each benchmark to its first (newest) run, if not already set
+      state.benchmarks.forEach(bm => {
+        if (!state.activeRuns[bm.benchmark_type] && bm.runs && bm.runs.length > 0) {
+          state.activeRuns[bm.benchmark_type] = bm.runs[0].run_id;
+        }
+      });
+
       renderSidebar();
 
       // Check for deep link
@@ -1302,23 +1365,39 @@ mark.search-highlight.active {
     let html = '';
 
     state.benchmarks.forEach(bm => {
-      const isActive = bm.id === state.activeBenchmarkId;
-      const accuracy = bm.accuracy != null ? Math.round(bm.accuracy * 100) : 0;
-      const avgLat = bm.avg_latency != null ? bm.avg_latency.toFixed(1) + 's avg' : '';
+      const runs = bm.runs || [];
+      const selectedRun = getSelectedRun(bm);
+      const selectedRunId = selectedRun ? selectedRun.run_id : null;
+      const isActive = selectedRunId != null && selectedRunId === state.activeBenchmarkId;
 
-      html += `<div class="benchmark-group" data-bm-id="${escapeAttr(bm.id)}">`;
-      html += `<div class="benchmark-header" onclick="window._evalLoadBenchmark('${escapeAttr(bm.id)}')">`;
+      // Stats from selected run
+      const accuracy = selectedRun && selectedRun.accuracy != null ? Math.round(selectedRun.accuracy * 100) : 0;
+      const numQ = selectedRun ? (selectedRun.num_questions || 0) : 0;
+      const avgLat = selectedRun && selectedRun.avg_latency != null ? selectedRun.avg_latency.toFixed(1) + 's avg' : '';
+
+      html += `<div class="benchmark-group" data-bm-type="${escapeAttr(bm.benchmark_type)}">`;
+      html += `<div class="benchmark-header" onclick="window._evalLoadBenchmark('${escapeAttr(bm.benchmark_type)}')">`;
       html += `<div class="benchmark-name">`;
       html += `<span>${escapeHtml(bm.name)}</span>`;
       html += `</div>`;
       html += `<div class="benchmark-stats">`;
-      html += `${bm.num_questions} q &middot; ${accuracy}%`;
+      html += `${numQ} q &middot; ${accuracy}%`;
       if (avgLat) html += ` &middot; ${avgLat}`;
       html += `<div class="benchmark-progress-bar"><div class="benchmark-progress-fill" style="width:${accuracy}%"></div></div>`;
       html += `</div>`;
       html += `</div>`;
 
-      // Show questions if this benchmark is active
+      // Run selector dropdown (only if multiple runs)
+      if (runs.length > 1) {
+        html += `<select class="run-selector" data-bm-type="${escapeAttr(bm.benchmark_type)}" onchange="window._evalSelectRun('${escapeAttr(bm.benchmark_type)}', this.value)">`;
+        runs.forEach(run => {
+          const selected = run.run_id === selectedRunId ? ' selected' : '';
+          html += `<option value="${escapeAttr(run.run_id)}"${selected}>${escapeHtml(runLabel(run))}</option>`;
+        });
+        html += '</select>';
+      }
+
+      // Show questions if this benchmark's selected run is active
       if (isActive && state.questions.length > 0) {
         html += '<div class="question-list">';
         state.questions.forEach((q, i) => {
@@ -1353,8 +1432,15 @@ mark.search-highlight.active {
   // ----------------------------------------------------------------
   // Load benchmark
   // ----------------------------------------------------------------
-  window._evalLoadBenchmark = async function(benchmarkId) {
-    if (state.activeBenchmarkId === benchmarkId) {
+  window._evalLoadBenchmark = async function(benchmarkType) {
+    const bm = state.benchmarks.find(b => b.benchmark_type === benchmarkType);
+    if (!bm) return;
+
+    const selectedRun = getSelectedRun(bm);
+    if (!selectedRun) return;
+    const runId = selectedRun.run_id;
+
+    if (state.activeBenchmarkId === runId) {
       // Toggle collapse
       state.activeBenchmarkId = null;
       state.questions = [];
@@ -1363,7 +1449,26 @@ mark.search-highlight.active {
       showEmptyState();
       return;
     }
-    await fetchBenchmarkQuestions(benchmarkId);
+    await fetchBenchmarkQuestions(runId);
+  };
+
+  window._evalSelectRun = async function(benchmarkType, runId) {
+    state.activeRuns[benchmarkType] = runId;
+
+    // If a question was selected from this benchmark, clear it
+    const bm = state.benchmarks.find(b => b.benchmark_type === benchmarkType);
+    if (bm) {
+      const oldRunIds = (bm.runs || []).map(r => r.run_id);
+      if (oldRunIds.includes(state.activeBenchmarkId)) {
+        // The previously active run belongs to this benchmark — reload
+        state.activeQuestionIndex = null;
+        showEmptyState();
+        await fetchBenchmarkQuestions(runId);
+      } else {
+        // Just re-render sidebar to update stats
+        renderSidebar();
+      }
+    }
   };
 
   // ----------------------------------------------------------------
@@ -2012,13 +2117,21 @@ mark.search-highlight.active {
 
     const parts = hash.substring(1).split('/').filter(Boolean);
     if (parts.length >= 2) {
-      const bmId = decodeURIComponent(parts[0]);
+      const runId = decodeURIComponent(parts[0]);
       const qIdx = parseInt(parts[1]);
 
-      // Find benchmark
-      const bm = state.benchmarks.find(b => b.id === bmId);
-      if (bm) {
-        fetchBenchmarkQuestions(bmId).then(() => {
+      // Find the benchmark containing this run_id
+      let foundBm = null;
+      for (const bm of state.benchmarks) {
+        if (bm.runs && bm.runs.some(r => r.run_id === runId)) {
+          foundBm = bm;
+          break;
+        }
+      }
+      if (foundBm) {
+        // Set this run as the active run for its benchmark
+        state.activeRuns[foundBm.benchmark_type] = runId;
+        fetchBenchmarkQuestions(runId).then(() => {
           if (!isNaN(qIdx)) {
             window._evalLoadQuestion(qIdx);
           }

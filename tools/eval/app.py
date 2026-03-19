@@ -3,6 +3,9 @@
 A Flask app for viewing eval results from FinanceBench, QAMPARI, and other
 benchmark runs. Supports lazy-loading of large tool results and file upload.
 
+Multiple eval files for the same benchmark are grouped together as "runs",
+enabling side-by-side comparison of different models or configurations.
+
 Run:
     python tools/eval/app.py
 
@@ -13,9 +16,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Path setup
@@ -91,12 +96,109 @@ def _load_eval_file(filepath: Path) -> Optional[Dict[str, Any]]:
     return data
 
 
-def _discover_benchmarks() -> Dict[str, Dict[str, Any]]:
-    """Scan all configured directories for eval JSON files.
+# ---------------------------------------------------------------------------
+# Benchmark grouping helpers
+# ---------------------------------------------------------------------------
 
-    Returns a dict mapping benchmark_id -> {"file": Path, "data": dict}.
+# Pattern to strip trailing _eval, _YYYYMMDD, _YYYYMMDD_HHMMSS suffixes
+_FILENAME_SUFFIX_RE = re.compile(
+    r"(?:_eval)?(?:_\d{8}(?:_\d{6})?)?$"
+)
+
+# Common model name fragments to strip when deriving benchmark type from filename
+_MODEL_FRAGMENTS = [
+    "glm45air", "glm45", "glm5", "glm4", "qwen3", "qwen",
+    "gpt4o", "gpt4omini", "gpt4", "gpt3",
+    "claude", "gemini", "llama", "mistral",
+]
+
+
+def _extract_benchmark_type(data: Dict[str, Any], filename_stem: str) -> str:
+    """Extract a normalized benchmark type key for grouping.
+
+    Tries the JSON ``benchmark`` field first; falls back to deriving from
+    the filename by stripping model names, ``_eval``, and date suffixes.
     """
-    benchmarks: Dict[str, Dict[str, Any]] = {}
+    benchmark_field = data.get("benchmark")
+    if benchmark_field and isinstance(benchmark_field, str):
+        return benchmark_field.lower().replace(" ", "").replace("-", "")
+
+    # Derive from filename: strip date/eval suffixes, then model fragments
+    stem = _FILENAME_SUFFIX_RE.sub("", filename_stem.lower())
+    for frag in _MODEL_FRAGMENTS:
+        stem = stem.replace(frag, "")
+    # Clean up leftover underscores
+    stem = re.sub(r"_+", "_", stem).strip("_")
+    return stem or filename_stem.lower()
+
+
+def _extract_model_display(data: Dict[str, Any]) -> Optional[str]:
+    """Extract a short model display name from the data's ``model`` field."""
+    model = data.get("model")
+    if not model or not isinstance(model, str):
+        return None
+    # If it's a path like "zai-org/GLM-5", show just the last part
+    if "/" in model:
+        return model.rsplit("/", 1)[-1]
+    return model
+
+
+def _extract_timestamp(data: Dict[str, Any], filepath: Path) -> Optional[str]:
+    """Extract an ISO timestamp string.
+
+    Uses the JSON ``timestamp`` field if present, otherwise returns None
+    (file mtime is used only for sorting, not exposed as the timestamp).
+    """
+    ts = data.get("timestamp")
+    if ts and isinstance(ts, str):
+        return ts
+    return None
+
+
+def _get_sort_key(data: Dict[str, Any], filepath: Path) -> float:
+    """Return a numeric sort key (higher = newer) for ordering runs."""
+    ts = data.get("timestamp")
+    if ts and isinstance(ts, str):
+        try:
+            dt = datetime.fromisoformat(ts)
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            pass
+    # Fall back to file mtime
+    try:
+        return filepath.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _discover_all() -> Dict[str, Dict[str, Any]]:
+    """Scan for eval files, group by benchmark type.
+
+    Returns::
+
+        {
+            "financebench": {
+                "name": "FinanceBench",
+                "benchmark_type": "financebench",
+                "runs": [
+                    {
+                        "run_id": "financebench_eval",
+                        "file": Path(...),
+                        "data": {...},
+                        "model": "...",
+                        "timestamp": "...",
+                    },
+                    ...
+                ]
+            },
+            ...
+        }
+
+    Runs within each benchmark are sorted newest-first.
+    """
+    # Collect all valid eval files, keyed by run_id (filename stem).
+    # Earlier scan dirs take priority for duplicate stems.
+    all_runs: Dict[str, Dict[str, Any]] = {}
 
     for scan_dir in _SCAN_DIRS:
         if not scan_dir.exists():
@@ -105,15 +207,53 @@ def _discover_benchmarks() -> Dict[str, Dict[str, Any]]:
             data = _load_eval_file(json_file)
             if data is None:
                 continue
-            benchmark_id = json_file.stem
-            # If we already have this id from an earlier scan dir, skip
-            if benchmark_id not in benchmarks:
-                benchmarks[benchmark_id] = {
+            run_id = json_file.stem
+            if run_id not in all_runs:
+                all_runs[run_id] = {
+                    "run_id": run_id,
                     "file": json_file,
                     "data": data,
                 }
 
-    return benchmarks
+    # Group by benchmark type
+    grouped: Dict[str, Dict[str, Any]] = {}
+
+    for run_id, run_entry in all_runs.items():
+        data = run_entry["data"]
+        filepath = run_entry["file"]
+
+        btype = _extract_benchmark_type(data, run_id)
+
+        if btype not in grouped:
+            grouped[btype] = {
+                "name": _derive_name(data, run_id),
+                "benchmark_type": btype,
+                "runs": [],
+            }
+
+        run_entry["model"] = _extract_model_display(data)
+        run_entry["timestamp"] = _extract_timestamp(data, filepath)
+        run_entry["_sort_key"] = _get_sort_key(data, filepath)
+        grouped[btype]["runs"].append(run_entry)
+
+    # Sort runs within each benchmark: newest first
+    for btype, group in grouped.items():
+        group["runs"].sort(key=lambda r: r["_sort_key"], reverse=True)
+
+    return grouped
+
+
+def _find_run(run_id: str) -> Optional[Dict[str, Any]]:
+    """Look up a single run by its run_id across all benchmarks.
+
+    Returns the run entry dict or None.
+    """
+    grouped = _discover_all()
+    for group in grouped.values():
+        for run in group["runs"]:
+            if run["run_id"] == run_id:
+                return run
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +350,40 @@ def _build_question(index: int, detail: Dict[str, Any], lightweight: bool = True
     }
 
 
+def _build_run_summary(run: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a summary dict for a single run (used in benchmarks listing)."""
+    data = run["data"]
+    details = data.get("single_details", [])
+    single_summary = data.get("single", {})
+
+    num_questions = data.get("num_questions", len(details))
+    accuracy = single_summary.get("accuracy", 0.0)
+    avg_score = single_summary.get("avg_score", accuracy)
+    avg_latency = single_summary.get("avg_latency", 0.0)
+    total_time = single_summary.get("total_time", 0.0)
+
+    pass_count = 0
+    fail_count = 0
+    for d in details:
+        if d.get("score", 0.0) >= 0.6:
+            pass_count += 1
+        else:
+            fail_count += 1
+
+    return {
+        "run_id": run["run_id"],
+        "model": run.get("model"),
+        "timestamp": run.get("timestamp"),
+        "num_questions": num_questions,
+        "accuracy": round(accuracy, 4),
+        "avg_score": round(avg_score, 4),
+        "avg_latency": round(avg_latency, 2),
+        "pass_count": pass_count,
+        "fail_count": fail_count,
+        "total_time": round(total_time, 2),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -222,57 +396,33 @@ def index():
 
 @app.route("/eval/api/benchmarks")
 def api_benchmarks():
-    """List all discovered benchmarks with summary stats."""
-    benchmarks_map = _discover_benchmarks()
+    """List all discovered benchmarks grouped by type, each with its runs."""
+    grouped = _discover_all()
     result = []
 
-    for benchmark_id, entry in benchmarks_map.items():
-        data = entry["data"]
-        source_file = str(entry["file"])
-        details = data.get("single_details", [])
-        single_summary = data.get("single", {})
-
-        num_questions = data.get("num_questions", len(details))
-        accuracy = single_summary.get("accuracy", 0.0)
-        avg_score = single_summary.get("avg_score", accuracy)
-        avg_latency = single_summary.get("avg_latency", 0.0)
-        total_time = single_summary.get("total_time", 0.0)
-
-        # Compute pass/fail counts
-        pass_count = 0
-        fail_count = 0
-        for d in details:
-            if d.get("score", 0.0) >= 0.6:
-                pass_count += 1
-            else:
-                fail_count += 1
-
+    for btype, group in sorted(grouped.items()):
+        runs_summary = [_build_run_summary(run) for run in group["runs"]]
         result.append({
-            "id": benchmark_id,
-            "name": _derive_name(data, benchmark_id),
-            "benchmark_type": (data.get("benchmark") or benchmark_id).lower().replace(" ", ""),
-            "source_file": source_file,
-            "num_questions": num_questions,
-            "accuracy": round(accuracy, 4),
-            "avg_score": round(avg_score, 4),
-            "avg_latency": round(avg_latency, 2),
-            "pass_count": pass_count,
-            "fail_count": fail_count,
-            "total_time": round(total_time, 2),
+            "benchmark_type": group["benchmark_type"],
+            "name": group["name"],
+            "runs": runs_summary,
         })
 
     return jsonify({"benchmarks": result})
 
 
-@app.route("/eval/api/benchmark/<benchmark_id>")
-def api_benchmark(benchmark_id: str):
-    """Return all questions with reasoning but NO tool_results (hybrid loading)."""
-    benchmarks_map = _discover_benchmarks()
-    entry = benchmarks_map.get(benchmark_id)
-    if not entry:
-        return jsonify({"error": f"Benchmark '{benchmark_id}' not found"}), 404
+@app.route("/eval/api/benchmark/<run_id>")
+def api_benchmark(run_id: str):
+    """Return all questions for a specific run (by run_id).
 
-    data = entry["data"]
+    The run_id is the filename stem (e.g. ``financebench_eval``).
+    Response format is unchanged from the previous per-benchmark endpoint.
+    """
+    run = _find_run(run_id)
+    if not run:
+        return jsonify({"error": f"Run '{run_id}' not found"}), 404
+
+    data = run["data"]
     details = data.get("single_details", [])
     single_summary = data.get("single", {})
 
@@ -282,22 +432,21 @@ def api_benchmark(benchmark_id: str):
     ]
 
     return jsonify({
-        "benchmark_id": benchmark_id,
-        "name": _derive_name(data, benchmark_id),
+        "benchmark_id": run_id,
+        "name": _derive_name(data, run_id),
         "accuracy": round(single_summary.get("accuracy", 0.0), 4),
         "questions": questions,
     })
 
 
-@app.route("/eval/api/benchmark/<benchmark_id>/question/<int:q_index>/step/<int:step_index>/tool_result")
-def api_tool_result(benchmark_id: str, q_index: int, step_index: int):
+@app.route("/eval/api/benchmark/<run_id>/question/<int:q_index>/step/<int:step_index>/tool_result")
+def api_tool_result(run_id: str, q_index: int, step_index: int):
     """Lazy-load a single step's full tool result."""
-    benchmarks_map = _discover_benchmarks()
-    entry = benchmarks_map.get(benchmark_id)
-    if not entry:
-        return jsonify({"error": f"Benchmark '{benchmark_id}' not found"}), 404
+    run = _find_run(run_id)
+    if not run:
+        return jsonify({"error": f"Run '{run_id}' not found"}), 404
 
-    data = entry["data"]
+    data = run["data"]
     details = data.get("single_details", [])
 
     if q_index < 0 or q_index >= len(details):
@@ -329,7 +478,7 @@ def api_tool_result(benchmark_id: str, q_index: int, step_index: int):
 
 @app.route("/eval/api/upload", methods=["POST"])
 def api_upload():
-    """Accept eval JSON upload, save to tools/eval/data/, return benchmark_id."""
+    """Accept eval JSON upload, save to tools/eval/data/, return run_id."""
     if request.is_json:
         data = request.get_json()
     else:
@@ -364,8 +513,8 @@ def api_upload():
     with open(filepath, "w") as f:
         json.dump(data, f)
 
-    benchmark_id = filepath.stem
-    return jsonify({"status": "ok", "benchmark_id": benchmark_id})
+    run_id = filepath.stem
+    return jsonify({"status": "ok", "run_id": run_id, "benchmark_id": run_id})
 
 
 # ---------------------------------------------------------------------------
@@ -380,12 +529,17 @@ if __name__ == "__main__":
     print(f"  Data dir:      {DATA_DIR}")
 
     # Show discovered benchmarks
-    benchmarks = _discover_benchmarks()
-    if benchmarks:
-        print(f"  Benchmarks:    {len(benchmarks)} found")
-        for bid, entry in benchmarks.items():
-            n = len(entry["data"].get("single_details", []))
-            print(f"    - {bid} ({n} questions) from {entry['file']}")
+    grouped = _discover_all()
+    if grouped:
+        total_runs = sum(len(g["runs"]) for g in grouped.values())
+        print(f"  Benchmarks:    {len(grouped)} types, {total_runs} runs")
+        for btype, group in sorted(grouped.items()):
+            print(f"    [{group['name']}]")
+            for run in group["runs"]:
+                n = len(run["data"].get("single_details", []))
+                model = run.get("model") or "unknown model"
+                ts = run.get("timestamp") or "no timestamp"
+                print(f"      - {run['run_id']} ({n} questions, {model}, {ts}) from {run['file']}")
     else:
         print(f"  Benchmarks:    none found (add eval JSON files)")
 

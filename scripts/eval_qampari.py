@@ -456,11 +456,13 @@ def main():
     console.print()
 
     # Step 7: Save results
+    from datetime import datetime, timezone
+
     results_dir = "eval_results"
     os.makedirs(results_dir, exist_ok=True)
 
     output = {
-        "model": args.model,
+        "model": solver_model,
         "benchmark": "QAMPARI",
         "num_questions": len(questions),
         "single": {k: v for k, v in baseline.items() if k != "results"},
@@ -470,9 +472,31 @@ def main():
         output["parallel"] = {k: v for k, v in parallel.items() if k != "results"}
         output["parallel_details"] = parallel["results"]
 
-    out_path = os.path.join(results_dir, "qampari_eval.json")
+    output["run_id"] = f"qampari_{solver_model.split('/')[-1]}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    output["timestamp"] = datetime.now(timezone.utc).isoformat()
+    output["provider"] = provider
+
+    # Timestamped filename
+    safe_model = solver_model.split("/")[-1].lower().replace(" ", "_")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"qampari_{safe_model}_{timestamp}.json"
+    out_path = os.path.join(results_dir, filename)
+
     with open(out_path, "w") as f:
         json.dump(output, f, indent=2, default=str)
+
+    # Also save/update a "latest" symlink for backward compat
+    latest_path = os.path.join(results_dir, "qampari_eval.json")
+    try:
+        if os.path.islink(latest_path):
+            os.unlink(latest_path)
+        elif os.path.exists(latest_path):
+            # First run: rename the existing file to timestamped, then symlink
+            pass  # don't overwrite, the new file is already saved
+        os.symlink(os.path.basename(out_path), latest_path)
+    except OSError:
+        pass  # symlink might fail on some systems
+
     console.print(f"  [dim]Results saved to {out_path}[/]")
     console.print()
 
