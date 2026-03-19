@@ -251,13 +251,13 @@ class Corpus:
         if not model or model == "":
             return
 
+        # Try local embedding model first, fall back to HF Inference API
+        loaded = False
         if "0.6B" in model or "0.6b" in model:
             # Small model — load on CPU to avoid GPU memory conflicts
-            # (vLLM or FAISS may already be using GPU)
             try:
                 from konash.retrieval.vector_search import load_embedding_model
                 local_fn = load_embedding_model(model, device="cpu")
-                # Verify dimensions match the index
                 test = local_fn(["test"])
                 index_dim = (
                     self.vector_search._vectors.shape[-1]
@@ -267,16 +267,18 @@ class Corpus:
                 if index_dim is None or test.shape[-1] == index_dim:
                     self.vector_search.embed_fn = local_fn
                     self.embed_fn = local_fn
+                    loaded = True
             except Exception:
-                pass
-        elif "qwen3" in model.lower():
+                pass  # Fall through to HF Inference API
+
+        if not loaded and "qwen3" in model.lower():
             try:
-                self._set_qwen3_query_fn()
+                self._set_qwen3_query_fn(model)
             except Exception:
                 pass  # Fall back to whatever was configured
 
-    def _set_qwen3_query_fn(self) -> None:
-        """Set query embed_fn to Qwen3-Embedding-8B via HF Inference API."""
+    def _set_qwen3_query_fn(self, model_name: str = "") -> None:
+        """Set query embed_fn to Qwen3-Embedding via HF Inference API."""
         import json as _json
         from huggingface_hub import InferenceClient
 
@@ -289,12 +291,22 @@ class Corpus:
         client = InferenceClient(api_key=hf_token)
         hf_model = "Qwen/Qwen3-Embedding-8B"
 
+        # Determine target dim from loaded index vectors for Matryoshka truncation
+        target_dim = None
+        if hasattr(self.vector_search, "_vectors") and self.vector_search._vectors is not None:
+            target_dim = self.vector_search._vectors.shape[-1]
+
         def query_fn(texts):
             all_embs = []
             for i in range(0, len(texts), 100):
                 batch = texts[i : i + 100]
                 r = client.feature_extraction(batch, model=hf_model)
-                all_embs.append(np.array(r, dtype=np.float32))
+                emb = np.array(r, dtype=np.float32)
+                if target_dim and emb.shape[-1] > target_dim:
+                    emb = emb[..., :target_dim]
+                    norms = np.linalg.norm(emb, axis=-1, keepdims=True)
+                    emb = emb / np.where(norms == 0, 1, norms)
+                all_embs.append(emb)
             return np.vstack(all_embs) if len(all_embs) > 1 else all_embs[0]
 
         self.vector_search.embed_fn = query_fn

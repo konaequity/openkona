@@ -1658,7 +1658,12 @@ body {
   }
 
   function handleEvent(data) {
-    if (data.event === 'step') {
+    if (data.event === 'status') {
+      setStatus(data.side, 'running', data.message || 'Running...');
+      const timingEl = data.side === 'a' ? colATiming : colBTiming;
+      timingEl.textContent = data.elapsed ? `${data.elapsed}s` : '';
+    } else if (data.event === 'step') {
+      setStatus(data.side, 'running', 'Running...');
       appendStep(data.side, data.step);
       if (data.ttft !== null && data.ttft !== undefined) {
         const timingEl = data.side === 'a' ? colATiming : colBTiming;

@@ -288,7 +288,7 @@ def _run_agent(
     max_steps: int = 10,
     top_k: int = 10,
 ):
-    """Run a single agent and stream step events to the queue.
+    """Run a single agent using Agent.solve() — same path as eval scripts.
 
     If corpus_path is None or points to a missing/empty directory,
     falls back to direct LLM mode (no retrieval).
@@ -309,45 +309,115 @@ def _run_agent(
     final_answer = ""
     error_msg = None
 
+    def _emit_status(message: str):
+        event_queue.put({
+            "run_id": run_id, "side": side, "event": "status",
+            "message": message, "elapsed": round(time.time() - t_start, 2),
+        })
+
     try:
         preset_cfg = MODEL_PRESETS.get(preset_name)
         if not preset_cfg:
             raise ValueError(f"Unknown preset: {preset_name}")
 
-        corpus = _get_corpus(corpus_path)
-        llm_fn = _make_llm_fn(preset_cfg)
+        model_id = preset_cfg["base_model"]
+        api_base = preset_cfg.get("api_base")
+        api_key_env = preset_cfg.get("api_key_env", "")
+        api_key = os.environ.get(api_key_env, "") or _load_konash_api_key(api_key_env)
 
-        def on_step(qa_idx, rollout_idx, step_idx, step_record):
-            nonlocal ttft
-            if ttft is None:
-                ttft = time.time() - t_start
+        corpus_name = Path(corpus_path).name if corpus_path else "corpus"
+        _emit_status(f"Loading {corpus_name} corpus...")
 
-            step_event = {
-                "run_id": run_id,
-                "side": side,
-                "event": "step",
-                "step": _serialize_step(step_record),
-                "elapsed": round(time.time() - t_start, 2),
-                "ttft": round(ttft, 2) if ttft else None,
-            }
-            steps_out.append(step_event["step"])
-            event_queue.put(step_event)
-
-        generator = RolloutGenerator(
-            max_steps=max_steps,
-            top_k=top_k,
-            search_tool=corpus,
-            llm_fn=llm_fn,
-            on_step=on_step,
+        # Use Agent — same as eval scripts. Handles embedding alignment, etc.
+        agent = Agent(
+            base_model=model_id,
+            corpus=corpus_path,
+            project=f"arena-{side}",
+            api_base=api_base,
+            api_key=api_key,
         )
 
-        rollout = generator.generate_single(
-            prompt=question,
-            rollout_id=0,
-            qa_idx=0,
+        if not agent.corpus.indexed:
+            agent.corpus.ingest()
+        doc_count = len(agent.corpus.documents) if hasattr(agent.corpus, "documents") else 0
+        _emit_status(f"Corpus ready ({doc_count:,} docs). Searching...")
+
+        # Plugin that streams steps to SSE as they happen
+        class _SSEStepPlugin:
+            def after_step(self, step_index, history, step_result):
+                nonlocal ttft
+                if ttft is None:
+                    ttft = time.time() - t_start
+                step_data = _serialize_step(step_result)
+                steps_out.append(step_data)
+                event_queue.put({
+                    "run_id": run_id, "side": side, "event": "step",
+                    "step": step_data,
+                    "elapsed": round(time.time() - t_start, 2),
+                    "ttft": round(ttft, 2),
+                })
+
+        # Inject the SSE plugin into the agent's solve() call
+        from konash.harness.environment import Environment
+        from konash.plugins.control import StepBudgetPlugin
+
+        base_agent = agent._make_agent(max_steps=max_steps)
+
+        def _extract_tool_query(tool_call):
+            if not isinstance(tool_call, dict):
+                return str(tool_call)
+            q = tool_call.get("query", "") or tool_call.get("input", "")
+            if q:
+                return str(q)
+            fn = tool_call.get("function")
+            if isinstance(fn, dict):
+                args = fn.get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        return args
+                if isinstance(args, dict):
+                    return str(args.get("query", "") or args.get("input", "") or args)
+            return str(tool_call)
+
+        def tool_executor(tool_call):
+            query_text = _extract_tool_query(tool_call)
+            results = agent.corpus.search(query_text, top_k=top_k)
+            result_text = "\n\n".join(
+                f"[{i+1}] (score: {r.get('score', 0):.3f}) [{os.path.basename(r.get('source', ''))}] {r.get('text', '')}"
+                for i, r in enumerate(results)
+            )
+            obs = {"role": "tool", "content": result_text}
+            if isinstance(tool_call, dict) and tool_call.get("id"):
+                obs["tool_call_id"] = tool_call["id"]
+            return obs
+
+        env = Environment(
+            tool_executor=tool_executor,
+            plugins=[
+                _SSEStepPlugin(),
+                StepBudgetPlugin(max_steps=max_steps),
+            ],
+            available_tools=[{
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "Search the knowledge base for relevant documents.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string", "description": "Search query"}},
+                        "required": ["query"],
+                    },
+                },
+            }],
         )
 
-        final_answer = rollout.final_answer or ""
+        formatted_query = agent._format_solver_prompt(question)
+        env.reset(prompt=formatted_query)
+        episode = env.run_episode(agent=base_agent, max_steps=max_steps)
+
+        final_answer = episode.get("final_answer", "") or ""
         if ttft is None:
             ttft = time.time() - t_start
 
@@ -381,7 +451,60 @@ def _run_agent(
 
 
 def _serialize_step(step: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert a rollout step dict into a JSON-safe representation for the UI."""
+    """Convert a rollout step dict into a JSON-safe representation for the UI.
+
+    Handles two formats:
+    - RolloutGenerator: {type, query, thought, results, ...}
+    - Agent.solve() trajectory: {agent_response, tool_results, done, step_index}
+    """
+    # Detect Agent.solve() trajectory format
+    if "agent_response" in step:
+        ar = step.get("agent_response", {})
+        tool_calls = ar.get("tool_calls", [])
+        tool_results = step.get("tool_results", [])
+        done = step.get("done", False)
+        reasoning = ar.get("reasoning_content") or ""
+        content = ar.get("content", "") or ""
+
+        if tool_calls:
+            # Search step
+            tc = tool_calls[0]
+            fn = tc.get("function", {})
+            fn_args = fn.get("arguments", {})
+            if isinstance(fn_args, str):
+                try:
+                    fn_args = json.loads(fn_args)
+                except (json.JSONDecodeError, ValueError):
+                    fn_args = {"query": fn_args}
+            query = fn_args.get("query", str(fn_args)) if isinstance(fn_args, dict) else str(fn_args)
+
+            # Count results from tool_results content
+            result_text = tool_results[0].get("content", "") if tool_results else ""
+            num_results = result_text.count("\n[") + (1 if result_text.startswith("[") else 0)
+
+            return {
+                "step": step.get("step_index", 0),
+                "type": "retrieval",
+                "query": query,
+                "num_results": num_results,
+                "thought": reasoning or content,
+                "results": [],  # Full results available via tool_result endpoint
+            }
+        elif done:
+            return {
+                "step": step.get("step_index", 0),
+                "type": "answer",
+                "answer": content,
+                "thought": reasoning,
+            }
+        else:
+            return {
+                "step": step.get("step_index", 0),
+                "type": "reasoning",
+                "thought": reasoning or content,
+            }
+
+    # Original RolloutGenerator format
     out: Dict[str, Any] = {
         "step": step.get("step", 0),
         "type": step.get("type", "unknown"),
