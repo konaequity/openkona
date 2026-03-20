@@ -30,6 +30,7 @@ from konash.synthesis.rollouts import RolloutGenerator
 from konash.training.dataset import OfflineRolloutDataset
 from konash.training.oapl import OAPLTrainer
 from konash.training.iteration import IterativeTrainingPipeline
+from konash.training.project_state import build_dataset_spec, suggest_project_name
 from konash.models import ModelPreset, get_model_presets
 
 
@@ -234,7 +235,7 @@ class Agent:
         base_model: str,
         corpus: str | Path | Corpus,
         *,
-        project: str = "default",
+        project: str | None = None,
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
         inference_api_base: Optional[str] = None,
@@ -257,7 +258,9 @@ class Agent:
         dtype: str = "auto",
     ) -> None:
         self.base_model = base_model
-        self.project = project
+        corpus_path = corpus.path if isinstance(corpus, Corpus) else Path(corpus)
+        auto_project = suggest_project_name(base_model, build_dataset_spec([str(corpus_path)]))
+        self.project = project or auto_project
         self.temperature = temperature
         self._use_unsloth = use_unsloth
         self._load_in_fp8 = load_in_fp8
@@ -277,7 +280,7 @@ class Agent:
                 embed_fn = self._make_embed_fn()
             # Cache embeddings next to checkpoint dir for instant reload
             _ckpt = checkpoint_dir or os.path.join(
-                os.path.expanduser("~/.konash/projects"), project, "checkpoints"
+                os.path.expanduser("~/.konash/projects"), self.project, "checkpoints"
             )
             _cache_dir = os.path.join(_ckpt, "index_cache")
             self.corpus = Corpus(
@@ -292,7 +295,7 @@ class Agent:
 
         # Checkpoints
         self.checkpoint_dir = checkpoint_dir or os.path.join(
-            os.path.expanduser("~/.konash/projects"), project, "checkpoints"
+            os.path.expanduser("~/.konash/projects"), self.project, "checkpoints"
         )
 
         # Model config (for local loading)
@@ -863,7 +866,7 @@ class Agent:
             return generate_fn(messages, **kwargs)
 
         synthesizer = QuestionAnswerSynthesizer(
-            vector_search_tool=self.corpus.vector_search,
+            vector_search_tool=self.corpus,
             llm_fn=_synthesis_fn,
             few_shot_examples=few_shot_examples,
         )
@@ -910,6 +913,7 @@ class Agent:
             _synth_lock = threading.Lock()
             _latest_q = [""]
             _latest_a = [""]
+            _synth_started_at = time.monotonic()
 
             def _build_display() -> _Table:
                 outer = _Table(
@@ -921,6 +925,9 @@ class Agent:
                 bar_w = 32
                 filled = bar_w * done // synthesis_calls if synthesis_calls else 0
                 bar = f"[cyan]{'━' * filled}[/][dim]{'─' * (bar_w - filled)}[/]"
+                elapsed = max(time.monotonic() - _synth_started_at, 0.0)
+                pending = max(synthesis_calls - done, 0)
+                active = min(workers, pending)
 
                 outer.add_row(Text("  Synthesizing QA pairs", style="bold"))
                 outer.add_row(Text(""))
@@ -928,6 +935,16 @@ class Agent:
                     f"    {bar}  [dim]{done}/{synthesis_calls}[/]  "
                     f"[bold]{len(all_raw)}[/] pairs  [dim]{pct}%[/]"
                 ))
+                if pending > 0:
+                    outer.add_row(Text.from_markup(
+                        "    [cyan]●[/]  "
+                        f"[dim]Calling {self.base_model} for {active} active synthesis "
+                        f"{'request' if active == 1 else 'requests'} · "
+                        f"{elapsed:.1f}s elapsed[/]"
+                    ))
+                    outer.add_row(Text.from_markup(
+                        "    [dim]Waiting for question/answer generation to return from the model...[/]"
+                    ))
 
                 if _latest_q[0]:
                     q = _latest_q[0][:90]
@@ -1026,11 +1043,11 @@ class Agent:
         pipeline = SynthesisPipeline(
             config=SynthesisTaskConfig(task_name=self._task_name),
             synthesizer=QuestionAnswerSynthesizer(
-                vector_search_tool=self.corpus.vector_search,
+                vector_search_tool=self.corpus,
                 llm_fn=_synthesis_fn,
             ),
             rollout_generator=RolloutGenerator(
-                search_tool=self.corpus.vector_search,
+                search_tool=self.corpus,
                 llm_fn=_rollout_fn,
             ),
         )
@@ -1078,14 +1095,14 @@ class Agent:
             return generate_fn(messages, **kwargs)
 
         rollout_gen = RolloutGenerator(
-            search_tool=self.corpus.vector_search,
+            search_tool=self.corpus,
             llm_fn=_rollout_fn,
             max_steps=rollout_max_steps,
         )
         pipeline = SynthesisPipeline(
             config=SynthesisTaskConfig(task_name=self._task_name),
             synthesizer=QuestionAnswerSynthesizer(
-                vector_search_tool=self.corpus.vector_search,
+                vector_search_tool=self.corpus,
                 llm_fn=_rollout_fn,
             ),
             rollout_generator=rollout_gen,

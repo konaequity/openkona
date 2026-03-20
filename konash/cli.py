@@ -11,6 +11,17 @@ import webbrowser
 
 from konash.benchmarks import get_dataset, list_datasets
 from konash.models import CliModelOption, get_cli_models
+from konash.training.project_state import (
+    LEGACY_DEFAULT_PROJECT,
+    archive_legacy_default_project,
+    archive_project_run_state,
+    assess_project_reuse,
+    begin_training_run,
+    build_dataset_spec,
+    mark_training_run_status,
+    suggest_project_name,
+    TrainingRunConfig,
+)
 from rich import box
 from rich.console import Console
 from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
@@ -141,6 +152,22 @@ SCALE_PRESETS = [
 ]
 
 DEFAULT_SCALE_PRESET = SCALE_PRESETS[0]
+
+
+def _resolve_dataset_aliases() -> dict[str, tuple[str, str]]:
+    aliases: dict[str, tuple[str, str]] = {}
+    for ds in DATASETS:
+        root = os.path.realpath(os.path.expanduser(ds.corpus_root()))
+        aliases[root] = (ds.key, ds.name)
+    return aliases
+
+
+def _build_training_dataset_spec(corpus: str):
+    return build_dataset_spec([corpus], aliases=_resolve_dataset_aliases())
+
+
+def _short_model_name(model: str) -> str:
+    return model.split("/", 1)[-1]
 
 
 def _estimate_training(qa_pairs, rollouts, rollout_steps, iterations):
@@ -407,6 +434,7 @@ def _prompt_optional_key(
 
 def _show_training_plan(
     *,
+    project: str,
     corpus: str,
     model: str,
     qa_pairs: int,
@@ -422,6 +450,7 @@ def _show_training_plan(
     summary = Table.grid(padding=(0, 2))
     summary.add_column(style="bold", justify="right", min_width=22)
     summary.add_column()
+    summary.add_row("Project", project)
     summary.add_row("Corpus", corpus)
     summary.add_row("Model", model)
     summary.add_row("QA pairs", f"~{qa_pairs:,} / iteration")
@@ -857,7 +886,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
         train_args = argparse.Namespace(
             corpus=None,
             model=DEFAULT_MODEL,
-            project="default",
+            project=None,
             iterations=DEFAULT_SCALE_PRESET["iterations"],
             qa_pairs=DEFAULT_SCALE_PRESET["qa_pairs"],
             rollouts=DEFAULT_SCALE_PRESET["rollouts"],
@@ -867,6 +896,8 @@ def cmd_setup(args: argparse.Namespace) -> None:
             chunk_size=512,
             synthesis_backend="auto",
             api_key=None,
+            resume=False,
+            fresh=False,
         )
         cmd_train(train_args)
     elif next_idx == 1:
@@ -1024,6 +1055,15 @@ def cmd_train(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
+    legacy_default_archive = archive_legacy_default_project(PROJECTS_DIR)
+    if legacy_default_archive is not None:
+        console.print()
+        console.print(
+            f"    [yellow]Archived legacy default project to[/] "
+            f"[dim]{legacy_default_archive}[/]"
+        )
+        console.print()
+
     # ── Interactive wizard ───────────────────────────────────────────
     console.print()
     console.print(
@@ -1143,6 +1183,7 @@ def cmd_train(args: argparse.Namespace) -> None:
         backend_choice = _pick_backend()
 
     # ── Summary + confirm (with go-back loop) ────────────────────────
+    requested_project = args.project
     while _interactive:
         try:
             plan = plan_training_execution(
@@ -1158,7 +1199,13 @@ def cmd_train(args: argparse.Namespace) -> None:
         console.print()
         console.rule("[bold]Training Plan[/]", style="dim")
         console.print()
+        dataset_spec = _build_training_dataset_spec(corpus)
+        if requested_project and requested_project != LEGACY_DEFAULT_PROJECT:
+            project_name = requested_project
+        else:
+            project_name = suggest_project_name(model, dataset_spec)
         _show_training_plan(
+            project=project_name,
             corpus=corpus,
             model=model,
             qa_pairs=qa_pairs,
@@ -1201,10 +1248,152 @@ def cmd_train(args: argparse.Namespace) -> None:
         return
 
     synthesis_calls = max(1, qa_pairs // 8)
+    dataset_spec = _build_training_dataset_spec(corpus)
+    if requested_project and requested_project != LEGACY_DEFAULT_PROJECT:
+        project_name = requested_project
+    else:
+        project_name = suggest_project_name(model, dataset_spec)
+    run_config = TrainingRunConfig(
+        synthesis_backend=plan.synthesis_rollout_backend,
+        iterations=iterations,
+        synthesis_calls=synthesis_calls,
+        rollouts_per_example=rollouts,
+        rollout_max_steps=rollout_steps,
+    )
+    display_name = f"{dataset_spec.display_label()} on {_short_model_name(model)}"
+    assessment = assess_project_reuse(
+        project=project_name,
+        base_model=model,
+        dataset_spec=dataset_spec,
+        config=run_config,
+        projects_dir=PROJECTS_DIR,
+    )
+
+    if _interactive:
+        if assessment.resume_available:
+            console.rule("[bold]Resume Checkpoint[/]", style="dim")
+            console.print()
+            console.print(
+                f"    [bold]{project_name}[/] matches the same dataset and model."
+            )
+            if assessment.checkpoint.latest_phase:
+                console.print(
+                    f"    Last checkpoint: [dim]iteration {assessment.checkpoint.latest_iteration} · "
+                    f"{assessment.checkpoint.latest_phase}[/]"
+                )
+            console.print()
+            action = _arrow_select(console, [
+                {"label": "Resume", "hint": "Continue from the compatible unfinished checkpoint"},
+                {"label": "Start fresh in same project", "hint": "Archive current logs/checkpoints and restart clean"},
+                {"label": "Start new project", "hint": "Keep the old project and create a fresh project name"},
+                {"label": "Cancel", "hint": "Exit without training"},
+            ])
+            console.print()
+            if action == 1:
+                archive_project_run_state(project_name, projects_dir=PROJECTS_DIR)
+            elif action == 2:
+                project_name = suggest_project_name(
+                    model, dataset_spec, projects_dir=PROJECTS_DIR, ensure_unique=True,
+                )
+            elif action == 3:
+                console.print("    [dim]Cancelled.[/]\n")
+                return
+        elif assessment.project_exists:
+            console.rule("[bold]Project State[/]", style="dim")
+            console.print()
+            if assessment.compatible_project:
+                console.print(
+                    f"    [bold]{project_name}[/] already exists for the same dataset and model."
+                )
+                hint = (
+                    "The previous run completed."
+                    if assessment.has_completed_training else
+                    "The previous run is not safe to resume with this plan."
+                )
+                console.print(f"    [dim]{hint}[/]")
+                console.print()
+                action = _arrow_select(console, [
+                    {"label": "Start fresh in same project", "hint": "Archive current logs/checkpoints and restart clean"},
+                    {"label": "Start new project", "hint": "Keep the old project and create a fresh project name"},
+                    {"label": "Cancel", "hint": "Exit without training"},
+                ])
+                console.print()
+                if action == 0:
+                    archive_project_run_state(project_name, projects_dir=PROJECTS_DIR)
+                elif action == 1:
+                    project_name = suggest_project_name(
+                        model, dataset_spec, projects_dir=PROJECTS_DIR, ensure_unique=True,
+                    )
+                else:
+                    console.print("    [dim]Cancelled.[/]\n")
+                    return
+            else:
+                console.print(
+                    f"    [bold]{project_name}[/] already exists but does [red]not[/] match "
+                    "the same dataset and model."
+                )
+                console.print(
+                    f"    [dim]Reason: {assessment.reason.replace('_', ' ')}[/]"
+                )
+                console.print()
+                action = _arrow_select(console, [
+                    {"label": "Start new project", "hint": "Create a new compatible project name"},
+                    {"label": "Cancel", "hint": "Exit without training"},
+                ])
+                console.print()
+                if action == 0:
+                    project_name = suggest_project_name(
+                        model, dataset_spec, projects_dir=PROJECTS_DIR, ensure_unique=True,
+                    )
+                else:
+                    console.print("    [dim]Cancelled.[/]\n")
+                    return
+    else:
+        if assessment.resume_available:
+            if args.resume:
+                pass
+            elif args.fresh:
+                archive_project_run_state(project_name, projects_dir=PROJECTS_DIR)
+            else:
+                console.print(
+                    f"\n[red]Compatible unfinished checkpoint found for project {project_name}.[/] "
+                    "Use [cyan]--resume[/], [cyan]--fresh[/], or a different [cyan]--project[/].\n"
+                )
+                return
+        elif assessment.project_exists:
+            if not assessment.compatible_project:
+                console.print(
+                    f"\n[red]Project {project_name} already exists with a different dataset or model.[/] "
+                    "Choose a different [cyan]--project[/].\n"
+                )
+                return
+            if args.fresh:
+                archive_project_run_state(project_name, projects_dir=PROJECTS_DIR)
+            elif requested_project:
+                console.print(
+                    f"\n[red]Project {project_name} already exists.[/] "
+                    "Use [cyan]--fresh[/] to restart it or choose a different [cyan]--project[/].\n"
+                )
+                return
+            else:
+                project_name = suggest_project_name(
+                    model, dataset_spec, projects_dir=PROJECTS_DIR, ensure_unique=True,
+                )
+
+    begin_training_run(
+        project=project_name,
+        display_name=display_name,
+        base_model=model,
+        dataset_spec=dataset_spec,
+        config=run_config,
+        projects_dir=PROJECTS_DIR,
+    )
+
     console.print()
     console.rule("[bold]Execution Plan[/]", style="dim")
     console.print()
     _show_training_plan(
+        project=project_name,
         corpus=corpus,
         model=model,
         qa_pairs=qa_pairs,
@@ -1217,7 +1406,7 @@ def cmd_train(args: argparse.Namespace) -> None:
     agent = Agent(
         base_model=model,
         corpus=corpus,
-        project=args.project,
+        project=project_name,
         api_base=TOGETHER_API_BASE if plan.synthesis_rollout_backend == "together" else None,
         api_key=api_key,
         hf_token=_get_hf_token(),
@@ -1225,16 +1414,21 @@ def cmd_train(args: argparse.Namespace) -> None:
     )
     _start_web_ui()  # no-op if already running from setup
     train_start = time.monotonic()
-    agent.train(
-        iterations=iterations,
-        synthesis_calls=synthesis_calls,
-        rollouts_per_example=rollouts,
-        rollout_max_steps=rollout_steps,
-        max_examples=args.max_examples,
-        learning_rate=lr,
-        synthesis_rollout_backend=plan.synthesis_rollout_backend,
-        verbose=True,
-    )
+    try:
+        agent.train(
+            iterations=iterations,
+            synthesis_calls=synthesis_calls,
+            rollouts_per_example=rollouts,
+            rollout_max_steps=rollout_steps,
+            max_examples=args.max_examples,
+            learning_rate=lr,
+            synthesis_rollout_backend=plan.synthesis_rollout_backend,
+            verbose=True,
+        )
+    except Exception:
+        mark_training_run_status(project_name, status="failed", projects_dir=PROJECTS_DIR)
+        raise
+    mark_training_run_status(project_name, status="completed", projects_dir=PROJECTS_DIR)
     elapsed = time.monotonic() - train_start
 
     console.print()
@@ -1319,17 +1513,19 @@ def cmd_status(args: argparse.Namespace) -> None:
     console.print(f"    [dim]Config  {CONFIG_FILE}[/]")
 
     # Training status
-    project_dir = os.path.join(PROJECTS_DIR, "default", "checkpoints")
-    if os.path.exists(project_dir):
-        meta_path = os.path.join(project_dir, "training_meta.json")
-        if os.path.exists(meta_path):
-            with open(meta_path) as f:
-                meta = json.load(f)
-            model = meta.get("base_model", "?")
-            iters = meta.get("iterations", 0)
-            console.print(f"    [green]✓[/]  Trained        {model} ({iters} iters)")
-        else:
-            console.print("    [dim]–[/]  Trained        checkpoint exists, no meta")
+    trained_projects = []
+    if os.path.isdir(PROJECTS_DIR):
+        for name in sorted(os.listdir(PROJECTS_DIR)):
+            meta_path = os.path.join(PROJECTS_DIR, name, "checkpoints", "training_meta.json")
+            if os.path.exists(meta_path):
+                trained_projects.append((name, meta_path))
+    if trained_projects:
+        name, meta_path = trained_projects[-1]
+        with open(meta_path) as f:
+            meta = json.load(f)
+        model = meta.get("base_model", "?")
+        iters = meta.get("iterations", 0)
+        console.print(f"    [green]✓[/]  Latest trained  {name} · {model} ({iters} iters)")
     else:
         console.print("    [dim]–[/]  Trained        no")
 
@@ -1468,7 +1664,7 @@ def main(argv: list[str] | None = None) -> None:
         help="Path to your documents folder (interactive if omitted).",
     )
     p_train.add_argument("--model", default=DEFAULT_MODEL, help="Model ID.")
-    p_train.add_argument("--project", default="default", help="Project name.")
+    p_train.add_argument("--project", default=None, help="Project name. If omitted, KONASH generates one from the dataset and model.")
     p_train.add_argument(
         "--iterations", type=int, default=DEFAULT_SCALE_PRESET["iterations"],
         help=f"Training iterations (default: {DEFAULT_SCALE_PRESET['iterations']}, Quick scale).",
@@ -1507,6 +1703,14 @@ def main(argv: list[str] | None = None) -> None:
     p_train.add_argument(
         "--api-key", default=None,
         help="Together AI key (or run konash setup).",
+    )
+    p_train.add_argument(
+        "--resume", action="store_true",
+        help="Resume a compatible unfinished checkpoint when running non-interactively.",
+    )
+    p_train.add_argument(
+        "--fresh", action="store_true",
+        help="Archive the current project state and start fresh.",
     )
     p_train.set_defaults(func=cmd_train)
 

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import random
 import re as _re
 import json as _json
 from typing import Any, Dict, List, Optional
+
+
+_qa_logger = logging.getLogger(__name__)
 
 
 class SyntheticExample:
@@ -306,9 +310,21 @@ class QuestionAnswerSynthesizer:
 
             response = self.llm_fn(messages)
             content = _clean_thinking_tags(response)
+            _qa_logger.debug(
+                "synthesis_step step=%d search_count=%d proposed=%d content=%r",
+                step_idx,
+                search_count,
+                len(proposed),
+                content[:1200],
+            )
 
             if not content:
                 empty_count += 1
+                _qa_logger.debug(
+                    "synthesis_empty_response step=%d empty_count=%d",
+                    step_idx,
+                    empty_count,
+                )
                 if empty_count >= 2:
                     break
                 messages.append({"role": "assistant", "content": "(no response)"})
@@ -317,11 +333,24 @@ class QuestionAnswerSynthesizer:
             empty_count = 0
 
             action = self._parse_action(content, search_count=search_count)
+            _qa_logger.debug(
+                "synthesis_action step=%d action=%s query=%r extracted_examples=%d",
+                step_idx,
+                action.get("type"),
+                action.get("query"),
+                len(action.get("examples", []) or []),
+            )
 
             # Enforce minimum searches before allowing proposals
             if (action["type"] == "propose"
                     and search_count < min_searches
                     and self.vector_search_tool is not None):
+                _qa_logger.debug(
+                    "synthesis_propose_deferred step=%d search_count=%d min_searches=%d",
+                    step_idx,
+                    search_count,
+                    min_searches,
+                )
                 messages.append({"role": "assistant", "content": content})
                 messages.append({"role": "user", "content": (
                     f"You have only searched {search_count} time(s). "
@@ -334,16 +363,36 @@ class QuestionAnswerSynthesizer:
                 query = action["query"]
                 results = self._search(query)
                 search_count += 1
+                formatted_results = self._format_results(results, query)
+                _qa_logger.debug(
+                    "synthesis_search step=%d query=%r results=%d",
+                    step_idx,
+                    query,
+                    len(results),
+                )
+                _qa_logger.debug(
+                    "synthesis_search_results step=%d query=%r formatted_len=%d formatted_preview=%r",
+                    step_idx,
+                    query,
+                    len(formatted_results),
+                    formatted_results[:1500],
+                )
 
                 messages.append({"role": "assistant", "content": content})
                 messages.append({
                     "role": "user",
-                    "content": self._format_results(results, query),
+                    "content": formatted_results,
                 })
 
             elif action["type"] == "propose":
                 new_examples = action["examples"]
                 proposed.extend(new_examples)
+                _qa_logger.debug(
+                    "synthesis_propose step=%d accepted_examples=%d total_proposed=%d",
+                    step_idx,
+                    len(new_examples),
+                    len(proposed),
+                )
 
                 messages.append({"role": "assistant", "content": content})
 
@@ -367,6 +416,11 @@ class QuestionAnswerSynthesizer:
 
             else:
                 # Couldn't parse — nudge the agent to search
+                _qa_logger.debug(
+                    "synthesis_unknown_action step=%d content=%r",
+                    step_idx,
+                    content[:1200],
+                )
                 messages.append({"role": "assistant", "content": content})
                 messages.append({"role": "user", "content": (
                     "Please respond with exactly ONE action:\n"
@@ -387,10 +441,22 @@ class QuestionAnswerSynthesizer:
                 f"- Each answer must be verifiable from the search results\n\n"
                 f"PROPOSE:"
             )})
+            _qa_logger.debug(
+                "synthesis_forced_propose_prompt search_count=%d remaining=%d prompt=%r",
+                search_count,
+                remaining,
+                messages[-1]["content"][:1500],
+            )
             response = self.llm_fn(messages)
             content = _clean_thinking_tags(response)
             if content:
                 action = self._parse_action(content)
+                _qa_logger.debug(
+                    "synthesis_forced_propose action=%s extracted_examples=%d content=%r",
+                    action.get("type"),
+                    len(action.get("examples", []) or []),
+                    content[:1200],
+                )
                 if action["type"] == "propose":
                     proposed.extend(action["examples"])
 
