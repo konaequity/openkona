@@ -572,7 +572,7 @@ def _run_guided_eval_from_setup() -> None:
 # konash  (no args)
 # ---------------------------------------------------------------------------
 
-def cmd_default() -> None:
+def cmd_launcher() -> None:
     console.print()
     console.print(f"[bold]KONASH[/]  [dim]{_get_version()}[/]")
     console.print(
@@ -595,6 +595,20 @@ def cmd_default() -> None:
     grid.add_row("konash status", "Check configuration")
     console.print(grid)
     console.print()
+
+
+def cmd_default() -> None:
+    """Smart entrypoint: onboard first-time users, otherwise show launcher."""
+    if not _get_together_key():
+        console.print()
+        console.print(
+            "[dim]No core inference key found. Starting setup so KONASH is usable.[/]"
+        )
+        console.print()
+        cmd_setup(argparse.Namespace())
+        return
+
+    cmd_launcher()
 
 
 def _get_version() -> str:
