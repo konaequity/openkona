@@ -10,7 +10,7 @@ import time
 import webbrowser
 
 from konash.benchmarks import get_dataset, list_datasets
-from konash.models import get_cli_models
+from konash.models import CliModelOption, get_cli_models
 from rich import box
 from rich.console import Console
 from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
@@ -112,7 +112,7 @@ CONFIG_DIR = os.path.expanduser("~/.konash")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 PROJECTS_DIR = os.path.join(CONFIG_DIR, "projects")
 
-MODELS = get_cli_models()
+MODELS: list[CliModelOption] = get_cli_models()
 
 # Training scale presets
 # qa_pairs is the user-facing number; internally divided by 8 to get API calls
@@ -450,14 +450,14 @@ def _pick_eval_model(provider: str) -> str | None:
         console.print()
         console.rule("[bold]Model[/]", style="dim")
         console.print()
-        opts = [{"label": m["name"], "hint": m["hint"]} for m in MODELS]
+        opts = [{"label": m.name, "hint": m.hint} for m in MODELS]
         opts.append({"label": "Custom", "hint": "Enter a model ID manually"})
         console.print("    [dim]Use arrow keys, press Enter to select[/]")
         console.print()
         idx = _arrow_select(console, opts)
         console.print()
         if idx < len(MODELS):
-            return MODELS[idx]["id"]
+            return MODELS[idx].id
         return Prompt.ask("    Model ID")
 
     defaults = {
@@ -1078,14 +1078,14 @@ def cmd_train(args: argparse.Namespace) -> None:
         console.print()
         console.rule("[bold]Model[/]", style="dim")
         console.print()
-        opts = [{"label": m["name"], "hint": m["hint"]} for m in MODELS]
+        opts = [{"label": m.name, "hint": m.hint} for m in MODELS]
         opts.append({"label": "Custom", "hint": "Enter a model ID manually"})
         console.print("    [dim]Use arrow keys, press Enter to select[/]")
         console.print()
         idx = _arrow_select(console, opts)
         console.print()
         if idx < len(MODELS):
-            return MODELS[idx]["id"]
+            return MODELS[idx].id
         return Prompt.ask("    Model ID")
 
     def _pick_scale() -> tuple:

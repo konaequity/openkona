@@ -41,7 +41,7 @@ from konash.eval.harness import (
     TOGETHER_API_BASE,
     ZHIPU_API_BASE,
 )
-from konash.models import get_arena_preset_order
+from konash.models import ModelPreset, get_arena_preset_order
 
 _ARENA_PRESET_ORDER = get_arena_preset_order()
 
@@ -361,20 +361,20 @@ def _judge_arena_answers(
     }
 
 
-def _make_llm_fn(preset_cfg: Dict[str, Any]) -> Any:
+def _make_llm_fn(preset_cfg: ModelPreset) -> Any:
     """Create a callable llm_fn from a preset configuration."""
-    api_base = preset_cfg.get("api_base")
+    api_base = preset_cfg.api_base
     if not api_base:
         return None
 
-    api_key_env = preset_cfg.get("api_key_env", "")
+    api_key_env = preset_cfg.api_key_env or ""
     api_key = os.environ.get(api_key_env, "")
 
     # Fall back to ~/.konash/config.json if env var not set
     if not api_key:
         api_key = _load_konash_api_key(api_key_env)
-    model = preset_cfg["base_model"]
-    temperature = preset_cfg.get("temperature", 0.7)
+    model = preset_cfg.base_model
+    temperature = preset_cfg.temperature
 
     # Use the same OpenAI-compatible client approach as konash.api
     import urllib.request
@@ -443,7 +443,7 @@ def _run_agent_direct(
         # Emit a reasoning step to show we're calling the LLM
         reasoning_step = {
             "step": 0, "type": "reasoning",
-            "thought": f"Calling {preset_cfg.get('base_model', preset_name)} directly (no corpus)...",
+            "thought": f"Calling {preset_cfg.base_model} directly (no corpus)...",
         }
         ttft_event = round(time.time() - t_start, 2)
         event_queue.put({
@@ -542,9 +542,9 @@ def _run_agent(
         if not preset_cfg:
             raise ValueError(f"Unknown preset: {preset_name}")
 
-        model_id = preset_cfg["base_model"]
-        api_base = preset_cfg.get("api_base")
-        api_key_env = preset_cfg.get("api_key_env", "")
+        model_id = preset_cfg.base_model
+        api_base = preset_cfg.api_base
+        api_key_env = preset_cfg.api_key_env or ""
         api_key = os.environ.get(api_key_env, "") or _load_konash_api_key(api_key_env)
 
         corpus_name = Path(corpus_path).name if corpus_path else "corpus"
@@ -803,25 +803,25 @@ def api_presets():
 
     # Arena models first, in the shared order defined by the catalog
     for name in _ARENA_PRESET_ORDER:
-        cfg = MODEL_PRESETS.get(name, {})
-        if not cfg.get("api_base"):
+        cfg = MODEL_PRESETS.get(name)
+        if not cfg or not cfg.api_base:
             continue
         presets.append({
             "name": name,
-            "description": cfg.get("description", name),
-            "base_model": cfg.get("base_model", ""),
+            "description": cfg.description,
+            "base_model": cfg.base_model,
             "has_api": True,
         })
         seen.add(name)
 
     # Then any konash presets not already listed
     for name, cfg in MODEL_PRESETS.items():
-        if name in seen or not cfg.get("api_base"):
+        if name in seen or not cfg.api_base:
             continue
         presets.append({
             "name": name,
-            "description": cfg.get("description", name),
-            "base_model": cfg.get("base_model", ""),
+            "description": cfg.description,
+            "base_model": cfg.base_model,
             "has_api": True,
         })
 
@@ -909,13 +909,13 @@ def _ensure_preset(model_key: str) -> str:
     slug = model_key.replace("/", "--").lower()
     preset_key = f"custom:{slug}"
     if preset_key not in MODEL_PRESETS:
-        MODEL_PRESETS[preset_key] = {
-            "base_model": model_key,
-            "api_base": "https://api.together.xyz/v1",
-            "api_key_env": "TOGETHER_API_KEY",
-            "temperature": 0.7,
-            "description": f"Custom: {model_key}",
-        }
+        MODEL_PRESETS[preset_key] = ModelPreset(
+            base_model=model_key,
+            api_base="https://api.together.xyz/v1",
+            api_key_env="TOGETHER_API_KEY",
+            temperature=0.7,
+            description=f"Custom: {model_key}",
+        )
     return preset_key
 
 

@@ -56,7 +56,7 @@ def test_api_run_persists_eval_review_for_selected_question(tmp_path, monkeypatc
     arena_app._active_runs.clear()
     arena_app._event_queues.clear()
 
-    def fake_run_agent(run_id, side, question, preset_name, corpus_path, event_queue, max_steps=10, top_k=10):
+    def fake_run_agent(run_id, side, question, preset_name, corpus_path, event_queue, max_steps=10, top_k=10, stop_event=None):
         return {
             "side": side,
             "preset": preset_name,

@@ -24,9 +24,24 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from typing import Any, Optional
+
+from konash.training.events import (
+    BaseTrainingEvent,
+    FilterSummaryLogged,
+    OaplEpochLogged,
+    PhaseTimingLogged,
+    RolloutProgressLogged,
+    RolloutsCompleted,
+    SynthesisCompleted,
+    TrainingCompleted,
+    TrainingErrorLogged,
+    TrainingEvent,
+    TrainingStarted,
+    ValueModelCompleted,
+    training_event_from_record,
+)
 
 
 def configure_file_logging(project: str, level: str = "DEBUG") -> str:
@@ -82,25 +97,24 @@ class TrainingLogger:
         self._path = os.path.join(self._dir, "training.jsonl")
         self._start_time = time.monotonic()
 
-    def _write(self, event: str, data: dict[str, Any]) -> None:
-        """Append one JSON line to the log file."""
-        record = {
-            "event": event,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "elapsed_seconds": round(time.monotonic() - self._start_time, 1),
-            "project": self.project,
-            **data,
-        }
+    def _elapsed_seconds(self) -> float:
+        return round(time.monotonic() - self._start_time, 1)
+
+    def _write(self, event: BaseTrainingEvent) -> None:
+        """Append one typed event to the log file."""
+        record = event.to_record()
         with open(self._path, "a") as f:
             f.write(json.dumps(record, default=str) + "\n")
 
     def start(self, *, iterations: int, corpus: str, model: str) -> None:
         """Log training start."""
-        self._write("start", {
-            "iterations": iterations,
-            "corpus": corpus,
-            "model": model,
-        })
+        self._write(TrainingStarted(
+            project=self.project,
+            elapsed_seconds=self._elapsed_seconds(),
+            iterations=iterations,
+            corpus=corpus,
+            model=model,
+        ))
 
     def synthesis(
         self,
@@ -113,15 +127,17 @@ class TrainingLogger:
         duration_seconds: float = 0,
     ) -> None:
         """Log synthesis phase completion."""
-        self._write("synthesis", {
-            "iteration": iteration,
-            "calls_completed": calls_completed,
-            "calls_total": calls_total,
-            "raw_pairs": raw_pairs,
-            "deduped": deduped,
-            "dedup_rate": round(1 - deduped / raw_pairs, 3) if raw_pairs else 0,
-            "duration_seconds": round(duration_seconds, 1),
-        })
+        self._write(SynthesisCompleted(
+            project=self.project,
+            elapsed_seconds=self._elapsed_seconds(),
+            iteration=iteration,
+            calls_completed=calls_completed,
+            calls_total=calls_total,
+            raw_pairs=raw_pairs,
+            deduped=deduped,
+            dedup_rate=round(1 - deduped / raw_pairs, 3) if raw_pairs else 0,
+            duration_seconds=round(duration_seconds, 1),
+        ))
 
     def rollouts(
         self,
@@ -134,15 +150,17 @@ class TrainingLogger:
         duration_seconds: float = 0,
     ) -> None:
         """Log rollout phase completion."""
-        self._write("rollouts", {
-            "iteration": iteration,
-            "examples_in": examples,
-            "rollouts_total": rollouts,
-            "examples_after_filter": filtered,
-            "filter_rate": round(1 - filtered / examples, 3) if examples else 0,
-            "avg_pass_rate": round(pass_rate, 3),
-            "duration_seconds": round(duration_seconds, 1),
-        })
+        self._write(RolloutsCompleted(
+            project=self.project,
+            elapsed_seconds=self._elapsed_seconds(),
+            iteration=iteration,
+            examples_in=examples,
+            rollouts_total=rollouts,
+            examples_after_filter=filtered,
+            filter_rate=round(1 - filtered / examples, 3) if examples else 0,
+            avg_pass_rate=round(pass_rate, 3),
+            duration_seconds=round(duration_seconds, 1),
+        ))
 
     def oapl(
         self,
@@ -158,17 +176,19 @@ class TrainingLogger:
         duration_seconds: float = 0,
     ) -> None:
         """Log one OAPL training epoch."""
-        self._write("oapl", {
-            "iteration": iteration,
-            "epoch": epoch,
-            "loss": round(loss, 6),
-            "kl": round(kl, 6),
-            "entropy": round(entropy, 4),
-            "num_groups": num_groups,
-            "num_rollouts": num_rollouts,
-            "learning_rate": learning_rate,
-            "duration_seconds": round(duration_seconds, 1),
-        })
+        self._write(OaplEpochLogged(
+            project=self.project,
+            elapsed_seconds=self._elapsed_seconds(),
+            iteration=iteration,
+            epoch=epoch,
+            loss=round(loss, 6),
+            kl=round(kl, 6),
+            entropy=round(entropy, 4),
+            num_groups=num_groups,
+            num_rollouts=num_rollouts,
+            learning_rate=learning_rate,
+            duration_seconds=round(duration_seconds, 1),
+        ))
 
     def value_model(
         self,
@@ -178,11 +198,13 @@ class TrainingLogger:
         duration_seconds: float = 0,
     ) -> None:
         """Log value model training completion."""
-        self._write("value_model", {
-            "final_loss": round(loss, 6),
-            "epochs": epochs,
-            "duration_seconds": round(duration_seconds, 1),
-        })
+        self._write(ValueModelCompleted(
+            project=self.project,
+            elapsed_seconds=self._elapsed_seconds(),
+            final_loss=round(loss, 6),
+            epochs=epochs,
+            duration_seconds=round(duration_seconds, 1),
+        ))
 
     def phase(
         self,
@@ -193,12 +215,14 @@ class TrainingLogger:
         **extra: Any,
     ) -> None:
         """Log a generic phase timing."""
-        self._write("phase", {
-            "iteration": iteration,
-            "phase": phase,
-            "duration_seconds": round(duration_seconds, 1),
-            **extra,
-        })
+        self._write(PhaseTimingLogged(
+            project=self.project,
+            elapsed_seconds=self._elapsed_seconds(),
+            iteration=iteration,
+            phase=phase,
+            duration_seconds=round(duration_seconds, 1),
+            extra=dict(extra),
+        ))
 
     def complete(
         self,
@@ -208,11 +232,13 @@ class TrainingLogger:
         stats: Optional[list] = None,
     ) -> None:
         """Log training completion."""
-        self._write("complete", {
-            "iterations": iterations,
-            "total_seconds": round(total_seconds, 1),
-            "stats": stats or [],
-        })
+        self._write(TrainingCompleted(
+            project=self.project,
+            elapsed_seconds=self._elapsed_seconds(),
+            iterations=iterations,
+            total_seconds=round(total_seconds, 1),
+            stats=stats or [],
+        ))
 
     def rollout_progress(
         self,
@@ -223,13 +249,14 @@ class TrainingLogger:
         elapsed_seconds: float = 0,
     ) -> None:
         """Log incremental rollout progress (called every N completions)."""
-        self._write("rollout_progress", {
-            "iteration": iteration,
-            "completed": completed,
-            "total": total,
-            "pct": round(completed / total * 100, 1) if total else 0,
-            "elapsed_seconds": round(elapsed_seconds, 1),
-        })
+        self._write(RolloutProgressLogged(
+            project=self.project,
+            elapsed_seconds=round(elapsed_seconds, 1),
+            iteration=iteration,
+            completed=completed,
+            total=total,
+            pct=round(completed / total * 100, 1) if total else 0,
+        ))
 
     def filter_summary(
         self,
@@ -240,44 +267,53 @@ class TrainingLogger:
         output_count: int,
     ) -> None:
         """Log a filter phase summary (pass-rate or quality filter)."""
-        self._write("filter_summary", {
-            "iteration": iteration,
-            "phase": phase,
-            "input_count": input_count,
-            "output_count": output_count,
-            "reject_count": input_count - output_count,
-        })
+        self._write(FilterSummaryLogged(
+            project=self.project,
+            elapsed_seconds=self._elapsed_seconds(),
+            iteration=iteration,
+            phase=phase,
+            input_count=input_count,
+            output_count=output_count,
+            reject_count=input_count - output_count,
+        ))
 
     def error(self, *, message: str, phase: str = "", iteration: int = 0) -> None:
         """Log an error."""
-        self._write("error", {
-            "message": message,
-            "phase": phase,
-            "iteration": iteration,
-        })
+        self._write(TrainingErrorLogged(
+            project=self.project,
+            elapsed_seconds=self._elapsed_seconds(),
+            message=message,
+            phase=phase,
+            iteration=iteration,
+        ))
 
     @property
     def path(self) -> str:
         return self._path
 
     @staticmethod
-    def load(project: str = "default") -> list[dict]:
-        """Load all log entries for a project."""
+    def load(project: str = "default") -> list[TrainingEvent]:
+        """Load all typed log entries for a project."""
         path = os.path.expanduser(
             f"~/.konash/projects/{project}/training.jsonl"
         )
         if not os.path.exists(path):
             return []
-        entries = []
+        entries: list[TrainingEvent] = []
         with open(path) as f:
             for line in f:
                 line = line.strip()
                 if line:
                     try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
+                        entries.append(training_event_from_record(json.loads(line)))
+                    except (TypeError, ValueError, json.JSONDecodeError):
                         continue
         return entries
+
+    @staticmethod
+    def load_records(project: str = "default") -> list[dict[str, Any]]:
+        """Load JSON-serializable event records for API/UI consumers."""
+        return [event.to_record() for event in TrainingLogger.load(project)]
 
     @staticmethod
     def list_projects() -> list[str]:

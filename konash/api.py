@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -29,14 +30,14 @@ from konash.synthesis.rollouts import RolloutGenerator
 from konash.training.dataset import OfflineRolloutDataset
 from konash.training.oapl import OAPLTrainer
 from konash.training.iteration import IterativeTrainingPipeline
-from konash.models import get_model_presets
+from konash.models import ModelPreset, get_model_presets
 
 
 # ---------------------------------------------------------------------------
 # Model presets
 # ---------------------------------------------------------------------------
 
-MODEL_PRESETS: Dict[str, Dict[str, Any]] = get_model_presets()
+MODEL_PRESETS: Dict[str, ModelPreset] = get_model_presets()
 
 
 # ---------------------------------------------------------------------------
@@ -375,20 +376,19 @@ class Agent:
             )
         cfg = MODEL_PRESETS[preset]
         defaults: Dict[str, Any] = {
-            "base_model": cfg["base_model"],
+            "base_model": cfg.base_model,
         }
-        if cfg.get("api_base"):
-            defaults["api_base"] = cfg["api_base"]
-        if cfg.get("temperature") is not None:
-            defaults["temperature"] = cfg["temperature"]
-        if cfg.get("use_unsloth"):
+        if cfg.api_base:
+            defaults["api_base"] = cfg.api_base
+        defaults["temperature"] = cfg.temperature
+        if cfg.use_unsloth:
             defaults["use_unsloth"] = True
-        if cfg.get("load_in_fp8"):
+        if cfg.load_in_fp8:
             defaults["load_in_fp8"] = True
 
         # Resolve API key from env if not explicitly provided
         if "api_key" not in kwargs:
-            env_var = cfg.get("api_key_env", "")
+            env_var = cfg.api_key_env or ""
             key = os.environ.get(env_var, "")
             if key:
                 defaults["api_key"] = key
@@ -457,87 +457,186 @@ class Agent:
         dict
             Training summary with per-iteration statistics.
         """
-        if verbose:
-            from rich.console import Console as _Console
-            _con = _Console()
-
-        from konash.training import checkpoint as ckpt
-        from konash.training.logger import TrainingLogger, configure_file_logging
         from konash.training.execution import plan_training_execution
-        debug_log_path = configure_file_logging(self.project)
-        _api_logger.info("Debug log: %s", debug_log_path)
-
-        self._log = TrainingLogger(self.project)
-        log = self._log
-        log.start(
-            iterations=iterations,
-            corpus=str(self.corpus.path),
-            model=self.base_model,
-        )
+        console = self._make_training_console(verbose)
+        log = self._start_training_run(iterations)
 
         plan = plan_training_execution(
             iterations=iterations,
             synthesis_rollout_backend=synthesis_rollout_backend,
         )
 
-        stats: List[Dict[str, Any]] = []
-
-        from konash.cloud import train_oapl_from_rollouts, train_remote
-
         if plan.requires_remote_full_pipeline:
-            if verbose:
-                _con.print()
-                _con.rule("[bold]Cloud Training[/]", style="dim")
-                _con.print()
-                _con.print(
-                    "  [dim]Synthesis + rollouts + OAPL will run on Shadeform.[/]"
-                )
-                _con.print("  [cyan]Finding cheapest GPU via Shadeform...[/]")
-
-            cloud_result = train_remote(
-                corpus=str(self.corpus.path),
-                base_model=self.base_model,
-                checkpoint_dir=self.checkpoint_dir,
+            return self._train_with_remote_full_pipeline(
+                log=log,
+                plan=plan,
                 iterations=iterations,
                 synthesis_calls=synthesis_calls,
                 rollouts_per_example=rollouts_per_example,
                 rollout_max_steps=rollout_max_steps,
                 max_examples=max_examples,
                 learning_rate=learning_rate,
-                keep_alive=False,
                 verbose=verbose,
+                console=console,
             )
-            stats.extend(cloud_result.get("stats") or [])
+        return self._train_with_local_prep_and_cloud_oapl(
+            log=log,
+            plan=plan,
+            iterations=iterations,
+            synthesis_calls=synthesis_calls,
+            rollouts_per_example=rollouts_per_example,
+            rollout_max_steps=rollout_max_steps,
+            max_examples=max_examples,
+            few_shot_examples=few_shot_examples,
+            learning_rate=learning_rate,
+            verbose=verbose,
+            console=console,
+        )
 
-            self._iteration = iterations
-            self._trained = True
+    def _make_training_console(self, verbose: bool) -> Any:
+        """Return a Rich console for verbose training output, or None."""
+        if not verbose:
+            return None
+        from rich.console import Console as _Console
+        return _Console()
 
-            os.makedirs(self.checkpoint_dir, exist_ok=True)
-            meta_path = os.path.join(self.checkpoint_dir, "training_meta.json")
-            with open(meta_path, "w") as f:
-                json.dump({
-                    "base_model": self.base_model,
-                    "corpus": str(self.corpus.path),
-                    "project": self.project,
-                    "iterations": self._iteration,
-                    "stats": stats,
-                    "value_model": cloud_result.get("value_model", False),
-                    "synthesis_rollout_backend": plan.synthesis_rollout_backend,
-                }, f, indent=2)
+    def _start_training_run(self, iterations: int) -> Any:
+        """Configure logging and emit the training start event."""
+        from konash.training.logger import TrainingLogger, configure_file_logging
 
-            log.complete(
-                iterations=self._iteration,
-                total_seconds=time.monotonic() - log._start_time,
-                stats=stats,
+        debug_log_path = configure_file_logging(self.project)
+        _api_logger.info("Debug log: %s", debug_log_path)
+        self._log = TrainingLogger(self.project)
+        self._log.start(
+            iterations=iterations,
+            corpus=str(self.corpus.path),
+            model=self.base_model,
+        )
+        return self._log
+
+    def _save_training_metadata(
+        self,
+        *,
+        iterations: int,
+        stats: List[Dict[str, Any]],
+        value_model: bool,
+        synthesis_rollout_backend: str,
+    ) -> None:
+        """Persist training metadata for later load/inference flows."""
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        meta_path = os.path.join(self.checkpoint_dir, "training_meta.json")
+        with open(meta_path, "w") as f:
+            json.dump({
+                "base_model": self.base_model,
+                "corpus": str(self.corpus.path),
+                "project": self.project,
+                "iterations": iterations,
+                "stats": stats,
+                "value_model": value_model,
+                "synthesis_rollout_backend": synthesis_rollout_backend,
+            }, f, indent=2)
+
+    def _complete_training_run(
+        self,
+        *,
+        log: Any,
+        iterations: int,
+        stats: List[Dict[str, Any]],
+        verbose: bool,
+        console: Any,
+    ) -> Dict[str, Any]:
+        """Finalize agent state, emit completion logs, and return summary."""
+        self._iteration = iterations
+        self._trained = True
+        log.complete(
+            iterations=self._iteration,
+            total_seconds=time.monotonic() - log._start_time,
+            stats=stats,
+        )
+        if verbose and console is not None:
+            console.print()
+            console.print(
+                f"  [bold green]Training complete.[/]  "
+                f"Checkpoint saved to [dim]{self.checkpoint_dir}[/]"
             )
-            return {"iterations": self._iteration, "stats": stats}
+            console.print(f"  [dim]Training log: {log.path}[/]")
+        return {"iterations": self._iteration, "stats": stats}
 
-        # ── Iteration 1: client-side synthesis + rollouts ──
-        if verbose:
-            _con.print()
-            _con.rule(f"[bold]Iteration 1/{iterations}[/]", style="dim")
-            _con.print()
-            _con.print("  [dim]Phase 1: Synthesis + rollouts (Together API)[/]")
+    def _train_with_remote_full_pipeline(
+        self,
+        *,
+        log: Any,
+        plan: Any,
+        iterations: int,
+        synthesis_calls: int,
+        rollouts_per_example: int,
+        rollout_max_steps: int,
+        max_examples: Optional[int],
+        learning_rate: float,
+        verbose: bool,
+        console: Any,
+    ) -> Dict[str, Any]:
+        """Run synthesis, rollouts, and OAPL fully on the remote GPU path."""
+        from konash.cloud import train_remote
+
+        if verbose and console is not None:
+            console.print()
+            console.rule("[bold]Cloud Training[/]", style="dim")
+            console.print()
+            console.print("  [dim]Synthesis + rollouts + OAPL will run on Shadeform.[/]")
+            console.print("  [cyan]Finding cheapest GPU via Shadeform...[/]")
+
+        cloud_result = train_remote(
+            corpus=str(self.corpus.path),
+            base_model=self.base_model,
+            checkpoint_dir=self.checkpoint_dir,
+            iterations=iterations,
+            synthesis_calls=synthesis_calls,
+            rollouts_per_example=rollouts_per_example,
+            rollout_max_steps=rollout_max_steps,
+            max_examples=max_examples,
+            learning_rate=learning_rate,
+            keep_alive=False,
+            verbose=verbose,
+        )
+        stats = list(cloud_result.get("stats") or [])
+        self._save_training_metadata(
+            iterations=iterations,
+            stats=stats,
+            value_model=cloud_result.get("value_model", False),
+            synthesis_rollout_backend=plan.synthesis_rollout_backend,
+        )
+        return self._complete_training_run(
+            log=log,
+            iterations=iterations,
+            stats=stats,
+            verbose=verbose,
+            console=console,
+        )
+
+    def _train_with_local_prep_and_cloud_oapl(
+        self,
+        *,
+        log: Any,
+        plan: Any,
+        iterations: int,
+        synthesis_calls: int,
+        rollouts_per_example: int,
+        rollout_max_steps: int,
+        max_examples: Optional[int],
+        few_shot_examples: Optional[List[SyntheticExample]],
+        learning_rate: float,
+        verbose: bool,
+        console: Any,
+    ) -> Dict[str, Any]:
+        """Run local synthesis/rollouts, then send rollouts to cloud OAPL."""
+        from konash.cloud import train_oapl_from_rollouts
+
+        if verbose and console is not None:
+            console.print()
+            console.rule(f"[bold]Iteration 1/{iterations}[/]", style="dim")
+            console.print()
+            console.print("  [dim]Phase 1: Synthesis + rollouts (Together API)[/]")
 
         rollouts_path = self._run_iteration_local(
             iteration=0,
@@ -549,23 +648,18 @@ class Agent:
             learning_rate=learning_rate,
             verbose=verbose,
         )
-
         if not rollouts_path:
-            if verbose:
-                _con.print("  [yellow]–[/]  No training data produced.")
+            if verbose and console is not None:
+                console.print("  [yellow]–[/]  No training data produced.")
             self._trained = True
             self._iteration = 1
             return {"iterations": 1, "stats": []}
 
-        # ── Provision GPU server, send rollouts for OAPL ──
-        if verbose:
-            _con.print()
-            _con.print("  [dim]Phase 2: OAPL training (cloud GPU)[/]")
-            _con.print(
-                "  [cyan]Finding cheapest GPU via Shadeform...[/]"
-            )
+        if verbose and console is not None:
+            console.print()
+            console.print("  [dim]Phase 2: OAPL training (cloud GPU)[/]")
+            console.print("  [cyan]Finding cheapest GPU via Shadeform...[/]")
 
-        # Single iteration only; planner rejects multi-iter Together mode.
         cloud_result = train_oapl_from_rollouts(
             rollouts_path=rollouts_path,
             base_model=self.base_model,
@@ -574,44 +668,23 @@ class Agent:
             keep_alive=False,
             verbose=verbose,
         )
+        stats: List[Dict[str, Any]] = []
         iter_stats = (cloud_result.get("stats", [{}]) or [{}])[-1]
         if iter_stats:
             stats.append(iter_stats)
-
-        self._iteration = iterations
-        self._trained = True
-
-        # Save metadata
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
-        meta_path = os.path.join(self.checkpoint_dir, "training_meta.json")
-        with open(meta_path, "w") as f:
-            json.dump({
-                "base_model": self.base_model,
-                "corpus": str(self.corpus.path),
-                "project": self.project,
-                "iterations": self._iteration,
-                "stats": stats,
-                "value_model": cloud_result.get("value_model", False),
-                "synthesis_rollout_backend": plan.synthesis_rollout_backend,
-            }, f, indent=2)
-
-        log.complete(
-            iterations=self._iteration,
-            total_seconds=time.monotonic() - log._start_time,
+        self._save_training_metadata(
+            iterations=iterations,
             stats=stats,
+            value_model=cloud_result.get("value_model", False),
+            synthesis_rollout_backend=plan.synthesis_rollout_backend,
         )
-
-        if verbose:
-            _con.print()
-            _con.print(
-                f"  [bold green]Training complete.[/]  "
-                f"Checkpoint saved to [dim]{self.checkpoint_dir}[/]"
-            )
-            _con.print(
-                f"  [dim]Training log: {log.path}[/]"
-            )
-
-        return {"iterations": self._iteration, "stats": stats}
+        return self._complete_training_run(
+            log=log,
+            iterations=iterations,
+            stats=stats,
+            verbose=verbose,
+            console=console,
+        )
 
     def _run_iteration_local(
         self,
@@ -716,7 +789,7 @@ class Agent:
         if not examples:
             if verbose:
                 _con.print("  [yellow]–[/]  No examples after dedup.")
-            return {}
+            return None
 
         # ── Stage 2: Rollouts + filtering ──
         if latest and latest >= ckpt.Phase.ROLLOUTS:
@@ -1166,50 +1239,122 @@ class Agent:
             self.corpus.ingest()
 
         agent = self._make_agent(max_steps=max_steps)
+        formatted_query = self._format_solver_prompt(query)
+        environment_factory = self._make_environment_factory(
+            agent=agent,
+            max_steps=max_steps,
+            top_k=top_k,
+        )
 
-        def _extract_tool_query(tool_call: Any) -> str:
-            if not isinstance(tool_call, dict):
-                return str(tool_call)
+        if parallel_rollouts <= 1 and not (use_vgs and self._value_model):
+            return self._solve_with_single_rollout(
+                agent=agent,
+                formatted_query=formatted_query,
+                environment_factory=environment_factory,
+                max_steps=max_steps,
+                return_trace=return_trace,
+            )
 
-            query_text = tool_call.get("query", "") or tool_call.get("input", "")
-            if query_text:
-                return str(query_text)
+        env_agent = self._make_environment_backed_agent(
+            base_agent=agent,
+            environment_factory=environment_factory,
+            max_steps=max_steps,
+            top_k=top_k,
+        )
 
-            function_call = tool_call.get("function")
-            if isinstance(function_call, dict):
-                arguments = function_call.get("arguments", {})
-                if isinstance(arguments, str):
-                    try:
-                        arguments = json.loads(arguments)
-                    except json.JSONDecodeError:
-                        return arguments
-                if isinstance(arguments, dict):
-                    nested_query = arguments.get("query", "") or arguments.get("input", "")
-                    if nested_query:
-                        return str(nested_query)
+        # Decide: VGS or Parallel Thinking
+        _use_vgs = use_vgs if use_vgs is not None else (self._value_model is not None)
 
+        if _use_vgs and self._value_model is not None:
+            return self._solve_with_value_guided_search(
+                env_agent=env_agent,
+                formatted_query=formatted_query,
+                parallel_rollouts=parallel_rollouts,
+                vgs_candidate_width=vgs_candidate_width,
+                vgs_max_depth=vgs_max_depth,
+                return_trace=return_trace,
+            )
+
+        return self._solve_with_parallel_thinking(
+            env_agent=env_agent,
+            formatted_query=formatted_query,
+            parallel_rollouts=parallel_rollouts,
+            return_trace=return_trace,
+        )
+
+    def _extract_tool_query(self, tool_call: Any) -> str:
+        """Extract a search query string from a tool call payload."""
+        if not isinstance(tool_call, dict):
             return str(tool_call)
 
-        # Build environment with vector search as a tool
-        def tool_executor(tool_call: Any) -> Dict[str, Any]:
-            query_text = _extract_tool_query(tool_call)
-            results = self.corpus.search(query_text, top_k=top_k)
-            result_text = "\n\n".join(
-                f"[{i+1}] (score: {r.get('score', 0):.3f}) [{os.path.basename(r.get('source', ''))}] {r.get('text', '')}"
-                for i, r in enumerate(results)
-            )
-            observation: Dict[str, Any] = {"role": "tool", "content": result_text}
-            if isinstance(tool_call, dict) and tool_call.get("id"):
-                observation["tool_call_id"] = tool_call["id"]
-            return observation
+        query_text = tool_call.get("query", "") or tool_call.get("input", "")
+        if query_text:
+            return str(query_text)
+
+        function_call = tool_call.get("function")
+        if isinstance(function_call, dict):
+            arguments = function_call.get("arguments", {})
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    return arguments
+            if isinstance(arguments, dict):
+                nested_query = arguments.get("query", "") or arguments.get("input", "")
+                if nested_query:
+                    return str(nested_query)
+
+        return str(tool_call)
+
+    def _build_search_tool_schema(self, description: str) -> Dict[str, Any]:
+        """Return the standard search tool schema used by solve-time agents."""
+        return {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "description": description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query.",
+                        }
+                    },
+                    "required": ["query"],
+                },
+            },
+        }
+
+    def _search_tool_observation(self, tool_call: Any, top_k: int) -> Dict[str, Any]:
+        """Execute a search tool call against the corpus and format the observation."""
+        query_text = self._extract_tool_query(tool_call)
+        results = self.corpus.search(query_text, top_k=top_k)
+        result_text = "\n\n".join(
+            f"[{i+1}] (score: {r.get('score', 0):.3f}) [{os.path.basename(r.get('source', ''))}] {r.get('text', '')}"
+            for i, r in enumerate(results)
+        )
+        observation: Dict[str, Any] = {"role": "tool", "content": result_text}
+        if isinstance(tool_call, dict) and tool_call.get("id"):
+            observation["tool_call_id"] = tool_call["id"]
+        return observation
+
+    def _make_environment_factory(
+        self,
+        *,
+        agent: BaseAgent,
+        max_steps: int,
+        top_k: int,
+    ) -> Any:
+        """Return a factory that builds solve-time environments with search enabled."""
+        available_tools = [self._build_search_tool_schema(
+            "Search the knowledge base for relevant documents."
+        )]
 
         def make_environment() -> Environment:
             return Environment(
-                tool_executor=tool_executor,
+                tool_executor=lambda tool_call: self._search_tool_observation(tool_call, top_k),
                 plugins=[
-                    # Compress when history exceeds 150K chars, matching
-                    # KARL BrowseCompPlus config. The agent summarizes
-                    # the full history into ~2K chars (~100x compression).
                     RLTrainableCompressionPlugin(
                         threshold_chars=150_000,
                         target_chars=2_000,
@@ -1217,116 +1362,92 @@ class Agent:
                     ),
                     StepBudgetPlugin(max_steps=max_steps),
                 ],
-                available_tools=[{
-                    "type": "function",
-                    "function": {
-                        "name": "search",
-                        "description": "Search the knowledge base for relevant documents.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "The search query.",
-                                }
-                            },
-                            "required": ["query"],
-                        },
-                    },
-                }],
+                available_tools=available_tools,
             )
 
-        # Format the question into the KARL solver prompt template (Figure 34)
-        formatted_query = self._format_solver_prompt(query)
+        return make_environment
 
-        if parallel_rollouts <= 1 and not (use_vgs and self._value_model):
-            # Single rollout
-            env = make_environment()
-            env.reset(prompt=formatted_query)
-            result = env.run_episode(agent, max_steps=max_steps)
-            answer = result.get("final_answer") or ""
-            if return_trace:
-                # Include full_response for judge scoring (richer context than extracted answer)
-                full_response = ""
-                for msg in reversed(result.get("history", [])):
-                    if msg.get("role") == "assistant" and not msg.get("tool_calls"):
-                        full_response = (
-                            msg.get("content", "")
-                            or msg.get("reasoning_content", "")
-                            or msg.get("reasoning", "")
-                            or ""
-                        )
-                        break
-                return {
-                    "answer": answer,
-                    "full_response": full_response,
-                    "trajectory": result.get("trajectory", []),
-                }
-            return answer
+    def _extract_full_response_from_history(self, history: List[Dict[str, Any]]) -> str:
+        """Return the final assistant response content from an episode history."""
+        for msg in reversed(history):
+            if msg.get("role") == "assistant" and not msg.get("tool_calls"):
+                return (
+                    msg.get("content", "")
+                    or msg.get("reasoning_content", "")
+                    or msg.get("reasoning", "")
+                    or ""
+                )
+        return ""
 
-        # Shared agent wrapper for both VGS and Parallel Thinking
+    def _solve_with_single_rollout(
+        self,
+        *,
+        agent: BaseAgent,
+        formatted_query: str,
+        environment_factory: Any,
+        max_steps: int,
+        return_trace: bool,
+    ) -> str | Dict[str, Any]:
+        """Run one environment-backed rollout and optionally return its trace."""
+        env = environment_factory()
+        env.reset(prompt=formatted_query)
+        result = env.run_episode(agent, max_steps=max_steps)
+        answer = result.get("final_answer") or ""
+        if return_trace:
+            return {
+                "answer": answer,
+                "full_response": self._extract_full_response_from_history(result.get("history", [])),
+                "trajectory": result.get("trajectory", []),
+            }
+        return answer
+
+    def _make_environment_backed_agent(
+        self,
+        *,
+        base_agent: BaseAgent,
+        environment_factory: Any,
+        max_steps: int,
+        top_k: int,
+    ) -> Any:
+        """Wrap a BaseAgent so VGS and parallel thinking can use search environments."""
+        search_tools = [self._build_search_tool_schema("Search the knowledge base.")]
+        search_tool_observation = lambda tool_call: self._search_tool_observation(tool_call, top_k)
+
         class _EnvironmentBackedAgent:
-            def __init__(self, base_agent: BaseAgent) -> None:
-                self._base_agent = base_agent
+            def __init__(self, wrapped_agent: BaseAgent) -> None:
+                self._wrapped_agent = wrapped_agent
 
             def generate_rollout(self, prompt: str, **kwargs: Any) -> Dict[str, Any]:
-                env = make_environment()
+                env = environment_factory()
                 env.reset(prompt=prompt)
                 return env.run_episode(
-                    self._base_agent,
+                    self._wrapped_agent,
                     max_steps=kwargs.get("max_steps", max_steps),
                 )
 
             def generate_step(
                 self, conversation_history: Any, **kwargs: Any,
             ) -> Dict[str, Any]:
-                """Single agent step for VGS expand().
-
-                VGS calls this with the conversation history built from
-                the search tree state. We run one agent step (generate +
-                optional tool execution) and return a step dict.
-                """
                 messages = (
                     list(conversation_history)
                     if isinstance(conversation_history, list)
                     else [{"role": "user", "content": str(conversation_history)}]
                 )
-
-                # Available tools for the agent
-                search_tools = [{
-                    "type": "function",
-                    "function": {
-                        "name": "search",
-                        "description": "Search the knowledge base.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "query": {"type": "string",
-                                          "description": "The search query."}
-                            },
-                            "required": ["query"],
-                        },
-                    },
-                }]
-
-                step_result = self._base_agent.generate_step(
-                    messages, available_tools=search_tools,
+                step_result = self._wrapped_agent.generate_step(
+                    messages,
+                    available_tools=search_tools,
                 )
                 content = step_result.get("content", "")
                 tool_calls = step_result.get("tool_calls")
-
-                # Execute tool call if present
                 if tool_calls:
-                    obs = tool_executor(tool_calls[0])
+                    observation = search_tool_observation(tool_calls[0])
                     return {
                         "type": "tool_call",
                         "role": "assistant",
                         "content": content,
-                        "result": obs.get("content", ""),
+                        "result": observation.get("content", ""),
                         "terminal": False,
                     }
-
-                # No tool call → final answer
                 return {
                     "type": "answer",
                     "role": "assistant",
@@ -1341,34 +1462,49 @@ class Agent:
                         or conversation_history.get("messages")
                         or conversation_history
                     )
-                return self._base_agent.extract_final_answer(conversation_history, **kwargs)
+                return self._wrapped_agent.extract_final_answer(conversation_history, **kwargs)
 
-        env_agent = _EnvironmentBackedAgent(agent)
+        return _EnvironmentBackedAgent(base_agent)
 
-        # Decide: VGS or Parallel Thinking
-        _use_vgs = use_vgs if use_vgs is not None else (self._value_model is not None)
+    def _solve_with_value_guided_search(
+        self,
+        *,
+        env_agent: Any,
+        formatted_query: str,
+        parallel_rollouts: int,
+        vgs_candidate_width: int,
+        vgs_max_depth: int,
+        return_trace: bool,
+    ) -> str | Dict[str, Any]:
+        """Solve with Value-Guided Search when a value model is available."""
+        from konash.inference.value_search import ValueGuidedSearchEngine
 
-        if _use_vgs and self._value_model is not None:
-            from konash.inference.value_search import ValueGuidedSearchEngine
-
-            vgs_engine = ValueGuidedSearchEngine(
+        vgs_engine = ValueGuidedSearchEngine(
+            agent=env_agent,
+            value_model=self._value_model,
+            aggregator=GenerativeAggregator(
                 agent=env_agent,
-                value_model=self._value_model,
-                aggregator=GenerativeAggregator(
-                    agent=env_agent,
-                    aggregation_mode="weighted_majority_vote",
-                ),
-                candidate_width=vgs_candidate_width,
-                parallel_searches=max(parallel_rollouts, 1),
-                max_depth=vgs_max_depth,
-            )
-            result = vgs_engine.run(formatted_query)
-            answer = result.get("answer", "")
-            if return_trace:
-                return {"answer": answer, "trajectory": result.get("trajectories", [])}
-            return answer
+                aggregation_mode="weighted_majority_vote",
+            ),
+            candidate_width=vgs_candidate_width,
+            parallel_searches=max(parallel_rollouts, 1),
+            max_depth=vgs_max_depth,
+        )
+        result = vgs_engine.run(formatted_query)
+        answer = result.get("answer", "")
+        if return_trace:
+            return {"answer": answer, "trajectory": result.get("trajectories", [])}
+        return answer
 
-        # Fallback: Parallel Thinking (no value model)
+    def _solve_with_parallel_thinking(
+        self,
+        *,
+        env_agent: Any,
+        formatted_query: str,
+        parallel_rollouts: int,
+        return_trace: bool,
+    ) -> str | Dict[str, Any]:
+        """Solve with parallel rollouts and generative aggregation."""
         engine = ParallelThinkingEngine(
             agent=env_agent,
             aggregator=GenerativeAggregator(
