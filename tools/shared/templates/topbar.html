@@ -5,92 +5,128 @@
 <style>
 /* ── Shared Topbar ──────────────────────────────────────── */
 .topbar {
-  background: #FFFFFF;
-  border-bottom: 1px solid #E2E2E2;
+  background: rgba(243, 240, 234, 0.88);
+  border-bottom: 1px solid rgba(26, 26, 26, 0.08);
   position: sticky;
   top: 0;
   z-index: 100;
+  backdrop-filter: blur(14px);
 }
 .topbar-inner {
-  max-width: 1200px;
+  max-width: 1520px;
   margin: 0 auto;
-  padding: 0 24px;
-  height: 52px;
+  padding: 12px 28px;
+  min-height: 76px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 18px;
 }
 .topbar-left {
   display: flex;
   align-items: center;
-  gap: 28px;
+  gap: 22px;
+  min-width: 0;
 }
 .topbar-right {
   display: flex;
   align-items: center;
   gap: 10px;
   position: relative;
+  flex-shrink: 0;
 }
 .logo {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   font-weight: 700;
-  font-size: 14px;
+  font-size: 15px;
   letter-spacing: 0.6px;
   text-transform: uppercase;
-  color: #000000;
+  color: #161513;
   font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  flex-shrink: 0;
 }
 .logo-mark {
-  width: 48px;
-  height: 34px;
+  width: 52px;
+  height: 36px;
   display: block;
   object-fit: contain;
   object-position: center;
 }
 .nav-tabs {
   display: flex;
-  gap: 0;
-  height: 52px;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 .nav-tab {
   display: flex;
   align-items: center;
+  justify-content: center;
+  min-height: 42px;
   padding: 0 16px;
   font-size: 13px;
-  font-weight: 500;
-  color: #888888;
+  font-weight: 700;
+  color: #625e58;
   text-decoration: none;
-  border-bottom: 2px solid transparent;
-  transition: color 0.15s;
-  letter-spacing: 0.3px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  transition: all 0.16s ease;
+  letter-spacing: 0.02em;
   font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  white-space: nowrap;
 }
-.nav-tab:hover { color: #000000; }
+.nav-tab:hover {
+  color: #161513;
+  background: rgba(255, 255, 255, 0.78);
+  border-color: rgba(26, 26, 26, 0.08);
+}
 .nav-tab.active {
-  color: #000000;
-  font-weight: 600;
-  border-bottom-color: #E50012;
+  color: #ffffff;
+  background: #161513;
+  border-color: #161513;
 }
 .topbar-btn {
-  padding: 6px 14px;
-  border-radius: 3px;
-  border: 1px solid #E2E2E2;
-  background: #FFFFFF;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(26, 26, 26, 0.08);
+  background: rgba(255, 255, 255, 0.82);
   color: #444444;
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.16s ease;
   font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-weight: 500;
+  gap: 6px;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(15, 15, 15, 0.04);
 }
 .topbar-btn:hover {
-  border-color: #888888;
+  border-color: rgba(26, 26, 26, 0.14);
   color: #000000;
+  background: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(18, 17, 14, 0.07);
+}
+
+@media (max-width: 900px) {
+  .topbar-inner {
+    padding: 12px 16px;
+    align-items: flex-start;
+  }
+
+  .topbar-left {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .topbar-right {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
 </style>
 

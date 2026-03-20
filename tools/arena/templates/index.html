@@ -6,51 +6,48 @@
 <title>KONASH Arena</title>
 {% include "favicon.html" %}
 <style>
-/* ================================================================
-   CSS Variables — Swiss (International Typographic Style) Light Theme
-   ================================================================ */
 :root {
-  --bg-primary: #FFFFFF;
-  --bg-secondary: #F7F7F7;
-  --bg-tertiary: #EFEFEF;
-  --bg-card: #FFFFFF;
-  --bg-card-hover: #FAFAFA;
-  --bg-input: #FFFFFF;
+  --bg-primary: #f3f0ea;
+  --bg-secondary: #fffdf9;
+  --bg-tertiary: #f7f4ee;
+  --bg-card: #ffffff;
+  --bg-card-hover: #fffdfa;
+  --bg-input: #ffffff;
 
-  --border: #DCDCDC;
-  --border-light: #E8E8E8;
+  --border: rgba(26, 26, 26, 0.08);
+  --border-light: rgba(26, 26, 26, 0.05);
 
-  --text-primary: #111111;
-  --text-secondary: #555555;
-  --text-muted: #999999;
-  --text-link: #0055CC;
+  --text-primary: #161513;
+  --text-secondary: #625e58;
+  --text-muted: #938d84;
+  --text-link: #1f5eff;
 
-  --accent-blue: #0055CC;
-  --accent-blue-dim: #003D99;
-  --accent-yellow: #CC8800;
-  --accent-yellow-dim: #996600;
-  --accent-green: #1B7A3D;
-  --accent-green-dim: #145C2E;
-  --accent-red: #D50000;
+  --accent-blue: #1f5eff;
+  --accent-blue-dim: #1849c9;
+  --accent-yellow: #b75d10;
+  --accent-yellow-dim: #934809;
+  --accent-green: #18794e;
+  --accent-green-dim: #125c3b;
+  --accent-red: #d50000;
   --accent-purple: #6B3FA0;
-  --accent-gray: #888888;
+  --accent-gray: #7a736b;
 
-  --badge-a-bg: #CC8800;
+  --badge-a-bg: #b75d10;
   --badge-a-text: #FFFFFF;
-  --badge-b-bg: #0055CC;
+  --badge-b-bg: #1f5eff;
   --badge-b-text: #FFFFFF;
 
   --font-sans: 'Helvetica Neue', Helvetica, Arial, sans-serif;
   --font-mono: 'SF Mono', Monaco, 'Cascadia Mono', Consolas, monospace;
 
-  --radius-sm: 2px;
-  --radius-md: 3px;
-  --radius-lg: 4px;
-  --radius-pill: 2px;
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
+  --radius-pill: 999px;
 
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-md: 0 2px 8px rgba(0,0,0,0.06);
-  --shadow-lg: 0 4px 16px rgba(0,0,0,0.08);
+  --shadow-sm: 0 1px 2px rgba(15, 15, 15, 0.04);
+  --shadow-md: 0 12px 32px rgba(18, 17, 14, 0.06);
+  --shadow-lg: 0 18px 48px rgba(18, 17, 14, 0.09);
 
   --transition-fast: 150ms ease;
   --transition-normal: 250ms ease;
@@ -75,13 +72,68 @@ body {
   min-height: 100vh;
 }
 
-/* ================================================================
-   Main Layout
-   ================================================================ */
 .container {
-  max-width: 1200px;
+  max-width: 1520px;
   margin: 0 auto;
-  padding: 28px 24px 120px;
+  padding: 28px 28px 120px;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.page-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.eyebrow {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.page-title {
+  font-size: clamp(1.9rem, 2.55vw, 2.75rem);
+  line-height: 1.03;
+  letter-spacing: -0.04em;
+  font-weight: 700;
+  max-width: 980px;
+}
+
+.page-subtitle {
+  max-width: 780px;
+  font-size: 1rem;
+  color: var(--text-secondary);
+}
+
+.page-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  white-space: nowrap;
+  backdrop-filter: blur(8px);
+}
+
+.page-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-green);
 }
 
 /* ================================================================
@@ -89,16 +141,22 @@ body {
    ================================================================ */
 .question-section {
   margin-bottom: 24px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: 22px;
 }
 
 .question-bar {
   display: flex;
   align-items: stretch;
   gap: 10px;
-  background: var(--bg-primary);
+  background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 10px 14px;
+  border-radius: 18px;
+  padding: 14px 16px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
 }
 
 .question-input {
@@ -106,12 +164,13 @@ body {
   background: transparent;
   border: none;
   color: var(--text-primary);
-  font-size: 0.95rem;
+  font-size: 1rem;
   font-family: var(--font-sans);
   outline: none;
   resize: none;
   min-height: 20px;
-  max-height: 80px;
+  max-height: 120px;
+  overflow-y: auto;
   line-height: 1.5;
 }
 
@@ -127,10 +186,10 @@ body {
 }
 
 .btn-run {
-  padding: 8px 20px;
-  border-radius: var(--radius-sm);
+  padding: 12px 20px;
+  border-radius: 14px;
   border: none;
-  background: var(--accent-red);
+  background: var(--text-primary);
   color: white;
   font-size: 0.85rem;
   font-weight: 600;
@@ -140,19 +199,20 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  box-shadow: var(--shadow-sm);
 }
 
-.btn-run:hover { background: #B00000; }
+.btn-run:hover { background: #0f0f0e; transform: translateY(-1px); }
 .btn-run:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
 .btn-stop {
-  padding: 8px 16px;
-  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  border-radius: 14px;
   border: 1px solid var(--border);
-  background: var(--bg-primary);
+  background: rgba(255,255,255,0.82);
   color: var(--accent-red);
   font-size: 0.85rem;
   font-weight: 600;
@@ -166,10 +226,12 @@ body {
 
 .btn-stop.visible {
   display: flex;
+  box-shadow: var(--shadow-sm);
 }
 
 .btn-stop:hover {
-  background: rgba(213, 0, 0, 0.05);
+  background: rgba(255, 255, 255, 1);
+  transform: translateY(-1px);
 }
 
 .btn-stop:disabled {
@@ -181,18 +243,24 @@ body {
    Config Bar (below question)
    ================================================================ */
 .config-bar {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-top: 12px;
-  padding: 0 4px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+  padding: 0;
 }
 
 .config-group {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-start;
+  gap: 8px;
+  flex-direction: column;
+  padding: 14px;
+  background: rgba(255,255,255,0.62);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  min-height: 88px;
+  min-width: 0;
 }
 
 .config-group.config-column {
@@ -204,18 +272,27 @@ body {
 .config-label {
   font-size: 0.7rem;
   color: var(--text-muted);
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 
+.config-group.model-group { grid-column: span 3; }
+.config-group.corpus-group { grid-column: span 2; }
+.config-group.question-group { grid-column: span 3; }
+.config-group.toggle-group {
+  grid-column: span 1;
+  justify-content: center;
+}
+
 .config-select {
-  padding: 5px 28px 5px 10px;
-  border-radius: var(--radius-sm);
+  width: 100%;
+  padding: 10px 34px 10px 12px;
+  border-radius: 14px;
   border: 1px solid var(--border);
   background: var(--bg-primary);
   color: var(--text-primary);
-  font-size: 0.8rem;
+  font-size: 0.84rem;
   font-family: var(--font-sans);
   cursor: pointer;
   appearance: none;
@@ -223,6 +300,7 @@ body {
   background-repeat: no-repeat;
   background-position: right 8px center;
   min-width: 180px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
 }
 
 .config-select:focus {
@@ -231,8 +309,9 @@ body {
 }
 
 .custom-model-input {
-  padding: 5px 10px;
-  border-radius: var(--radius-sm);
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 14px;
   border: 1px solid var(--border);
   background: var(--bg-primary);
   color: var(--text-primary);
@@ -252,15 +331,18 @@ body {
 .config-toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
   cursor: pointer;
+  justify-content: center;
+  width: 100%;
+  min-height: 100%;
 }
 
 .toggle-switch {
   position: relative;
   width: 34px;
   height: 18px;
-  background: var(--border);
+  background: rgba(17,17,17,0.12);
   border-radius: var(--radius-pill);
   transition: background var(--transition-fast);
   cursor: pointer;
@@ -288,9 +370,10 @@ body {
 }
 
 .toggle-label {
-  font-size: 0.8rem;
+  font-size: 0.82rem;
   color: var(--text-secondary);
   user-select: none;
+  font-weight: 600;
 }
 
 /* ================================================================
@@ -299,14 +382,15 @@ body {
 .columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px;
+  gap: 20px;
   margin-bottom: 24px;
 }
 
 .column {
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
   overflow: hidden;
   min-height: 300px;
 }
@@ -316,9 +400,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-secondary);
+  padding: 18px 18px 16px;
+  border-bottom: 1px solid var(--border-light);
+  background: rgba(255,255,255,0.55);
 }
 
 .col-header-left {
@@ -328,9 +412,9 @@ body {
 }
 
 .col-badge {
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-sm);
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -350,8 +434,8 @@ body {
 }
 
 .col-title {
-  font-weight: 600;
-  font-size: 0.9rem;
+  font-weight: 700;
+  font-size: 0.98rem;
   color: var(--text-primary);
 }
 
@@ -372,9 +456,9 @@ body {
   align-items: center;
   gap: 5px;
   font-size: 0.75rem;
-  padding: 3px 10px;
-  border-radius: var(--radius-sm);
-  font-weight: 500;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-weight: 700;
 }
 
 .status-badge.idle {
@@ -421,7 +505,7 @@ body {
 
 /* Column Body */
 .col-body {
-  padding: 12px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -465,7 +549,7 @@ body {
 .step-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: 18px;
   overflow: hidden;
   transition: border-color var(--transition-fast);
   animation: slideIn 0.3s ease-out;
@@ -490,7 +574,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 14px 14px;
   cursor: pointer;
   user-select: none;
   transition: background var(--transition-fast);
@@ -501,9 +585,9 @@ body {
 }
 
 .step-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-sm);
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -532,8 +616,8 @@ body {
 }
 
 .step-title {
-  font-size: 0.8rem;
-  font-weight: 600;
+  font-size: 0.85rem;
+  font-weight: 700;
   color: var(--text-primary);
   display: flex;
   align-items: center;
@@ -566,7 +650,7 @@ body {
 
 .step-body {
   display: none;
-  padding: 0 12px 12px;
+  padding: 0 14px 14px;
   font-size: 0.8rem;
   color: var(--text-secondary);
   line-height: 1.6;
@@ -602,9 +686,9 @@ body {
 }
 
 .retrieval-result {
-  background: var(--bg-secondary);
+  background: var(--bg-tertiary);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: 14px;
   padding: 8px 10px;
   font-size: 0.75rem;
   line-height: 1.5;
@@ -634,9 +718,9 @@ body {
 
 /* Search query display */
 .search-query {
-  background: var(--bg-secondary);
+  background: var(--bg-tertiary);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: 14px;
   padding: 6px 10px;
   font-family: var(--font-mono);
   font-size: 0.75rem;
@@ -661,9 +745,9 @@ body {
 /* Answer text */
 .answer-text {
   padding: 10px 12px;
-  background: rgba(27, 122, 61, 0.05);
-  border: 1px solid rgba(27, 122, 61, 0.2);
-  border-radius: var(--radius-sm);
+  background: rgba(24, 121, 78, 0.06);
+  border: 1px solid rgba(24, 121, 78, 0.16);
+  border-radius: 16px;
   color: var(--text-primary);
   line-height: 1.6;
   white-space: pre-wrap;
@@ -684,10 +768,11 @@ body {
 .judge-panel {
   display: none;
   margin-bottom: 24px;
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 18px 20px;
+  padding: 22px;
+  box-shadow: var(--shadow-md);
 }
 
 .judge-panel.visible {
@@ -728,9 +813,9 @@ body {
 
 .judge-card {
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: 18px;
   padding: 14px;
-  background: var(--bg-secondary);
+  background: rgba(255,255,255,0.62);
 }
 
 .judge-card-header {
@@ -819,10 +904,11 @@ body {
    Voting Panel
    ================================================================ */
 .voting-panel {
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 24px;
+  box-shadow: var(--shadow-md);
   opacity: 0.4;
   pointer-events: none;
   transition: all var(--transition-normal);
@@ -873,7 +959,7 @@ body {
   width: 100%;
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: 16px;
   padding: 10px 12px;
   color: var(--text-primary);
   font-size: 0.85rem;
@@ -908,7 +994,7 @@ body {
 
 .vote-btn {
   padding: 10px 28px;
-  border-radius: var(--radius-md);
+  border-radius: 16px;
   border: 1px solid var(--border);
   font-size: 0.9rem;
   font-weight: 600;
@@ -995,7 +1081,7 @@ body {
 }
 
 .modal {
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   width: 90%;
@@ -1138,9 +1224,9 @@ body {
   top: 100%;
   right: 0;
   margin-top: 6px;
-  background: var(--bg-primary);
+  background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: 18px;
   padding: 12px 16px;
   min-width: 260px;
   box-shadow: var(--shadow-md);
@@ -1178,7 +1264,7 @@ body {
 .settings-input {
   width: 70px;
   padding: 4px 8px;
-  border-radius: var(--radius-sm);
+  border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--bg-input);
   color: var(--text-primary);
@@ -1200,13 +1286,14 @@ body {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  padding: 10px;
-  background: rgba(0, 85, 204, 0.06);
-  border: 1px solid rgba(0, 85, 204, 0.2);
-  border-radius: var(--radius-md);
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--border);
+  border-radius: 18px;
   margin-bottom: 16px;
   font-size: 0.85rem;
-  color: var(--accent-blue);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-sm);
 }
 
 .share-banner.visible {
@@ -1216,15 +1303,15 @@ body {
 .share-link {
   font-family: var(--font-mono);
   font-size: 0.8rem;
-  background: var(--bg-secondary);
-  padding: 3px 8px;
-  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  padding: 6px 10px;
+  border-radius: 12px;
   user-select: all;
 }
 
 .btn-copy {
-  padding: 4px 10px;
-  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--bg-primary);
   color: var(--text-secondary);
@@ -1258,6 +1345,13 @@ body {
    Responsive
    ================================================================ */
 @media (max-width: 900px) {
+  .container {
+    padding: 18px 16px 100px;
+  }
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
   .columns {
     grid-template-columns: 1fr;
   }
@@ -1265,9 +1359,13 @@ body {
     grid-template-columns: 1fr;
   }
   .config-bar {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 10px;
+    grid-template-columns: 1fr;
+  }
+  .config-group.model-group,
+  .config-group.corpus-group,
+  .config-group.question-group,
+  .config-group.toggle-group {
+    grid-column: span 1;
   }
   .topbar-inner {
     flex-wrap: wrap;
@@ -1320,6 +1418,19 @@ body {
      Main Content
      ================================================================ -->
 <div class="container">
+  <div class="page-header">
+    <div class="page-title-group">
+      <div class="eyebrow">Model Arena</div>
+      <h1 class="page-title">Compare retrieval agents in a workspace built for judgment.</h1>
+      <p class="page-subtitle">
+        Run two models side by side, inspect their search traces, and score the answers with benchmark-aware review in the same interface.
+      </p>
+    </div>
+    <div class="page-status">
+      <span class="page-status-dot"></span>
+      Live comparison workspace
+    </div>
+  </div>
 
   <!-- Share Banner -->
   <div class="share-banner" id="shareBanner">
@@ -1344,34 +1455,34 @@ body {
       </div>
     </div>
     <div class="config-bar">
-      <div class="config-group">
+      <div class="config-group model-group">
         <span class="config-label">Model A</span>
         <select class="config-select" id="selectModelA"></select>
         <input class="config-input custom-model-input" id="customModelA" type="text"
                placeholder="or paste Together AI model ID"
                style="display:none; margin-top:4px; width:100%;">
       </div>
-      <div class="config-group">
+      <div class="config-group model-group">
         <span class="config-label">Model B</span>
         <select class="config-select" id="selectModelB"></select>
         <input class="config-input custom-model-input" id="customModelB" type="text"
                placeholder="or paste Together AI model ID"
                style="display:none; margin-top:4px; width:100%;">
       </div>
-      <div class="config-group" style="flex:1; min-width:200px;">
+      <div class="config-group corpus-group">
         <span class="config-label">Corpus</span>
-        <select class="config-select" id="corpusSelect" style="min-width:200px;">
+        <select class="config-select" id="corpusSelect">
           <option value="">(none — direct LLM)</option>
         </select>
       </div>
-      <div class="config-group config-column" style="flex:1.2; min-width:320px;">
+      <div class="config-group config-column question-group">
         <span class="config-label">Eval Question</span>
-        <select class="config-select" id="questionSelect" style="min-width:320px;" disabled>
+        <select class="config-select" id="questionSelect" disabled>
           <option value="">Manual question</option>
         </select>
         <div class="col-subtitle" id="questionMeta">Choose a benchmark corpus to load its eval questions.</div>
       </div>
-      <div class="config-group config-toggle" id="toggleBlind">
+      <div class="config-group config-toggle toggle-group" id="toggleBlind">
         <div class="toggle-switch" id="blindToggle"></div>
         <span class="toggle-label">Blind mode</span>
       </div>
