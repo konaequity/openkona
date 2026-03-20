@@ -120,6 +120,11 @@ body {
   margin-bottom: 24px;
 }
 
+.control-copy {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
 .control-title {
   font-size: 0.8rem;
   font-weight: 700;
@@ -135,8 +140,18 @@ body {
   letter-spacing: -0.02em;
 }
 
+.control-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 1 560px;
+  width: min(100%, 560px);
+  min-width: 0;
+}
+
 .project-selector {
-  min-width: min(420px, 100%);
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .project-selector select {
@@ -160,6 +175,32 @@ body {
   outline: none;
   border-color: rgba(31, 94, 255, 0.35);
   box-shadow: 0 0 0 4px rgba(31, 94, 255, 0.08);
+}
+
+.control-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 16px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.8);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow: var(--shadow-sm);
+  transition: all 0.16s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.control-link:hover {
+  transform: translateY(-1px);
+  background: #fff;
+  box-shadow: var(--shadow-md);
 }
 
 .summary-grid {
@@ -454,6 +495,7 @@ body {
     align-items: flex-start;
   }
 
+  .control-actions,
   .project-selector {
     min-width: 0;
     width: 100%;
@@ -482,14 +524,17 @@ body {
   </div>
 
   <div class="control-bar">
-    <div>
+    <div class="control-copy">
       <div class="control-title">Active Project</div>
       <div class="control-value">Select a run to inspect its training pipeline.</div>
     </div>
-    <div class="project-selector">
-      <select id="project-select" onchange="loadProject(this.value)">
-        <option value="">Select a project...</option>
-      </select>
+    <div class="control-actions">
+      <div class="project-selector">
+        <select id="project-select" onchange="loadProject(this.value)">
+          <option value="">Select a project...</option>
+        </select>
+      </div>
+      <a class="control-link" href="/training/live/">Trainer Live</a>
     </div>
   </div>
 

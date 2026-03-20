@@ -232,7 +232,7 @@ def _deploy_to_together(engine, args):
     print(f"  Use model name: {model_name}")
 
 
-def _train_value_model(output_dir: str, num_iterations: int) -> None:
+def _train_value_model(output_dir: str, num_iterations: int) -> dict | None:
     """Train a NeuralValueModel (Qwen3-4B) on accumulated rollout data.
 
     Matches KARL paper Section 5.2: uses a small transformer LM as the value
@@ -256,7 +256,7 @@ def _train_value_model(output_dir: str, num_iterations: int) -> None:
 
     if not all_rollouts:
         print("  No rollout data found — skipping value model.")
-        return
+        return None
 
     print(f"  Collected {len(all_rollouts)} rollouts across {num_iterations} iterations")
 
@@ -276,6 +276,7 @@ def _train_value_model(output_dir: str, num_iterations: int) -> None:
         print(f"  Value model trained — loss {vm_stats['final_loss']:.4f}")
         print(f"  Saved to {vm_path}")
         print(f"##KONASH:value_model_done:loss={vm_stats['final_loss']:.4f}##")
+        return vm_stats
     except (ImportError, RuntimeError) as e:
         print(f"  NeuralValueModel unavailable ({e}), using lightweight ValueModel")
         from konash.inference.value_model import ValueModel
@@ -294,6 +295,7 @@ def _train_value_model(output_dir: str, num_iterations: int) -> None:
         print(f"  Lightweight value model trained — loss {vm_stats['final_loss']:.4f}")
         print(f"  Saved to {vm_path}")
         print(f"##KONASH:value_model_done:loss={vm_stats['final_loss']:.4f}##")
+        return vm_stats
 
 
 def load_rollouts_from_stage3(path: str):
@@ -357,6 +359,7 @@ def train_from_rollouts(args):
     """Train OAPL from pre-generated rollouts."""
     from konash.training.unsloth_engine import UnslothEngine
     from konash.training.oapl import OAPLTrainer
+    from konash.training.logger import TrainingLogger
 
     print("=" * 60)
     print("  KONASH OAPL Training (Unsloth)")
@@ -370,6 +373,14 @@ def train_from_rollouts(args):
     print(f"  Rollouts:  {args.rollouts}")
     print(f"  Output:    {args.output}")
     print()
+
+    project_name = os.path.basename(os.path.abspath(args.output)) or "default"
+    log = TrainingLogger(project_name)
+    log.start(
+        iterations=args.epochs,
+        corpus=args.rollouts or "(rollouts)",
+        model=args.model,
+    )
 
     # Load data
     print("##KONASH:loading_data##")
@@ -435,6 +446,17 @@ def train_from_rollouts(args):
         print(f"  Segments:   {stats['num_segments']}")
         print(f"  Masked:     {stats['masked_token_pct']:.1f}% tokens")
         print(f"  Wall time:  {elapsed:.1f}s")
+        log.oapl(
+            iteration=1,
+            epoch=epoch + 1,
+            loss=stats["mean_loss"],
+            kl=stats.get("mean_kl", 0),
+            entropy=stats.get("mean_entropy", 0),
+            num_groups=stats["num_groups"],
+            num_rollouts=stats["num_rollouts"],
+            learning_rate=args.lr,
+            duration_seconds=elapsed,
+        )
 
     # Save checkpoint
     os.makedirs(args.output, exist_ok=True)
@@ -451,7 +473,13 @@ def train_from_rollouts(args):
         json.dump(rollout_dicts, f, default=str)
 
     # Train value model (KARL Section 5.2)
-    _train_value_model(args.output, 1)
+    vm_stats = _train_value_model(args.output, 1)
+    if vm_stats:
+        log.value_model(
+            loss=vm_stats.get("final_loss", 0),
+            epochs=vm_stats.get("epochs", 0),
+            duration_seconds=0,
+        )
 
     meta = {
         "model": args.model,
@@ -468,6 +496,12 @@ def train_from_rollouts(args):
     meta_path = os.path.join(args.output, "training_meta.json")
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
+
+    log.complete(
+        iterations=args.epochs,
+        total_seconds=sum(s.get("wall_time_s", 0) for s in all_stats),
+        stats=all_stats,
+    )
 
     print(f"##KONASH:complete##")
     print(f"\n{'='*60}")
@@ -614,6 +648,7 @@ def train_full_pipeline(args):
                 entropy=stats.get("mean_entropy", 0),
                 num_groups=stats["num_groups"],
                 num_rollouts=stats["num_rollouts"],
+                learning_rate=args.lr,
                 duration_seconds=_oapl_dur,
             )
         except Exception:
@@ -639,7 +674,18 @@ def train_full_pipeline(args):
         # so the next iteration naturally bootstraps from the trained policy.
 
     # Train value model (KARL Section 5.2: Qwen3-4B-Thinking)
-    _train_value_model(args.output, args.iterations)
+    vm_stats = _train_value_model(args.output, args.iterations)
+    if vm_stats:
+        try:
+            from konash.training.logger import TrainingLogger
+            _log = TrainingLogger(os.path.basename(args.output) or "default")
+            _log.value_model(
+                loss=vm_stats.get("final_loss", 0),
+                epochs=vm_stats.get("epochs", 0),
+                duration_seconds=0,
+            )
+        except Exception:
+            pass
 
     # Save final meta
     meta_path = os.path.join(args.output, "training_meta.json")

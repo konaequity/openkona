@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KONASH Trainer Live</title>
+{% include "favicon.html" %}
+<style>
+:root {
+  --bg: #f3f0ea;
+  --surface: #fffdf9;
+  --surface-muted: #f7f4ee;
+  --border: rgba(26, 26, 26, 0.08);
+  --border-light: rgba(26, 26, 26, 0.05);
+  --text: #161513;
+  --text-2: #625e58;
+  --text-3: #938d84;
+  --green: #18794e;
+  --blue: #1f5eff;
+  --orange: #b75d10;
+  --red: #d50000;
+  --purple: #6c45a4;
+  --font: 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
+  --mono: 'SF Mono', 'Monaco', 'Menlo', monospace;
+  --radius-md: 18px;
+  --radius-lg: 24px;
+  --shadow-sm: 0 1px 2px rgba(15,15,15,0.04);
+  --shadow-md: 0 12px 32px rgba(18,17,14,0.06);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page-shell {
+  max-width: 1520px;
+  margin: 0 auto;
+  padding: 28px 28px 40px;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.page-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.eyebrow {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.page-title {
+  font-size: clamp(2rem, 3vw, 3rem);
+  line-height: 0.98;
+  letter-spacing: -0.04em;
+  font-weight: 700;
+  max-width: 980px;
+}
+
+.page-subtitle {
+  max-width: 780px;
+  font-size: 1rem;
+  color: var(--text-2);
+}
+
+.page-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  color: var(--text-2);
+  font-size: 0.82rem;
+  white-space: nowrap;
+  backdrop-filter: blur(8px);
+}
+
+.page-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  margin-bottom: 24px;
+}
+
+.toolbar-left {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.toolbar-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.toolbar-meta {
+  font-size: 0.82rem;
+  color: var(--text-3);
+}
+
+.toolbar-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+
+.toolbar-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 0 rgba(24,121,78,0.28);
+  animation: pulse 1.8s ease-out infinite;
+}
+
+.toolbar-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(24,121,78,0.08);
+  color: var(--green);
+  font-size: 0.78rem;
+  font-weight: 700;
+  width: fit-content;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.toolbar-update.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toolbar-update.complete {
+  background: rgba(17,17,17,0.05);
+  color: var(--text-2);
+}
+
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(24,121,78,0.28); }
+  70% { box-shadow: 0 0 0 8px rgba(24,121,78,0); }
+  100% { box-shadow: 0 0 0 0 rgba(24,121,78,0); }
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.project-select {
+  min-width: 340px;
+  width: 340px;
+  padding: 13px 42px 13px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 16px center;
+}
+
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.82);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+
+.toolbar-btn:hover {
+  background: #fff;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  gap: 22px;
+}
+
+.surface {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+
+.hero-card {
+  padding: 22px;
+  margin-bottom: 22px;
+}
+
+.sticky-metrics {
+  position: sticky;
+  top: 96px;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 14px;
+  background: rgba(255, 253, 249, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(12px);
+}
+
+.sticky-metric {
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(247, 244, 238, 0.9);
+  border: 1px solid var(--border-light);
+}
+
+.sticky-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.sticky-value {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.hero-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.hero-title {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.hero-subtitle {
+  margin-top: 6px;
+  color: var(--text-2);
+  font-size: 0.92rem;
+}
+
+.stage-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(24,121,78,0.08);
+  color: var(--green);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.stage-pill.error {
+  background: rgba(213,0,0,0.08);
+  color: var(--red);
+}
+
+.progress-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.metric-card {
+  background: var(--surface-muted);
+  border: 1px solid var(--border-light);
+  border-radius: 18px;
+  padding: 14px;
+}
+
+.metric-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.metric-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.metric-subvalue {
+  margin-top: 4px;
+  color: var(--text-2);
+  font-size: 0.82rem;
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+}
+
+.chart-card {
+  padding: 18px 20px;
+}
+
+.chart-title {
+  font-size: 0.98rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 12px;
+}
+
+.chart-empty {
+  min-height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  background: rgba(255,255,255,0.3);
+  border: 1px dashed rgba(17,17,17,0.12);
+  border-radius: 18px;
+}
+
+.chart-svg {
+  width: 100%;
+  height: 220px;
+  display: block;
+}
+
+.chart-axis {
+  stroke: rgba(17,17,17,0.12);
+  stroke-width: 1;
+}
+
+.chart-line.loss { stroke: var(--orange); }
+.chart-line.entropy { stroke: var(--purple); }
+
+.chart-line {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chart-dot {
+  fill: currentColor;
+}
+
+.side-column {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.detail-card {
+  padding: 18px 20px;
+}
+
+.detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.detail-row:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.detail-name {
+  color: var(--text-3);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+.detail-value {
+  text-align: right;
+  font-size: 0.9rem;
+  color: var(--text);
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.timeline-card {
+  padding: 18px 20px;
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.timeline-item {
+  display: flex;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  transition: background 0.2s ease, border-color 0.2s ease;
+  border: 1px solid transparent;
+}
+
+.timeline-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex-shrink: 0;
+  background: var(--blue);
+  box-shadow: 0 0 0 4px rgba(17,17,17,0.04);
+}
+
+.timeline-dot.value_model { background: var(--purple); }
+.timeline-dot.complete { background: var(--green); }
+.timeline-dot.error { background: var(--red); }
+.timeline-dot.start { background: var(--blue); }
+
+.timeline-title {
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.timeline-detail {
+  margin-top: 3px;
+  color: var(--text-2);
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
+.timeline-meta {
+  margin-top: 4px;
+  color: var(--text-3);
+  font-size: 0.75rem;
+  font-family: var(--mono);
+}
+
+.timeline-item.latest-flash {
+  background: rgba(24,121,78,0.08);
+  border-color: rgba(24,121,78,0.16);
+  animation: latest-event-flash 2.6s ease-out 1;
+}
+
+@keyframes latest-event-flash {
+  0% {
+    background: rgba(24,121,78,0.16);
+    border-color: rgba(24,121,78,0.28);
+    transform: translateY(-1px);
+  }
+  100% {
+    background: rgba(24,121,78,0.02);
+    border-color: transparent;
+    transform: translateY(0);
+  }
+}
+
+.timeline-note {
+  margin-top: -2px;
+  margin-bottom: 12px;
+  color: var(--text-3);
+  font-size: 0.78rem;
+}
+
+.empty-state {
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-3);
+  text-align: center;
+  background: rgba(255,255,255,0.38);
+  border: 1px dashed rgba(17,17,17,0.12);
+  border-radius: 24px;
+  padding: 24px;
+}
+
+.empty-state h2 {
+  color: var(--text-2);
+  font-size: 1.1rem;
+  letter-spacing: -0.02em;
+}
+
+@media (max-width: 1100px) {
+  .page-shell {
+    padding: 18px 16px 24px;
+  }
+
+  .page-header,
+  .toolbar,
+  .hero-top {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .toolbar-right,
+  .project-select {
+    width: 100%;
+  }
+
+  .layout,
+  .chart-grid,
+  .progress-strip,
+  .sticky-metrics {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
+</head>
+<body>
+{% set active_tab = "training" %}
+{% include "topbar.html" %}
+
+<div class="page-shell">
+  <div class="page-header">
+    <div class="page-title-group">
+      <div class="eyebrow">Trainer Live</div>
+      <h1 class="page-title">Monitor actual model optimization in real time.</h1>
+      <p class="page-subtitle">
+        This workspace is only for OAPL policy training and value-model fitting. Synthesis, rollouts, and filtering stay in the pipeline view.
+      </p>
+    </div>
+    <div class="page-status">
+      <span class="page-status-dot"></span>
+      Actual trainer observability
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="toolbar-left">
+      <div class="toolbar-label">Training Run</div>
+      <div id="toolbarSummary">Choose a project with trainer events.</div>
+      <div class="toolbar-meta" id="toolbarMeta">Auto-refreshes every 3 seconds while a run is selected.</div>
+      <div class="toolbar-live"><span class="toolbar-live-dot"></span><span id="toolbarLiveText">Polling for trainer updates</span></div>
+      <div class="toolbar-update" id="toolbarUpdate">Waiting for new telemetry</div>
+    </div>
+    <div class="toolbar-right">
+      <select id="projectSelect" class="project-select">
+        <option value="">Select a project…</option>
+      </select>
+      <button class="toolbar-btn" id="btnRefresh">Refresh</button>
+      <button class="toolbar-btn" id="btnPipeline" onclick="window.location.href='/training/'">Pipeline View</button>
+    </div>
+  </div>
+
+  <div id="content" class="empty-state">
+    <h2>No trainer selected</h2>
+    <p>Select a project to inspect OAPL and value-model metrics.</p>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  const $ = id => document.getElementById(id);
+  const projectSelect = $('projectSelect');
+  const btnRefresh = $('btnRefresh');
+  const content = $('content');
+  const toolbarSummary = $('toolbarSummary');
+  const toolbarMeta = $('toolbarMeta');
+  const toolbarLiveText = $('toolbarLiveText');
+  const toolbarUpdate = $('toolbarUpdate');
+  const DEMO_PROJECT = 'trainer-live-demo';
+
+  let activeProject = '';
+  let refreshTimer = null;
+  let lastFingerprint = null;
+  let lastSeenProject = '';
+  let lastProjectsSignature = '';
+  let inflightProjectRequest = null;
+
+  function fmtNum(v, digits = 4) {
+    if (v == null || v === '') return '—';
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '—';
+    return n.toFixed(digits);
+  }
+
+  function fmtDuration(seconds) {
+    if (seconds == null) return '—';
+    const n = Number(seconds);
+    if (!Number.isFinite(n)) return '—';
+    if (n < 60) return `${Math.round(n)}s`;
+    if (n < 3600) return `${Math.floor(n / 60)}m ${Math.round(n % 60)}s`;
+    return `${Math.floor(n / 3600)}h ${Math.floor((n % 3600) / 60)}m`;
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    return d.toLocaleString();
+  }
+
+  function statusPillClass(status) {
+    return status === 'error' ? 'error' : '';
+  }
+
+  function fingerprint(data) {
+    if (!data) return '';
+    const timeline = data.timeline || [];
+    const lastItem = timeline.length ? timeline[timeline.length - 1] : null;
+    const lossLen = ((data.charts || {}).loss || []).length;
+    return JSON.stringify({
+      project: data.project,
+      status: data.status,
+      stage: data.stage,
+      lastEvent: lastItem ? `${lastItem.event}:${lastItem.timestamp}:${lastItem.elapsed_seconds}` : '',
+      lossLen,
+      valueLoss: (data.latest_value_model || {}).final_loss ?? null,
+    });
+  }
+
+  function showUpdate(message, kind = 'live') {
+    toolbarUpdate.textContent = message;
+    toolbarUpdate.classList.remove('complete');
+    if (kind === 'complete') {
+      toolbarUpdate.classList.add('complete');
+    }
+    toolbarUpdate.classList.add('visible');
+    window.clearTimeout(showUpdate._timer);
+    showUpdate._timer = window.setTimeout(() => {
+      toolbarUpdate.classList.remove('visible');
+    }, 2200);
+  }
+
+  async function restartDemoRun() {
+    await fetch('/training/api/live/demo/start', { method: 'POST' });
+    lastFingerprint = null;
+    lastSeenProject = '';
+    showUpdate('Started a fresh demo run', 'live');
+  }
+
+  function lineChart(points, kind) {
+    if (!points || !points.length) {
+      return '<div class="chart-empty">No metric history yet</div>';
+    }
+    const width = 540;
+    const height = 220;
+    const pad = 18;
+    const values = points.map(p => Number(p.y) || 0);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const span = Math.max(max - min, 1e-6);
+    const stepX = points.length > 1 ? (width - pad * 2) / (points.length - 1) : 0;
+    const xy = points.map((p, i) => {
+      const x = pad + i * stepX;
+      const y = height - pad - ((Number(p.y) - min) / span) * (height - pad * 2);
+      return { x, y, raw: p };
+    });
+    const d = xy.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+    const dots = xy.map(p => `<circle class="chart-dot" cx="${p.x}" cy="${p.y}" r="4" style="color:${kind === 'loss' ? 'var(--orange)' : 'var(--purple)'}"><title>${p.raw.label}: ${p.raw.y}</title></circle>`).join('');
+    return `
+      <svg class="chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+        <line class="chart-axis" x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}"></line>
+        <line class="chart-axis" x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}"></line>
+        <path class="chart-line ${kind}" d="${d}"></path>
+        ${dots}
+      </svg>
+    `;
+  }
+
+  function render(data, options = {}) {
+    const { highlightLatest = false } = options;
+    toolbarSummary.textContent = activeProject ? `${activeProject} · ${data.stage}` : 'Choose a project with trainer events.';
+
+    if (!data || !data.has_trainer_events) {
+      content.className = 'empty-state';
+      content.innerHTML = `
+        <h2>No actual trainer events yet</h2>
+        <p>This project has no OAPL or value-model telemetry yet. Run actual model training first.</p>
+      `;
+      return;
+    }
+
+    const summary = data.summary || {};
+    const timelineItems = [...(data.timeline || [])].reverse();
+
+    content.className = '';
+    content.innerHTML = `
+      <div class="layout">
+        <div>
+          <div class="sticky-metrics">
+            <div class="sticky-metric">
+              <div class="sticky-label">Loss</div>
+              <div class="sticky-value">${fmtNum(summary.latest_loss)}</div>
+            </div>
+            <div class="sticky-metric">
+              <div class="sticky-label">Entropy</div>
+              <div class="sticky-value">${fmtNum(summary.latest_entropy)}</div>
+            </div>
+            <div class="sticky-metric">
+              <div class="sticky-label">Learning Rate</div>
+              <div class="sticky-value">${summary.learning_rate != null ? Number(summary.learning_rate).toExponential(2) : '—'}</div>
+            </div>
+            <div class="sticky-metric">
+              <div class="sticky-label">Run Time</div>
+              <div class="sticky-value">${fmtDuration(summary.total_seconds)}</div>
+            </div>
+          </div>
+
+          <div class="surface hero-card">
+            <div class="hero-top">
+              <div>
+                <div class="hero-title">${summary.model || 'Trainer run'}</div>
+                <div class="hero-subtitle">${summary.corpus || '—'} · started ${fmtDate((data.start || {}).timestamp)}</div>
+              </div>
+              <div class="stage-pill ${statusPillClass(data.status)}">${data.stage} · ${data.status}</div>
+            </div>
+            <div class="progress-strip">
+              <div class="metric-card">
+                <div class="metric-label">Loss</div>
+                <div class="metric-value">${fmtNum(summary.latest_loss)}</div>
+                <div class="metric-subvalue">Latest OAPL loss</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">Entropy</div>
+                <div class="metric-value">${fmtNum(summary.latest_entropy)}</div>
+                <div class="metric-subvalue">Policy entropy</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">Learning Rate</div>
+                <div class="metric-value">${summary.learning_rate != null ? Number(summary.learning_rate).toExponential(2) : '—'}</div>
+                <div class="metric-subvalue">Latest logged LR</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">Rollouts</div>
+                <div class="metric-value">${summary.num_rollouts ?? '—'}</div>
+                <div class="metric-subvalue">Latest epoch</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">Groups</div>
+                <div class="metric-value">${summary.num_groups ?? '—'}</div>
+                <div class="metric-subvalue">Prompt groups</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">Run Time</div>
+                <div class="metric-value">${fmtDuration(summary.total_seconds)}</div>
+                <div class="metric-subvalue">Current total elapsed</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="chart-grid">
+            <div class="surface chart-card">
+              <div class="chart-title">OAPL Loss</div>
+              ${lineChart((data.charts || {}).loss || [], 'loss')}
+            </div>
+            <div class="surface chart-card">
+              <div class="chart-title">Policy Entropy</div>
+              ${lineChart((data.charts || {}).entropy || [], 'entropy')}
+            </div>
+          </div>
+        </div>
+
+        <div class="side-column">
+          <div class="surface timeline-card">
+            <div class="chart-title">Latest Activity</div>
+            <div class="timeline-note">Newest events appear first so you can follow the run without scrolling.</div>
+            <div class="timeline">
+              ${timelineItems.map((item, index) => `
+                <div class="timeline-item${highlightLatest && index === 0 ? ' latest-flash' : ''}">
+                  <div class="timeline-dot ${item.event}"></div>
+                  <div>
+                    <div class="timeline-title">${item.title}</div>
+                    <div class="timeline-detail">${item.detail || ''}</div>
+                    <div class="timeline-meta">${fmtDate(item.timestamp)} · ${fmtDuration(item.elapsed_seconds)}</div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <div class="surface detail-card">
+            <div class="chart-title">Run Details</div>
+            <div class="detail-list">
+              <div class="detail-row"><div class="detail-name">Project</div><div class="detail-value">${data.project}</div></div>
+              <div class="detail-row"><div class="detail-name">Model</div><div class="detail-value">${summary.model || '—'}</div></div>
+              <div class="detail-row"><div class="detail-name">Corpus</div><div class="detail-value">${summary.corpus || '—'}</div></div>
+              <div class="detail-row"><div class="detail-name">Iterations</div><div class="detail-value">${summary.iterations ?? '—'}</div></div>
+              <div class="detail-row"><div class="detail-name">Avg Epoch Time</div><div class="detail-value">${fmtDuration(summary.avg_epoch_seconds)}</div></div>
+              <div class="detail-row"><div class="detail-name">Value Model Loss</div><div class="detail-value">${fmtNum(summary.value_model_loss)}</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function syncProjectOptions(projects) {
+    const liveProjects = projects || [];
+    const signature = JSON.stringify((projects || []).map(project => ({
+      project: project.project,
+      stage: project.stage,
+      status: project.status,
+    })));
+    if (signature === lastProjectsSignature) {
+      if (activeProject) {
+        projectSelect.value = activeProject;
+      }
+      return;
+    }
+    const nextActive = activeProject && liveProjects.some(project => project.project === activeProject)
+      ? activeProject
+      : '';
+
+    projectSelect.innerHTML = '<option value="">Select a project…</option>';
+    liveProjects.forEach(project => {
+      const opt = document.createElement('option');
+      opt.value = project.project;
+      opt.textContent = `${project.project} · ${project.stage}`;
+      projectSelect.appendChild(opt);
+    });
+    lastProjectsSignature = signature;
+    if (nextActive) {
+      projectSelect.value = nextActive;
+    }
+    if (!activeProject && liveProjects.length) {
+      activeProject = liveProjects[0].project;
+      projectSelect.value = activeProject;
+    }
+  }
+
+  async function loadProjects() {
+    const resp = await fetch('/training/api/live/projects');
+    const data = await resp.json();
+    syncProjectOptions(data.projects || []);
+    if (!lastSeenProject && activeProject) {
+      await loadProject(activeProject, { forceRender: true });
+    }
+  }
+
+  async function loadProject(project, options = {}) {
+    const { forceRender = false, announce = true } = options;
+    if (!project) return;
+    if (inflightProjectRequest === project && !forceRender) {
+      return;
+    }
+    activeProject = project;
+    inflightProjectRequest = project;
+    const firstLoadForProject = lastSeenProject !== project;
+    if (firstLoadForProject && !lastFingerprint) {
+      content.className = 'empty-state';
+      content.innerHTML = '<h2>Loading trainer metrics…</h2><p>Fetching OAPL and value-model telemetry.</p>';
+    }
+    const resp = await fetch(`/training/api/live/${encodeURIComponent(project)}`);
+    const data = await resp.json();
+    const nextFingerprint = fingerprint(data);
+    const changed = !firstLoadForProject && lastFingerprint && nextFingerprint !== lastFingerprint;
+    if (forceRender || firstLoadForProject || changed || !lastFingerprint) {
+      render(data, { highlightLatest: changed });
+    }
+    const timeline = data.timeline || [];
+    const lastItem = timeline.length ? timeline[timeline.length - 1] : null;
+    toolbarMeta.textContent = data.status === 'complete'
+      ? 'Run complete. Refresh still works if new telemetry arrives.'
+      : 'Auto-refreshes every 3 seconds while this run stays selected.';
+    toolbarLiveText.textContent = lastItem
+      ? `Last event: ${lastItem.title} at ${fmtDate(lastItem.timestamp)}`
+      : 'Polling for trainer updates';
+    if (announce && firstLoadForProject) {
+      showUpdate(`Loaded ${timeline.length} trainer events`, data.status === 'complete' ? 'complete' : 'live');
+    } else if (announce && changed) {
+      showUpdate(`New telemetry received: ${lastItem ? lastItem.title : 'update'}`, data.status === 'complete' ? 'complete' : 'live');
+    }
+    lastFingerprint = nextFingerprint;
+    lastSeenProject = project;
+    inflightProjectRequest = null;
+  }
+
+  function startAutoRefresh() {
+    if (refreshTimer) window.clearInterval(refreshTimer);
+    refreshTimer = window.setInterval(async () => {
+      if (!activeProject) return;
+      try {
+        await loadProjects();
+        if (activeProject) {
+          projectSelect.value = activeProject;
+          await loadProject(activeProject, { announce: true });
+        }
+      } catch (err) {
+        console.error('Auto-refresh failed', err);
+      }
+    }, 3000);
+  }
+
+  projectSelect.addEventListener('change', () => {
+    if (projectSelect.value) {
+      if (projectSelect.value === DEMO_PROJECT) {
+        restartDemoRun().then(() => loadProjects()).then(() => {
+          projectSelect.value = DEMO_PROJECT;
+          return loadProject(DEMO_PROJECT, { forceRender: true, announce: true });
+        });
+        return;
+      }
+      loadProject(projectSelect.value, { forceRender: true, announce: true });
+    }
+  });
+
+  btnRefresh.addEventListener('click', async () => {
+    if (activeProject === DEMO_PROJECT) {
+      await restartDemoRun();
+    }
+    await loadProjects();
+    if (activeProject) {
+      projectSelect.value = activeProject;
+      loadProject(activeProject, { forceRender: true, announce: true });
+    }
+  });
+
+  loadProjects();
+  startAutoRefresh();
+})();
+</script>
+</body>
+</html>

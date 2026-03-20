@@ -154,6 +154,7 @@ class TrainingLogger:
         entropy: float = 0,
         num_groups: int = 0,
         num_rollouts: int = 0,
+        learning_rate: Optional[float] = None,
         duration_seconds: float = 0,
     ) -> None:
         """Log one OAPL training epoch."""
@@ -165,6 +166,7 @@ class TrainingLogger:
             "entropy": round(entropy, 4),
             "num_groups": num_groups,
             "num_rollouts": num_rollouts,
+            "learning_rate": learning_rate,
             "duration_seconds": round(duration_seconds, 1),
         })
 

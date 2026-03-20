@@ -10,8 +10,11 @@ Then open http://localhost:5050 in a browser.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -23,6 +26,7 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".
 sys.path.insert(0, _PROJECT_ROOT)
 
 from collections import defaultdict
+from statistics import mean
 
 from flask import Flask, jsonify, render_template, request
 from jinja2 import ChoiceLoader, FileSystemLoader
@@ -30,12 +34,14 @@ from jinja2 import ChoiceLoader, FileSystemLoader
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
-app = Flask(__name__)
+_TRACE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+app = Flask(__name__, template_folder=os.path.join(_TRACE_DIR, "templates"))
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 app.jinja_env.auto_reload = True
 
-_SHARED_TEMPLATES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared", "templates")
+_SHARED_TEMPLATES = os.path.join(_TRACE_DIR, "..", "shared", "templates")
 app.jinja_loader = ChoiceLoader([
     app.jinja_loader,
     FileSystemLoader(_SHARED_TEMPLATES),
@@ -48,6 +54,70 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 STAGE2_PATH = Path(_PROJECT_ROOT) / "stage2_training_data.json"
 ARENA_DATA_DIR = Path(_PROJECT_ROOT) / "tools" / "arena" / "data"
 CHECKPOINTS_DIR = Path(_PROJECT_ROOT) / "checkpoints"
+DEMO_PROJECT = "trainer-live-demo"
+_demo_lock = threading.Lock()
+_demo_generation = 0
+_demo_thread: threading.Thread | None = None
+
+
+def _run_demo_training(generation: int) -> None:
+    """Emit synthetic OAPL/value-model events for the live trainer demo."""
+    from konash.training.logger import TrainingLogger
+
+    log = TrainingLogger(DEMO_PROJECT)
+    base_loss = 1.18
+    base_entropy = 0.54
+    delay = 1.8
+
+    log.start(iterations=1, corpus="financebench", model="unsloth/GLM-4.5-Air")
+    time.sleep(delay)
+
+    for epoch in range(1, 9):
+        with _demo_lock:
+            if generation != _demo_generation:
+                return
+        loss = max(0.18, base_loss - 0.11 * epoch + math.sin(epoch * 0.7) * 0.025)
+        entropy = max(0.08, base_entropy - 0.035 * epoch + math.cos(epoch * 0.45) * 0.018)
+        log.oapl(
+            iteration=1,
+            epoch=epoch,
+            loss=loss,
+            entropy=entropy,
+            kl=0.0018 * epoch,
+            num_groups=96,
+            num_rollouts=768,
+            learning_rate=1e-6,
+            duration_seconds=delay,
+        )
+        time.sleep(delay)
+
+    with _demo_lock:
+        if generation != _demo_generation:
+            return
+    log.value_model(loss=0.1432, epochs=3, duration_seconds=delay)
+    time.sleep(delay)
+
+    with _demo_lock:
+        if generation != _demo_generation:
+            return
+    log.complete(iterations=1, total_seconds=10 * delay)
+
+
+def _start_demo_training() -> None:
+    """Start a fresh synthetic trainer run for the demo project."""
+    global _demo_generation, _demo_thread
+
+    with _demo_lock:
+        _demo_generation += 1
+        generation = _demo_generation
+
+    _demo_thread = threading.Thread(
+        target=_run_demo_training,
+        args=(generation,),
+        name="trainer-live-demo",
+        daemon=True,
+    )
+    _demo_thread.start()
 
 
 # ---------------------------------------------------------------------------
@@ -493,11 +563,168 @@ def training_index():
     return render_template("training.html")
 
 
+@app.route("/training/live")
+@app.route("/training/live/")
+def training_live_index():
+    return render_template("training_live.html")
+
+
+def _load_training_events(project: str) -> list[dict]:
+    from konash.training.logger import TrainingLogger
+
+    try:
+        events = TrainingLogger.load(project)
+    except Exception:
+        return []
+    start_indexes = [idx for idx, event in enumerate(events) if event.get("event") == "start"]
+    if start_indexes:
+        return events[start_indexes[-1]:]
+    return events
+
+
+def _aggregate_live_training(project: str) -> dict[str, Any]:
+    events = _load_training_events(project)
+    trainer_events = [
+        e for e in events
+        if e.get("event") in {"start", "oapl", "value_model", "error", "complete"}
+    ]
+    start = next((e for e in trainer_events if e.get("event") == "start"), None)
+    complete = next((e for e in reversed(trainer_events) if e.get("event") == "complete"), None)
+    error = next((e for e in reversed(trainer_events) if e.get("event") == "error"), None)
+    oapl_events = [e for e in trainer_events if e.get("event") == "oapl"]
+    value_events = [e for e in trainer_events if e.get("event") == "value_model"]
+    latest_oapl = oapl_events[-1] if oapl_events else None
+    latest_value = value_events[-1] if value_events else None
+    last_event = trainer_events[-1] if trainer_events else None
+
+    if error:
+        status = "error"
+    elif complete:
+        status = "complete"
+    elif latest_value or latest_oapl:
+        status = "running"
+    else:
+        status = "idle"
+
+    stage = "Awaiting trainer"
+    if latest_value and (not latest_oapl or latest_value.get("elapsed_seconds", 0) >= latest_oapl.get("elapsed_seconds", 0)):
+        stage = "Value Model"
+    elif latest_oapl:
+        stage = "OAPL Policy Training"
+
+    total_seconds = 0.0
+    if complete:
+        total_seconds = float(complete.get("total_seconds") or 0)
+    elif last_event:
+        total_seconds = float(last_event.get("elapsed_seconds") or 0)
+
+    loss_series = [
+        {
+            "x": idx + 1,
+            "y": float(e.get("loss", 0)),
+            "label": f"Epoch {e.get('epoch', idx + 1)}",
+        }
+        for idx, e in enumerate(oapl_events)
+        if e.get("loss") is not None
+    ]
+    entropy_series = [
+        {
+            "x": idx + 1,
+            "y": float(e.get("entropy", 0)),
+            "label": f"Epoch {e.get('epoch', idx + 1)}",
+        }
+        for idx, e in enumerate(oapl_events)
+        if e.get("entropy") is not None
+    ]
+
+    event_timeline = []
+    for e in trainer_events:
+        event_timeline.append({
+            "event": e.get("event", ""),
+            "title": (
+                "Training started" if e.get("event") == "start" else
+                f"OAPL epoch {e.get('epoch', '?')}" if e.get("event") == "oapl" else
+                "Value model complete" if e.get("event") == "value_model" else
+                "Training complete" if e.get("event") == "complete" else
+                "Training error"
+            ),
+            "detail": (
+                f"Loss {float(e.get('loss', 0)):.4f} · {e.get('num_rollouts', 0)} rollouts"
+                if e.get("event") == "oapl" else
+                f"Final loss {float(e.get('final_loss', 0)):.4f} · {e.get('epochs', 0)} epochs"
+                if e.get("event") == "value_model" else
+                e.get("message") or e.get("model") or e.get("corpus") or ""
+            ),
+            "timestamp": e.get("timestamp"),
+            "elapsed_seconds": float(e.get("elapsed_seconds") or 0),
+        })
+
+    return {
+        "project": project,
+        "status": status,
+        "stage": stage,
+        "start": start or {},
+        "latest_oapl": latest_oapl or {},
+        "latest_value_model": latest_value or {},
+        "summary": {
+            "model": (start or {}).get("model", "—"),
+            "corpus": (start or {}).get("corpus", "—"),
+            "iterations": (complete or start or {}).get("iterations", "—"),
+            "total_seconds": total_seconds,
+            "latest_loss": latest_oapl.get("loss") if latest_oapl else None,
+            "latest_entropy": latest_oapl.get("entropy") if latest_oapl else None,
+            "learning_rate": latest_oapl.get("learning_rate") if latest_oapl else None,
+            "num_groups": latest_oapl.get("num_groups") if latest_oapl else None,
+            "num_rollouts": latest_oapl.get("num_rollouts") if latest_oapl else None,
+            "value_model_loss": latest_value.get("final_loss") if latest_value else None,
+            "avg_epoch_seconds": mean([float(e.get("duration_seconds") or 0) for e in oapl_events]) if oapl_events else None,
+        },
+        "charts": {
+            "loss": loss_series,
+            "entropy": entropy_series,
+        },
+        "timeline": event_timeline,
+        "has_trainer_events": bool(oapl_events or value_events),
+    }
+
+
 @app.route("/training/api/projects")
 def training_projects():
     """List all projects with training logs."""
     from konash.training.logger import TrainingLogger
     return jsonify({"projects": TrainingLogger.list_projects()})
+
+
+@app.route("/training/api/live/projects")
+def training_live_projects():
+    from konash.training.logger import TrainingLogger
+
+    projects = []
+    all_projects = list(TrainingLogger.list_projects())
+    if DEMO_PROJECT not in all_projects:
+        all_projects.append(DEMO_PROJECT)
+    for project in all_projects:
+        summary = _aggregate_live_training(project)
+        if project == DEMO_PROJECT or summary["has_trainer_events"] or summary["status"] != "idle":
+            projects.append({
+                "project": project,
+                "status": summary["status"],
+                "stage": "Interactive demo" if project == DEMO_PROJECT and summary["status"] == "idle" else summary["stage"],
+                "model": summary["summary"]["model"] if summary["summary"]["model"] != "—" else "Demo trainer feed",
+                "latest_loss": summary["summary"]["latest_loss"],
+            })
+    return jsonify({"projects": projects})
+
+
+@app.route("/training/api/live/demo/start", methods=["POST"])
+def training_live_demo_start():
+    _start_demo_training()
+    return jsonify({"ok": True, "project": DEMO_PROJECT})
+
+
+@app.route("/training/api/live/<project>")
+def training_live_project(project: str):
+    return jsonify(_aggregate_live_training(project))
 
 
 @app.route("/training/api/logs/<project>")
