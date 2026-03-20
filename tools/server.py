@@ -15,8 +15,10 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, os.path.dirname(__file__))
 
-from flask import Flask, redirect, send_from_directory
+from flask import Flask, jsonify, redirect, send_from_directory
 from werkzeug.serving import run_simple
+
+from konash.cloud import get_instance_status_summary
 
 from arena.app import app as arena_app
 from trace_viewer.app import app as trace_app
@@ -40,6 +42,20 @@ def assets(filename: str):
     response.cache_control.must_revalidate = True
     response.expires = 0
     return response
+
+
+@root_app.route("/api/shadeform/status")
+def shadeform_status():
+    try:
+        return jsonify(get_instance_status_summary())
+    except Exception as exc:
+        return jsonify({
+            "configured": True,
+            "running_count": 0,
+            "instances": [],
+            "local_instance": None,
+            "error": str(exc),
+        }), 200
 
 
 # Combine via WSGI dispatch

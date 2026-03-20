@@ -255,6 +255,79 @@ def _clear_instance_state() -> None:
         os.remove(_INSTANCE_STATE)
 
 
+def list_instances(api_key: Optional[str] = None) -> list[dict[str, Any]]:
+    """Return all non-deleted Shadeform instances for the current workspace."""
+    data = _shadeform_request("GET", "/instances", api_key=api_key)
+    instances = data.get("instances", [])
+    return instances if isinstance(instances, list) else []
+
+
+def get_instance_status_summary(api_key: Optional[str] = None) -> dict[str, Any]:
+    """Summarize currently visible Shadeform instances plus local tracked state."""
+    local_state = _load_instance_state()
+    key = api_key or _get_shadeform_key()
+    if not key:
+        return {
+            "configured": False,
+            "running_count": 0,
+            "instances": [],
+            "local_instance": local_state,
+            "error": "",
+        }
+
+    raw_instances = list_instances(api_key=key)
+    visible_statuses = {
+        "pending",
+        "creating",
+        "provisioning",
+        "starting",
+        "active",
+        "stopping",
+    }
+    instances: list[dict[str, Any]] = []
+    for inst in raw_instances:
+        if not isinstance(inst, dict):
+            continue
+        status = str(inst.get("status", "")).lower()
+        if status and status not in visible_statuses:
+            continue
+        config = inst.get("configuration", {})
+        gpu_type = ""
+        num_gpus = 0
+        if isinstance(config, dict):
+            gpu_type = str(config.get("gpu_type", "") or "")
+            try:
+                num_gpus = int(config.get("num_gpus", 0) or 0)
+            except (TypeError, ValueError):
+                num_gpus = 0
+        hourly_cents = inst.get("hourly_price", 0)
+        try:
+            hourly_usd = float(hourly_cents) / 100.0
+        except (TypeError, ValueError):
+            hourly_usd = 0.0
+        instances.append({
+            "id": str(inst.get("id", "")),
+            "name": str(inst.get("name", "") or "Unnamed instance"),
+            "status": status or "unknown",
+            "cloud": str(inst.get("cloud", "") or ""),
+            "region": str(inst.get("region", "") or ""),
+            "gpu_type": gpu_type,
+            "num_gpus": num_gpus,
+            "hourly_usd": hourly_usd,
+            "ip": str(inst.get("ip", "") or ""),
+        })
+
+    active_like = {"pending", "creating", "provisioning", "starting", "active", "stopping"}
+    running_count = sum(1 for inst in instances if inst["status"] in active_like)
+    return {
+        "configured": True,
+        "running_count": running_count,
+        "instances": instances,
+        "local_instance": local_state,
+        "error": "",
+    }
+
+
 # ---------------------------------------------------------------------------
 # SSH / SCP helpers
 # ---------------------------------------------------------------------------

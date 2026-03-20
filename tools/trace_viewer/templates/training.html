@@ -610,6 +610,8 @@ function renderAll(events, rolloutsData, project) {
   html += `<div class="summary-card"><div class="label">OAPL Loss</div><div class="value">${lastLoss !== null ? lastLoss.toFixed(4) : '\u2014'}</div></div>`;
   html += `<div class="summary-card"><div class="label">Total Time</div><div class="value">${totalTime ? formatDuration(totalTime) : (lastProgress ? formatDuration(lastProgress.elapsed_seconds) + ' (running)' : '\u2014')}</div></div>`;
   if (start) {
+    const startTime = start.timestamp ? new Date(start.timestamp).toLocaleString() : '\u2014';
+    html += `<div class="summary-card"><div class="label">Started</div><div class="value" style="font-size:12px;font-family:var(--mono);font-weight:500">${startTime}</div></div>`;
     html += `<div class="summary-card"><div class="label">Model</div><div class="value" style="font-size:12px;font-family:var(--mono);font-weight:500;word-break:break-all">${start.model || '\u2014'}</div></div>`;
   }
   html += '</div>';

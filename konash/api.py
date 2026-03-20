@@ -928,6 +928,28 @@ class Agent:
                 elapsed = max(time.monotonic() - _synth_started_at, 0.0)
                 pending = max(synthesis_calls - done, 0)
                 active = min(workers, pending)
+                spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"]
+                spinner = spinner_frames[int(elapsed * 8) % len(spinner_frames)]
+                response_window = 90.0
+                progress_window = min(elapsed / response_window, 1.0)
+                pulse_width = 10
+                pulse_start = min(
+                    int((bar_w - pulse_width) * progress_window),
+                    max(bar_w - pulse_width, 0),
+                )
+                pulse_bar = (
+                    f"[dim]{'─' * pulse_start}[/]"
+                    f"[cyan]{'━' * pulse_width}[/]"
+                    f"[dim]{'─' * max(bar_w - pulse_start - pulse_width, 0)}[/]"
+                )
+                if elapsed < 8:
+                    status_hint = "warming up request"
+                elif elapsed < 25:
+                    status_hint = "reading retrieved passages"
+                elif elapsed < 60:
+                    status_hint = "drafting grounded questions"
+                else:
+                    status_hint = "taking longer than usual"
 
                 outer.add_row(Text("  Synthesizing QA pairs", style="bold"))
                 outer.add_row(Text(""))
@@ -937,13 +959,16 @@ class Agent:
                 ))
                 if pending > 0:
                     outer.add_row(Text.from_markup(
-                        "    [cyan]●[/]  "
+                        f"    [cyan]{spinner}[/]  "
                         f"[dim]Calling {self.base_model} for {active} active synthesis "
                         f"{'request' if active == 1 else 'requests'} · "
                         f"{elapsed:.1f}s elapsed[/]"
                     ))
                     outer.add_row(Text.from_markup(
-                        "    [dim]Waiting for question/answer generation to return from the model...[/]"
+                        f"    [dim]Model activity · {status_hint} · usual response window 20-90s[/]"
+                    ))
+                    outer.add_row(Text.from_markup(
+                        f"    {pulse_bar}  [dim]in-flight response progress[/]"
                     ))
 
                 if _latest_q[0]:

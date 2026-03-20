@@ -588,7 +588,7 @@ def cmd_launcher() -> None:
     grid.add_column(style="dim")
     grid.add_row("konash setup", "Configure API keys")
     grid.add_row("konash train", "Train an agent")
-    grid.add_row("konash eval financebench", "Run benchmark evals")
+    grid.add_row("konash eval", "Run benchmark evals")
     grid.add_row("konash logs", "Stream GPU training logs")
     grid.add_row("konash stop", "Tear down GPU cluster")
     grid.add_row("konash projects", "List trained projects")
@@ -1046,6 +1046,10 @@ def _stop_web_ui() -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_train(args: argparse.Namespace) -> None:
+    if getattr(args, "preview_ui", False):
+        _preview_training_ui(args)
+        return
+
     try:
         from konash.api import Agent
         from konash.training.execution import plan_training_execution
@@ -1652,6 +1656,123 @@ def _dependency_error(exc: ModuleNotFoundError) -> None:
     sys.exit(1)
 
 
+def _preview_training_ui(args: argparse.Namespace) -> None:
+    """Render a local mock training UI without hitting any APIs."""
+    from rich.live import Live
+    from rich.table import Table as _Table
+    from rich.text import Text
+
+    model = args.model or DEFAULT_MODEL
+    qa_pairs = max(int(args.qa_pairs or DEFAULT_SCALE_PRESET["qa_pairs"]), 1)
+    synthesis_calls = max(1, qa_pairs // 8)
+    preview_seconds = max(int(args.preview_seconds or 18), 3)
+    project_name = args.project or suggest_project_name(
+        model,
+        build_dataset_spec([args.corpus or "financebench"], aliases=_resolve_dataset_aliases()),
+    )
+
+    console.print()
+    console.rule("[bold]Execution Plan[/]", style="dim")
+    console.print()
+    _show_training_plan(
+        project=project_name,
+        corpus=args.corpus or os.path.expanduser("~/.konash/corpora/financebench"),
+        model=model,
+        qa_pairs=qa_pairs,
+        rollouts=args.rollouts,
+        rollout_steps=args.rollout_steps,
+        iterations=args.iterations,
+        backend=args.synthesis_backend,
+    )
+    console.print("  [dim]Preview mode · no API calls · no corpus indexing · no checkpoints[/]")
+    console.print()
+    console.rule("[bold]Iteration 1/1[/]", style="dim")
+    console.print()
+    console.print("  [bold]Phase 1: Synthesis + rollouts (Preview)[/]")
+    console.print("  [green]✓[/]  Indexed 53,803 chunks")
+
+    started = time.monotonic()
+    latest_q = ""
+    latest_a = ""
+
+    def _build() -> _Table:
+        nonlocal latest_q, latest_a
+        elapsed = max(time.monotonic() - started, 0.0)
+        spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"]
+        spinner = spinner_frames[int(elapsed * 8) % len(spinner_frames)]
+        completed = min(int((elapsed / preview_seconds) * synthesis_calls), synthesis_calls - 1)
+        pct = completed * 100 // synthesis_calls if synthesis_calls else 0
+        bar_w = 32
+        filled = bar_w * completed // synthesis_calls if synthesis_calls else 0
+        bar = f"[cyan]{'━' * filled}[/][dim]{'─' * (bar_w - filled)}[/]"
+        response_window = float(preview_seconds)
+        progress_window = min(elapsed / response_window, 1.0)
+        pulse_width = 10
+        pulse_start = min(
+            int((bar_w - pulse_width) * progress_window),
+            max(bar_w - pulse_width, 0),
+        )
+        pulse_bar = (
+            f"[dim]{'─' * pulse_start}[/]"
+            f"[cyan]{'━' * pulse_width}[/]"
+            f"[dim]{'─' * max(bar_w - pulse_start - pulse_width, 0)}[/]"
+        )
+
+        if elapsed < preview_seconds * 0.2:
+            latest_q = ""
+            latest_a = ""
+            status_hint = "warming up request"
+        elif elapsed < preview_seconds * 0.55:
+            latest_q = "What two criteria must be met for license revenue to be recognized at sale?"
+            latest_a = ""
+            status_hint = "reading retrieved passages"
+        elif elapsed < preview_seconds * 0.85:
+            latest_q = "What two criteria must be met for license revenue to be recognized at sale?"
+            latest_a = "The arrangement must provide a fixed license right and persuasive evidence of delivery."
+            status_hint = "drafting grounded questions"
+        else:
+            latest_q = "What two criteria must be met for license revenue to be recognized at sale?"
+            latest_a = "The arrangement must provide a fixed license right and persuasive evidence of delivery."
+            status_hint = "finalizing proposal batch"
+
+        outer = _Table(box=None, show_header=False, pad_edge=False, expand=True, padding=(0, 0))
+        outer.add_row(Text("  Synthesizing QA pairs", style="bold"))
+        outer.add_row(Text(""))
+        outer.add_row(Text.from_markup(
+            f"    {bar}  [dim]{completed}/{synthesis_calls}[/]  "
+            f"[bold]0[/] pairs  [dim]{pct}%[/]"
+        ))
+        outer.add_row(Text.from_markup(
+            f"    [cyan]{spinner}[/]  [dim]Calling {model} for 1 active synthesis request · {elapsed:.1f}s elapsed[/]"
+        ))
+        outer.add_row(Text.from_markup(
+            f"    [dim]Model activity · {status_hint} · usual response window 20-90s[/]"
+        ))
+        outer.add_row(Text.from_markup(
+            f"    {pulse_bar}  [dim]in-flight response progress[/]"
+        ))
+        if latest_q:
+            outer.add_row(Text(""))
+            outer.add_row(Text.from_markup(
+                f"    [dim]Q:[/]  {latest_q[:90]}" + ("[dim]...[/]" if len(latest_q) > 90 else "")
+            ))
+        if latest_a:
+            outer.add_row(Text.from_markup(
+                f"    [dim]A:[/]  {latest_a[:90]}" + ("[dim]...[/]" if len(latest_a) > 90 else "")
+            ))
+        return outer
+
+    with Live(_build(), console=console, refresh_per_second=8, transient=False) as live:
+        while (time.monotonic() - started) < preview_seconds:
+            live.update(_build())
+            time.sleep(0.125)
+
+    console.print(f"  [green]✓[/]  {min(8, qa_pairs)} QA pairs synthesized")
+    console.print()
+    console.print("  [dim]Preview complete. Re-run [cyan]konash train --preview-ui[/] after each style change.[/]")
+    console.print()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1725,6 +1846,14 @@ def main(argv: list[str] | None = None) -> None:
     p_train.add_argument(
         "--fresh", action="store_true",
         help="Archive the current project state and start fresh.",
+    )
+    p_train.add_argument(
+        "--preview-ui", action="store_true",
+        help="Preview the training terminal UI locally without API calls.",
+    )
+    p_train.add_argument(
+        "--preview-seconds", type=int, default=18,
+        help="How long the local training UI preview should run.",
     )
     p_train.set_defaults(func=cmd_train)
 
