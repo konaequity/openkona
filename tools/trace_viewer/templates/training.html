@@ -347,6 +347,89 @@ body {
 .timeline-detail { font-size: 12px; color: var(--text-2); margin-top: 4px; line-height: 1.6; }
 .timeline-time { font-size: 11px; color: var(--text-3); white-space: nowrap; font-family: var(--mono); }
 
+.live-trace {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: 20px 22px;
+  margin-bottom: 24px;
+}
+
+.live-trace h3 {
+  font-size: 11px;
+  color: var(--text-2);
+  margin-bottom: 14px;
+  text-transform: uppercase;
+  letter-spacing: 1.1px;
+  font-weight: 700;
+}
+
+.live-trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 420px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.live-trace-item {
+  display: grid;
+  grid-template-columns: 102px 90px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-light);
+}
+
+.live-trace-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.live-trace-kind {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-radius: 999px;
+  padding: 4px 8px;
+  display: inline-flex;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.live-trace-kind.search { background: rgba(31,94,255,0.08); color: var(--blue); }
+.live-trace-kind.synthesis { background: rgba(24,121,78,0.08); color: var(--green); }
+.live-trace-kind.rollout { background: rgba(183,93,16,0.08); color: var(--orange); }
+.live-trace-kind.api { background: rgba(108,69,164,0.08); color: var(--purple); }
+.live-trace-kind.warning { background: rgba(183,93,16,0.08); color: var(--orange); }
+.live-trace-kind.error { background: rgba(213,0,0,0.08); color: var(--red); }
+.live-trace-kind.debug { background: rgba(17,17,17,0.06); color: var(--text-2); }
+
+.live-trace-main {
+  min-width: 0;
+}
+
+.live-trace-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.live-trace-detail {
+  font-size: 12px;
+  color: var(--text-2);
+  margin-top: 4px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .data-section { margin-bottom: 24px; }
 
 .data-section h2 {
@@ -526,7 +609,8 @@ body {
   <div class="control-bar">
     <div class="control-copy">
       <div class="control-title">Active Project</div>
-      <div class="control-value">Select a run to inspect its training pipeline.</div>
+      <div class="control-value" id="project-headline">Select a run to inspect its training pipeline.</div>
+      <div class="page-subtitle" id="project-subtitle" style="margin-top:8px;font-size:13px">The page auto-refreshes while training is active.</div>
     </div>
     <div class="control-actions">
       <div class="project-selector">
@@ -549,41 +633,95 @@ body {
 <script>
 const API_BASE = '/training/api';
 let currentProject = null;
+let currentProjectMeta = null;
+let activeTab = 'events';
+let refreshTimer = null;
+let projectIndex = new Map();
 
 async function loadProjects() {
   const resp = await fetch(`${API_BASE}/projects`);
   const data = await resp.json();
   const select = document.getElementById('project-select');
+  const projects = data.projects || [];
+  const previousSelection = currentProject;
+  projectIndex = new Map(projects.map(project => [project.name, project]));
 
-  data.projects.forEach(p => {
+  select.innerHTML = '';
+  projects.forEach(project => {
     const opt = document.createElement('option');
-    opt.value = p;
-    opt.textContent = p;
+    opt.value = project.name;
+    const statusChip = project.is_running ? 'LIVE' : (project.status || 'idle').toUpperCase();
+    const modelLabel = project.model && project.model !== '—' ? project.model : project.name;
+    opt.textContent = `${modelLabel} · ${statusChip} · ${project.stage || 'Awaiting run'}`;
     select.appendChild(opt);
   });
 
-  if (data.projects.length > 0) {
-    select.value = data.projects[0];
-    loadProject(data.projects[0]);
+  if (projects.length === 0) {
+    currentProject = null;
+    currentProjectMeta = null;
+    updateProjectHeader(null);
+    document.getElementById('content').innerHTML = `
+      <div class="empty-state">
+        <h2>No training runs yet</h2>
+        <p>Run <code>konash train</code> to start a training run.</p>
+      </div>`;
+    return;
+  }
+
+  const previousProject = previousSelection ? projectIndex.get(previousSelection) : null;
+  const shouldKeepPrevious = previousProject && previousProject.is_running;
+  const selectedName = shouldKeepPrevious
+    ? previousSelection
+    : (data.default_project || projects[0].name);
+  const selectedProject = projects.find(project => project.name === selectedName) || projects[0];
+  select.value = selectedProject.name;
+  currentProjectMeta = selectedProject;
+  updateProjectHeader(selectedProject);
+
+  if (currentProject !== selectedProject.name) {
+    await loadProject(selectedProject.name, { projectMeta: selectedProject });
   }
 }
 
-async function loadProject(project) {
+function updateProjectHeader(projectMeta) {
+  const headline = document.getElementById('project-headline');
+  const subtitle = document.getElementById('project-subtitle');
+  if (!projectMeta) {
+    headline.textContent = 'Select a run to inspect its training pipeline.';
+    subtitle.textContent = 'The page auto-refreshes while training is active.';
+    return;
+  }
+
+  const statusLabel = projectMeta.is_running ? 'Live now' : (projectMeta.status || 'idle');
+  const modelLabel = projectMeta.model && projectMeta.model !== '—'
+    ? projectMeta.model
+    : 'Training pipeline monitor';
+  headline.textContent = `${modelLabel} · ${statusLabel} · ${projectMeta.stage || 'Awaiting run'}`;
+  subtitle.textContent = `Project: ${projectMeta.name}`;
+}
+
+async function loadProject(project, { projectMeta = null } = {}) {
   if (!project) return;
   currentProject = project;
-  const [logsResp, rolloutsResp] = await Promise.all([
+  currentProjectMeta = projectMeta || projectIndex.get(project) || currentProjectMeta;
+  updateProjectHeader(currentProjectMeta || { name: project });
+  const [logsResp, rolloutsResp, debugResp] = await Promise.all([
     fetch(`${API_BASE}/logs/${project}`),
     fetch(`${API_BASE}/rollouts/${project}`),
+    fetch(`${API_BASE}/debug/${project}?limit=120`),
   ]);
   const logsData = await logsResp.json();
   const rolloutsData = await rolloutsResp.json();
-  renderAll(logsData.events, rolloutsData, project);
+  const debugData = await debugResp.json();
+  renderAll(logsData.events || [], rolloutsData, debugData.events || [], currentProjectMeta || { name: project });
 }
 
-function renderAll(events, rolloutsData, project) {
+function renderAll(events, rolloutsData, debugEvents, projectMeta) {
   const content = document.getElementById('content');
-  if ((!events || events.length === 0) && rolloutsData.total_groups === 0) {
-    content.innerHTML = `<div class="empty-state"><h2>No events for ${project}</h2></div>`;
+  const projectName = projectMeta?.name || currentProject;
+  const hasSynthesisData = (rolloutsData.total_synthesis || 0) > 0 || !!rolloutsData.synthesis_progress;
+  if ((!events || events.length === 0) && rolloutsData.total_groups === 0 && !hasSynthesisData && (!debugEvents || debugEvents.length === 0)) {
+    content.innerHTML = `<div class="empty-state"><h2>No events for ${projectName}</h2></div>`;
     return;
   }
 
@@ -599,12 +737,16 @@ function renderAll(events, rolloutsData, project) {
   const totalFiltered = rollouts.reduce((s, e) => s + (e.examples_after_filter || 0), 0);
   const lastLoss = oapl.length > 0 ? oapl[oapl.length - 1].loss : null;
   const totalTime = complete ? complete.total_seconds : null;
+  const synthesisProgress = rolloutsData.synthesis_progress || null;
+  const liveSynthesisCount = synthesisProgress?.examples_so_far || rolloutsData.total_synthesis || 0;
+  const currentStage = projectMeta?.stage || (synthesisProgress ? 'Synthesis' : 'Pipeline');
 
   let html = '';
 
   // Summary cards
   html += '<div class="summary-grid">';
-  html += `<div class="summary-card"><div class="label">QA Pairs</div><div class="value">${totalPairs || rolloutsData.total_synthesis || 0}</div></div>`;
+  html += `<div class="summary-card"><div class="label">Stage</div><div class="value" style="font-size:16px">${escapeHtml(currentStage)}</div></div>`;
+  html += `<div class="summary-card"><div class="label">QA Pairs</div><div class="value">${totalPairs || liveSynthesisCount}</div></div>`;
   html += `<div class="summary-card"><div class="label">Rollout Groups</div><div class="value">${rolloutsData.total_groups}</div></div>`;
   html += `<div class="summary-card"><div class="label">After Filter</div><div class="value">${totalFiltered}</div></div>`;
   html += `<div class="summary-card"><div class="label">OAPL Loss</div><div class="value">${lastLoss !== null ? lastLoss.toFixed(4) : '\u2014'}</div></div>`;
@@ -616,6 +758,8 @@ function renderAll(events, rolloutsData, project) {
   }
   html += '</div>';
 
+  html += renderLiveTrace(debugEvents, projectMeta);
+
   // Rollout progress bar (if running)
   if (lastProgress && !complete) {
     html += `<div class="chart-section"><h3>Rollout Progress: ${lastProgress.completed}/${lastProgress.total} (${lastProgress.pct}%)</h3>`;
@@ -624,24 +768,24 @@ function renderAll(events, rolloutsData, project) {
 
   // Tab bar
   html += '<div class="tab-bar">';
-  html += '<button class="tab-btn active" onclick="switchTab(\'data\')">Rollout Data</button>';
-  html += '<button class="tab-btn" onclick="switchTab(\'events\')">Events</button>';
-  html += '<button class="tab-btn" onclick="switchTab(\'synthesis\')">Synthesis</button>';
-  html += '</div>';
-
-  // Tab: Rollout Data
-  html += '<div id="tab-data" class="tab-panel active">';
-  html += renderRolloutData(rolloutsData);
+  html += `<button class="tab-btn ${activeTab === 'events' ? 'active' : ''}" data-tab="events" onclick="switchTab('events')">Events</button>`;
+  html += `<button class="tab-btn ${activeTab === 'synthesis' ? 'active' : ''}" data-tab="synthesis" onclick="switchTab('synthesis')">Synthesis</button>`;
+  html += `<button class="tab-btn ${activeTab === 'data' ? 'active' : ''}" data-tab="data" onclick="switchTab('data')">Rollout Data</button>`;
   html += '</div>';
 
   // Tab: Events
-  html += '<div id="tab-events" class="tab-panel">';
+  html += `<div id="tab-events" class="tab-panel ${activeTab === 'events' ? 'active' : ''}">`;
   html += renderTimeline(events);
   html += '</div>';
 
   // Tab: Synthesis
-  html += '<div id="tab-synthesis" class="tab-panel">';
-  html += renderSynthesis(rolloutsData.synthesis_examples || []);
+  html += `<div id="tab-synthesis" class="tab-panel ${activeTab === 'synthesis' ? 'active' : ''}">`;
+  html += renderSynthesis(rolloutsData);
+  html += '</div>';
+
+  // Tab: Rollout Data
+  html += `<div id="tab-data" class="tab-panel ${activeTab === 'data' ? 'active' : ''}">`;
+  html += renderRolloutData(rolloutsData);
   html += '</div>';
 
   content.innerHTML = html;
@@ -736,13 +880,34 @@ function renderRolloutData(data) {
   return html;
 }
 
-function renderSynthesis(examples) {
-  if (!examples || examples.length === 0) {
-    return '<div class="empty-state"><h2>No synthesis data</h2></div>';
+function renderSynthesis(data) {
+  const examples = data.synthesis_examples || [];
+  const progress = data.synthesis_progress || null;
+  let html = '<div class="data-section">';
+  html += '<h2>Synthesis</h2>';
+
+  if (progress) {
+    const totalCalls = progress.total_calls || 0;
+    const completedCalls = progress.completed_calls || 0;
+    const pct = totalCalls ? Math.min(100, Math.round((completedCalls / totalCalls) * 100)) : 0;
+    html += '<div class="summary-card" style="margin-bottom:16px">';
+    html += `<div class="label">Live Progress</div>`;
+    html += `<div class="value" style="font-size:16px">${completedCalls}/${totalCalls} calls · ${progress.examples_so_far || 0} QA pairs</div>`;
+    html += `<div style="margin-top:10px" class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>`;
+    html += `<div style="margin-top:10px;color:var(--text-2);font-size:12px">Elapsed ${formatDuration(progress.elapsed_seconds || 0)}${progress.eta_seconds ? ` · ETA ${formatDuration(progress.eta_seconds)}` : ''}${progress.iteration ? ` · ${escapeHtml(progress.iteration)}` : ''}</div>`;
+    if (progress.last_call) {
+      html += `<div style="margin-top:8px;color:var(--text-2);font-size:12px">Latest completion: call ${progress.last_call.call_idx + 1} in ${formatDuration(progress.last_call.duration_s || 0)}</div>`;
+    }
+    html += '</div>';
   }
 
-  let html = '<div class="data-section">';
-  html += `<h2>${examples.length} Synthesized QA Pairs</h2>`;
+  if (!examples || examples.length === 0) {
+    html += '<div class="empty-state"><h2>No synthesized QA pairs yet</h2><p>Pairs will appear here as stage 1 writes progress files.</p></div>';
+    html += '</div>';
+    return html;
+  }
+
+  html += `<h2 style="margin-top:6px">${examples.length} Synthesized QA Pairs</h2>`;
   examples.forEach((ex, idx) => {
     html += `<div class="group-card" style="cursor:default">`;
     html += `<div class="group-question">${escapeHtml(ex.question)}</div>`;
@@ -750,6 +915,40 @@ function renderSynthesis(examples) {
     html += `</div>`;
   });
   html += '</div>';
+  return html;
+}
+
+function renderLiveTrace(events, projectMeta) {
+  const entries = events || [];
+  let html = '<div class="live-trace">';
+  html += '<h3>Live Trace</h3>';
+  if (projectMeta?.name) {
+    html += `<div style="margin-top:-6px;margin-bottom:12px;font-size:12px;color:var(--text-3)">Streaming from <span style="font-family:var(--mono)">${escapeHtml(projectMeta.name)}</span></div>`;
+  }
+
+  if (!entries.length) {
+    html += '<div class="empty-state" style="padding:24px 18px;margin:0"><h2>Waiting for debug trace</h2><p>The trainer will show search queries, retrieval results, and LLM calls here once <code>training_debug.log</code> is written.</p></div>';
+    html += '</div>';
+    return html;
+  }
+
+  html += '<div class="live-trace-list">';
+  entries.slice(-120).forEach(entry => {
+    const kind = entry.kind || entry.level || 'debug';
+    const timestamp = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : '—';
+    const title = escapeHtml(entry.title || entry.logger || 'Trace');
+    const detail = escapeHtml(entry.detail || entry.raw || '');
+    html += `
+      <div class="live-trace-item">
+        <div class="live-trace-time">${timestamp}</div>
+        <div class="live-trace-kind ${escapeHtml(kind)}">${escapeHtml(kind)}</div>
+        <div class="live-trace-main">
+          <div class="live-trace-title">${title}</div>
+          <div class="live-trace-detail">${detail}</div>
+        </div>
+      </div>`;
+  });
+  html += '</div></div>';
   return html;
 }
 
@@ -791,10 +990,13 @@ function renderTimeline(events) {
 }
 
 function switchTab(name) {
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-  event.target.classList.add('active');
-  document.getElementById('tab-' + name).classList.add('active');
+  activeTab = name;
+  document.querySelectorAll('.tab-btn').forEach(button => {
+    button.classList.toggle('active', button.dataset.tab === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(panel => {
+    panel.classList.toggle('active', panel.id === `tab-${name}`);
+  });
 }
 
 function toggleGroup(el) {
@@ -850,7 +1052,32 @@ function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-loadProjects();
+async function refreshTrainingView() {
+  await loadProjects();
+  if (currentProject) {
+    await loadProject(currentProject);
+  }
+}
+
+function startAutoRefresh() {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+  }
+  refreshTimer = setInterval(async () => {
+    try {
+      await refreshTrainingView();
+    } catch (error) {
+      console.error('training refresh failed', error);
+    }
+  }, 3000);
+}
+
+async function initTrainingView() {
+  await loadProjects();
+  startAutoRefresh();
+}
+
+initTrainingView();
 </script>
 </body>
 </html>

@@ -230,6 +230,16 @@ class SynthesisPipeline:
                 )
             return qa_idx
 
+        # Scale across-QA parallelism from the rollout generator's concurrency.
+        # Total in-flight requests = parallel_workers * rollouts_per_worker.
+        # We cap this at the backend's concurrency limit to avoid oversubscription.
+        rg_concurrency = getattr(self.rollout_generator, "concurrency", None)
+        if rg_concurrency and rg_concurrency > parallel_workers:
+            # Each QA pair fires up to rollout_count concurrent LLM calls
+            # (each rollout is a multi-step chain, but within a group they
+            # run in parallel). Set across-QA workers so the product stays
+            # within the concurrency budget.
+            parallel_workers = max(1, rg_concurrency // max(rollout_count, 1))
         max_workers = min(parallel_workers, num_qa) if num_qa > 0 else 1
         futures = []
         with ThreadPoolExecutor(max_workers=max_workers) as pool:

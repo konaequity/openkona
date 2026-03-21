@@ -17,6 +17,56 @@ from konash.plugins.compression import RLTrainableCompressionPlugin
 from konash.plugins.control import StepBudgetPlugin
 
 
+def detect_concurrency(
+    api_base: Optional[str] = None,
+    gpu_specs: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Detect appropriate concurrency for the LLM backend.
+
+    When ``gpu_specs`` are provided (from Shadeform provisioning), uses
+    the actual GPU memory to compute optimal concurrency via
+    ``cloud.estimate_concurrency``.  Otherwise falls back to simple
+    backend-type heuristics.
+
+    Parameters
+    ----------
+    api_base : str | None
+        The API base URL. None = local/Unsloth (sequential).
+    gpu_specs : dict | None
+        GPU specs from Shadeform: gpu_type, num_gpus, vram_per_gpu_gb,
+        total_vram_gb.  When available, gives precise concurrency that
+        adapts to any GPU type (H100, H200, B200, B300, etc.).
+
+    Returns
+    -------
+    int
+        Recommended number of concurrent requests.
+    """
+    if api_base is None:
+        return 1  # Local Unsloth — sequential
+
+    # Best path: use actual GPU specs from Shadeform
+    if gpu_specs and gpu_specs.get("total_vram_gb", 0) > 0:
+        from konash.cloud import estimate_concurrency
+        concurrency = estimate_concurrency(gpu_specs)
+        logger.info(
+            "Concurrency from GPU specs: %d "
+            "(%dx %s, %d GB total VRAM)",
+            concurrency,
+            gpu_specs.get("num_gpus", 1),
+            gpu_specs.get("gpu_type", "?"),
+            gpu_specs.get("total_vram_gb", 0),
+        )
+        return concurrency
+
+    # API backend heuristics (no GPU specs available)
+    if "together" in (api_base or "").lower():
+        return 16
+    if "localhost" in (api_base or "") or "127.0.0.1" in (api_base or ""):
+        return 32  # Local vLLM, unknown specs — moderate default
+    return 8
+
+
 class Rollout:
     """A single reasoning rollout: a sequence of steps with a final answer."""
 
@@ -132,6 +182,7 @@ class RolloutGenerator:
         compression_trigger_chars: Optional[int] = None,
         on_step: Optional[Callable] = None,
         nugget_scorer: Any = None,
+        concurrency: Optional[int] = None,
     ):
         self.max_steps = max_steps or 50
         self.top_k = top_k or 20
@@ -141,6 +192,7 @@ class RolloutGenerator:
         self.compression_trigger_chars = compression_trigger_chars
         self.on_step = on_step
         self.nugget_scorer = nugget_scorer
+        self.concurrency = concurrency
         self._tls = threading.local()  # thread-local storage for per-rollout state
 
     # ------------------------------------------------------------------
@@ -195,8 +247,10 @@ class RolloutGenerator:
             temp = max(0.1, min(1.2, temp))  # clamp
             rollout_args.append((i, temp))
 
-        # Run rollouts in parallel — they are independent I/O-bound LLM chains
-        max_workers = min(num_rollouts, 4)
+        # Run rollouts in parallel — they are independent I/O-bound LLM chains.
+        # With vLLM, fire all rollouts concurrently (continuous batching
+        # handles queuing). For API backends, concurrency is capped lower.
+        max_workers = min(num_rollouts, self.concurrency or 4)
         rollouts: List[Optional[Rollout]] = [None] * num_rollouts
 
         def _run_rollout(idx_temp):

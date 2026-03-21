@@ -18,7 +18,7 @@ Usage on Together AI cluster (2× H100 SXM)::
     export UNSLOTH_VLLM_STANDBY=1
 
     engine = UnslothEngine(
-        model_name="unsloth/GLM-4.5-Air",
+        model_name="zai-org/GLM-4.5-Air",
         max_seq_length=2048,
         lora_r=16,
         load_in_fp8=True,   # H100 native FP8
@@ -71,7 +71,7 @@ class UnslothEngine:
     Parameters
     ----------
     model_name : str
-        Unsloth model ID (e.g. ``"unsloth/GLM-4.5-Air"``).
+        Unsloth model ID (e.g. ``"zai-org/GLM-4.5-Air"``).
     max_seq_length : int
         Maximum sequence length for the model (default 2048).
     lora_r : int

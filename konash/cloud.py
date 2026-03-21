@@ -133,25 +133,119 @@ def _ensure_ssh_key(api_key: str) -> str:
 # Instance lifecycle
 # ---------------------------------------------------------------------------
 
-def _find_cheapest_gpu(gpu_type: str = "H100", api_key: Optional[str] = None) -> dict:
-    """Find the cheapest available GPU instance."""
-    data = _shadeform_request(
-        "GET",
-        f"/instances/types?gpu_type={gpu_type}&num_gpus=1&available=true&sort=price",
-        api_key=api_key,
+# GLM 4.5 Air FP8 needs ~110 GB VRAM. These GPUs can fit it
+# (with 2+ cards or a single large card). Ordered by preference:
+# cheapest first, newest last.
+_VLLM_COMPATIBLE_GPUS = ["H100", "H200", "B200", "B300", "A100_80G"]
+
+# Model weight estimates (GB) for VRAM budgeting.
+# Ordered longest key first so "GLM-4.5-Air-FP8" matches before "GLM-4.5-Air".
+_MODEL_WEIGHTS_GB = [
+    ("zai-org/GLM-4.5-Air-FP8", 110),  # FP8: 106B params × ~1 byte
+    ("zai-org/GLM-4.5-Air", 212),      # BF16: 106B params × 2 bytes
+    ("zai-org/GLM-4.5-FP8", 220),      # FP8: dense 212B params × ~1 byte
+    ("zai-org/GLM-4.5", 424),          # BF16: dense 212B params × 2 bytes
+]
+
+# Safety margin: model weights + 30% for KV cache, activations, vLLM overhead
+_VRAM_SAFETY_MARGIN = 1.3
+
+
+def _model_weight_gb(model: str) -> int:
+    """Look up estimated model weight memory in GB.
+
+    Matches longest key first to avoid 'GLM-4.5-Air' shadowing
+    'GLM-4.5-Air-FP8'. Returns 0 for unknown models.
+    """
+    model_lower = model.lower()
+    for key, weight_gb in _MODEL_WEIGHTS_GB:
+        if key.lower() in model_lower:
+            return weight_gb
+    return 0
+
+
+def _min_vram_for_model(model: str) -> int:
+    """Compute minimum total VRAM (GB) needed to serve a model via vLLM."""
+    weight_gb = _model_weight_gb(model)
+    if weight_gb > 0:
+        return int(weight_gb * _VRAM_SAFETY_MARGIN)
+    return 80
+
+
+def _find_cheapest_gpu(
+    gpu_type: str = "H100",
+    num_gpus: int = 1,
+    api_key: Optional[str] = None,
+    min_vram_gb: int = 0,
+    fallback_gpu_types: Optional[list] = None,
+) -> dict:
+    """Find the cheapest available GPU instance.
+
+    Parameters
+    ----------
+    gpu_type : str
+        Preferred GPU type.
+    num_gpus : int
+        Number of GPUs needed.
+    api_key : str
+        Shadeform API key.
+    min_vram_gb : int
+        Minimum total VRAM required (filters out instances too small).
+    fallback_gpu_types : list[str] | None
+        If preferred GPU is unavailable, try these in order.
+        Defaults to ``_VLLM_COMPATIBLE_GPUS``.
+    """
+    gpu_types_to_try = [gpu_type]
+    if fallback_gpu_types:
+        gpu_types_to_try += [g for g in fallback_gpu_types if g != gpu_type]
+
+    for gtype in gpu_types_to_try:
+        try:
+            data = _shadeform_request(
+                "GET",
+                f"/instances/types?gpu_type={gtype}&num_gpus={num_gpus}"
+                f"&available=true&sort=price",
+                api_key=api_key,
+            )
+        except RuntimeError:
+            continue
+
+        instances = data.get("instance_types", [])
+
+        # Filter by minimum VRAM if specified
+        if min_vram_gb > 0:
+            instances = [
+                inst for inst in instances
+                if _instance_total_vram(inst) >= min_vram_gb
+            ]
+
+        if not instances:
+            continue
+
+        best = instances[0]
+        # Find an available region
+        for avail in best.get("availability", []):
+            if avail.get("available"):
+                best["_region"] = avail["region"]
+                break
+
+        return best
+
+    tried = ", ".join(gpu_types_to_try)
+    raise RuntimeError(
+        f"No {num_gpus}x GPU available on Shadeform right now.\n"
+        f"  Tried: {tried}\n"
+        f"  Minimum VRAM: {min_vram_gb} GB\n"
+        f"  Check availability at https://www.shadeform.ai/instances"
     )
-    instances = data.get("instance_types", [])
-    if not instances:
-        raise RuntimeError(f"No {gpu_type} GPUs available on Shadeform right now.")
 
-    best = instances[0]
-    # Find an available region
-    for avail in best.get("availability", []):
-        if avail.get("available"):
-            best["_region"] = avail["region"]
-            break
 
-    return best
+def _instance_total_vram(instance: dict) -> int:
+    """Extract total VRAM in GB from a Shadeform instance type dict."""
+    config = instance.get("configuration", {})
+    vram = int(config.get("vram_per_gpu_in_gb", 0) or 0)
+    n = int(config.get("num_gpus", 1) or 1)
+    return vram * n
 
 
 def _launch_instance(
@@ -585,21 +679,26 @@ def _ensure_shadeform(verbose: bool = True) -> str:
 # ---------------------------------------------------------------------------
 
 def _provision_gpu(
-    gpu: str, api_key: str, verbose: bool = True,
+    gpu: str, api_key: str, verbose: bool = True, num_gpus: int = 1,
+    min_vram_gb: int = 0, fallback_gpu_types: Optional[list] = None,
 ) -> tuple:
     """Find, launch, and wait for a GPU instance.
 
     Handles insufficient funds by prompting the user to add balance
     and retrying — without losing their place in the training flow.
 
-    Returns (instance_id, ip, port, user, price, ssh_key).
+    Returns (instance_id, ip, port, user, price, ssh_key, gpu_specs).
+    gpu_specs is a dict with gpu_type, num_gpus, vram_per_gpu_gb, total_vram_gb.
     """
     _print = print if verbose else lambda *a, **k: None
 
     ssh_key = _ensure_ssh_key(api_key)
 
-    _print(f"  Finding cheapest {gpu}...")
-    best = _find_cheapest_gpu(gpu, api_key)
+    _print(f"  Finding cheapest {num_gpus}x {gpu}...")
+    best = _find_cheapest_gpu(
+        gpu, num_gpus=num_gpus, api_key=api_key,
+        min_vram_gb=min_vram_gb, fallback_gpu_types=fallback_gpu_types,
+    )
     price = best["hourly_price"] / 100
     provider = best["cloud"]
     region = best.get("_region", "")
@@ -643,7 +742,11 @@ def _provision_gpu(
                 _print(f"  [yellow]Launch failed: {msg}[/]")
                 _print(f"  [dim]Retrying with a different provider...[/]")
                 # Try next cheapest GPU
-                best = _find_cheapest_gpu(gpu, api_key)
+                best = _find_cheapest_gpu(
+                    gpu, num_gpus=num_gpus, api_key=api_key,
+                    min_vram_gb=min_vram_gb,
+                    fallback_gpu_types=fallback_gpu_types,
+                )
                 provider = best["cloud"]
                 region = best.get("_region", "")
                 continue
@@ -674,15 +777,30 @@ def _provision_gpu(
     port = info["ssh_port"]
     user = info["ssh_user"]
     _save_instance_state(instance_id, ip, port, user, price)
-    _print(f"  [green]✓[/]  Instance active  [dim]{ip}[/]")
 
-    return instance_id, ip, port, user, price, ssh_key
+    # Extract GPU specs from Shadeform instance config
+    config = best.get("configuration", {})
+    _num_gpus = int(config.get("num_gpus", num_gpus) or num_gpus)
+    _vram_per_gpu = int(config.get("vram_per_gpu_in_gb", 0) or 0)
+    gpu_specs = {
+        "gpu_type": str(config.get("gpu_type", gpu) or gpu),
+        "num_gpus": _num_gpus,
+        "vram_per_gpu_gb": _vram_per_gpu,
+        "total_vram_gb": _vram_per_gpu * _num_gpus,
+    }
+    _print(
+        f"  [green]✓[/]  Instance active  [dim]{ip}  "
+        f"{gpu_specs['num_gpus']}x {gpu_specs['gpu_type']} "
+        f"({gpu_specs['total_vram_gb']} GB)[/]"
+    )
+
+    return instance_id, ip, port, user, price, ssh_key, gpu_specs
 
 
 def train_oapl_from_rollouts(
     *,
     rollouts_path: str,
-    base_model: str = "unsloth/GLM-4.5-Air",
+    base_model: str = "zai-org/GLM-4.5-Air",
     checkpoint_dir: str = "~/.konash/projects/konash-run/checkpoints",
     learning_rate: float = 1e-6,
     cloud: Optional[str] = None,
@@ -695,7 +813,7 @@ def train_oapl_from_rollouts(
     _print = print if verbose else lambda *a, **k: None
 
     api_key = _ensure_shadeform(verbose)
-    instance_id, ip, port, user, price, ssh_key = _provision_gpu(gpu, api_key, verbose)
+    instance_id, ip, port, user, price, ssh_key, _gpu_specs = _provision_gpu(gpu, api_key, verbose)
 
     try:
         # Upload codebase
@@ -754,7 +872,7 @@ def train_oapl_from_rollouts(
 def train_remote(
     *,
     corpus: str = "financebench",
-    base_model: str = "unsloth/GLM-4.5-Air",
+    base_model: str = "zai-org/GLM-4.5-Air",
     checkpoint_dir: str = "~/.konash/projects/konash-run/checkpoints",
     iterations: int = 1,
     synthesis_calls: int = 1500,
@@ -773,7 +891,7 @@ def train_remote(
     _print = print if verbose else lambda *a, **k: None
 
     api_key = _ensure_shadeform(verbose)
-    instance_id, ip, port, user, price, ssh_key = _provision_gpu(gpu, api_key, verbose)
+    instance_id, ip, port, user, price, ssh_key, _gpu_specs = _provision_gpu(gpu, api_key, verbose)
 
     try:
         _print(f"  Uploading codebase...")
@@ -877,6 +995,332 @@ def stream_logs(verbose: bool = True) -> None:
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# vLLM server management
+# ---------------------------------------------------------------------------
+
+_VLLM_MODEL = "zai-org/GLM-4.5-Air"
+_VLLM_PORT = 8000
+
+
+def _install_vllm_remote(
+    ip: str, key_path: str = _SSH_KEY_PATH,
+    port: int = 22, user: str = "shadeform",
+) -> None:
+    """Install vLLM on the remote machine."""
+    install_cmd = (
+        "pip3 install vllm 2>&1 | tail -3"
+    )
+    result = subprocess.run(
+        _ssh_cmd(ip, install_cmd, key_path, port, user),
+        capture_output=True, text=True, timeout=600,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"vLLM install failed: {result.stderr}")
+
+
+def _start_vllm_server(
+    ip: str, model: str = _VLLM_MODEL,
+    tensor_parallel: int = 1,
+    lora_rank: int = 16,
+    key_path: str = _SSH_KEY_PATH,
+    port: int = 22, user: str = "shadeform",
+) -> None:
+    """Start vLLM server with sleep mode + LoRA support on the remote machine."""
+    hf_token = os.environ.get("HF_TOKEN", "")
+    env_str = (
+        f'HF_TOKEN="{hf_token}" '
+        f'VLLM_SERVER_DEV_MODE=1 '
+        f'VLLM_ALLOW_RUNTIME_LORA_UPDATING=1'
+    )
+
+    serve_cmd = (
+        f"export {env_str} && "
+        f"nohup vllm serve {model} "
+        f"--tensor-parallel-size {tensor_parallel} "
+        f"--port {_VLLM_PORT} "
+        f"--host 0.0.0.0 "
+        f"--max-model-len 4096 "
+        f"--enable-auto-tool-choice "
+        f"--tool-call-parser hermes "
+        f"--enable-sleep-mode "
+        f"--enable-lora "
+        f"--max-lora-rank {lora_rank} "
+        f"> ~/vllm.log 2>&1 &"
+    )
+    subprocess.run(
+        _ssh_cmd(ip, serve_cmd, key_path, port, user),
+        capture_output=True, timeout=30,
+    )
+
+
+def _sleep_vllm_server(
+    ip: str, key_path: str = _SSH_KEY_PATH,
+    ssh_port: int = 22, user: str = "shadeform",
+) -> None:
+    """Put the remote vLLM server to sleep (offload weights to CPU)."""
+    cmd = f"curl -s -X POST http://localhost:{_VLLM_PORT}/sleep?level=1"
+    subprocess.run(
+        _ssh_cmd(ip, cmd, key_path, ssh_port, user),
+        capture_output=True, timeout=30,
+    )
+
+
+def _wake_vllm_server(
+    ip: str, key_path: str = _SSH_KEY_PATH,
+    ssh_port: int = 22, user: str = "shadeform",
+) -> None:
+    """Wake the remote vLLM server (reload weights from CPU)."""
+    cmd = f"curl -s -X POST http://localhost:{_VLLM_PORT}/wake_up"
+    subprocess.run(
+        _ssh_cmd(ip, cmd, key_path, ssh_port, user),
+        capture_output=True, timeout=120,
+    )
+
+
+def _load_lora_adapter_remote(
+    ip: str, adapter_path: str, lora_name: str,
+    key_path: str = _SSH_KEY_PATH,
+    ssh_port: int = 22, user: str = "shadeform",
+) -> bool:
+    """Hot-load a LoRA adapter into the remote vLLM server."""
+    payload = json.dumps({"lora_name": lora_name, "lora_path": adapter_path})
+    cmd = (
+        f"curl -s -X POST http://localhost:{_VLLM_PORT}/v1/load_lora_adapter "
+        f"-H 'Content-Type: application/json' "
+        f"-d '{payload}'"
+    )
+    result = subprocess.run(
+        _ssh_cmd(ip, cmd, key_path, ssh_port, user),
+        capture_output=True, text=True, timeout=60,
+    )
+    return result.returncode == 0
+
+
+def _stop_vllm_server(
+    ip: str, key_path: str = _SSH_KEY_PATH,
+    port: int = 22, user: str = "shadeform",
+) -> None:
+    """Stop the vLLM server on the remote machine."""
+    subprocess.run(
+        _ssh_cmd(ip, "pkill -f 'vllm serve' || true", key_path, port, user),
+        capture_output=True, timeout=10,
+    )
+
+
+def _wait_for_vllm_ready(
+    ip: str, timeout: int = 600,
+    ssh_port: int = 22, user: str = "shadeform",
+    key_path: str = _SSH_KEY_PATH,
+) -> None:
+    """Poll the vLLM health endpoint until the server is ready."""
+    start = time.monotonic()
+    while time.monotonic() - start < timeout:
+        # Check via SSH curl since the port may not be publicly exposed
+        check_cmd = (
+            f"curl -s -o /dev/null -w '%{{http_code}}' "
+            f"http://localhost:{_VLLM_PORT}/health 2>/dev/null || echo 000"
+        )
+        result = subprocess.run(
+            _ssh_cmd(ip, check_cmd, key_path, ssh_port, user),
+            capture_output=True, text=True, timeout=15,
+        )
+        code = result.stdout.strip()
+        if code == "200":
+            return
+        time.sleep(10)
+    raise RuntimeError(f"vLLM server did not become ready within {timeout}s")
+
+
+def _probe_vllm_concurrency(
+    ip: str, key_path: str = _SSH_KEY_PATH,
+    ssh_port: int = 22, user: str = "shadeform",
+) -> Optional[int]:
+    """Probe a running vLLM server's Prometheus metrics for actual KV cache capacity.
+
+    After vLLM loads the model and allocates KV cache, it reports the actual
+    number of available GPU blocks via ``vllm:num_gpu_blocks``.  This is more
+    accurate than the pre-load estimate because it accounts for:
+
+    - Actual model weight memory (may differ from our estimate)
+    - Embedding layers and other allocations
+    - vLLM's internal overhead and reserved memory
+    - ``gpu_memory_utilization`` setting
+
+    Returns None if metrics are unavailable (estimate_concurrency is used instead).
+    """
+    check_cmd = (
+        f"curl -s http://localhost:{_VLLM_PORT}/metrics 2>/dev/null"
+    )
+    try:
+        result = subprocess.run(
+            _ssh_cmd(ip, check_cmd, key_path, ssh_port, user),
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0 or not result.stdout:
+            return None
+    except Exception:
+        return None
+
+    text = result.stdout
+    total_blocks = 0
+    for line in text.split("\n"):
+        if line.startswith("#"):
+            continue
+        # vllm:num_gpu_blocks{...} <value>
+        if "num_gpu_blocks" in line:
+            try:
+                total_blocks = int(float(line.split()[-1]))
+            except (ValueError, IndexError):
+                pass
+
+    if total_blocks <= 0:
+        return None
+
+    # vLLM uses 16-token blocks by default.
+    # For max_model_len=4096: 4096/16 = 256 blocks per sequence.
+    # Use 80% of capacity for headroom.
+    blocks_per_seq = 256  # 4096 tokens / 16 tokens per block
+    max_seqs = int(total_blocks / blocks_per_seq * 0.8)
+    return max(min(max_seqs, 256), 4)
+
+
+def estimate_concurrency(
+    gpu_specs: dict,
+    model: str = _VLLM_MODEL,
+    max_model_len: int = 4096,
+) -> int:
+    """Estimate optimal vLLM concurrency from Shadeform GPU specs.
+
+    Uses the actual GPU memory reported by Shadeform to calculate how
+    many concurrent sequences the KV cache can hold. This adapts
+    automatically to any GPU type (H100, H200, B200, B300, etc.).
+
+    Parameters
+    ----------
+    gpu_specs : dict
+        From ``_provision_gpu``: gpu_type, num_gpus, vram_per_gpu_gb,
+        total_vram_gb.
+    model : str
+        HuggingFace model ID. Used to estimate model weight memory.
+    max_model_len : int
+        Max sequence length configured for vLLM.
+
+    Returns
+    -------
+    int
+        Recommended number of concurrent requests.
+    """
+    total_vram_gb = gpu_specs.get("total_vram_gb", 0)
+    num_gpus = gpu_specs.get("num_gpus", 1) or 1
+
+    if total_vram_gb <= 0:
+        # No VRAM info from Shadeform — conservative fallback
+        return 32
+
+    # Look up model weight memory. Falls back to 60% of total VRAM.
+    model_memory_gb = _model_weight_gb(model)
+    if model_memory_gb <= 0:
+        model_memory_gb = total_vram_gb * 0.6
+
+    # Remaining VRAM available for KV cache
+    kv_cache_gb = max(total_vram_gb - model_memory_gb, 1)
+
+    # KV cache memory per sequence:
+    # GLM 4.5 Air: 72 layers, hidden=5120, 40 heads, head_dim=128
+    # KV per layer per token = 2 * head_dim * num_kv_heads * dtype_bytes
+    # MoE models use GQA with fewer KV heads than attention heads.
+    # GLM 4.5 Air: 8 KV heads, 128 head_dim, FP16 KV cache = 2 bytes
+    # Per token per layer: 2 (K+V) * 128 * 8 * 2 bytes = 4096 bytes = 4 KB
+    # Per token all layers: 4 KB * 72 = 288 KB
+    # Per sequence (max_model_len tokens): 288 KB * 4096 = 1.15 GB
+    kv_per_seq_gb = 288 * max_model_len / (1024 * 1024)  # KB * tokens → GB
+
+    if kv_per_seq_gb <= 0:
+        return 32
+
+    # Max concurrent sequences from KV cache capacity
+    # Use 80% to leave headroom for activations and overhead
+    max_seqs = int(kv_cache_gb * 0.8 / kv_per_seq_gb)
+
+    # Clamp to reasonable bounds
+    concurrency = max(min(max_seqs, 256), 4)
+
+    return concurrency
+
+
+def provision_vllm(
+    *,
+    gpu: str = "H100",
+    num_gpus: int = 2,
+    model: str = _VLLM_MODEL,
+    verbose: bool = True,
+) -> dict:
+    """Provision a Shadeform GPU and start a vLLM server.
+
+    Automatically falls back to other GPU types (H200, B200, B300) if
+    the preferred type is unavailable. Ensures minimum VRAM for the model.
+
+    Returns dict with instance_id, ip, ssh_port, ssh_user, ssh_key,
+    vllm_base_url, hourly_price, gpu_specs, and concurrency.
+    """
+    _print = print if verbose else lambda *a, **k: None
+
+    api_key = _ensure_shadeform(verbose)
+    min_vram = _min_vram_for_model(model)
+    instance_id, ip, ssh_port, user, price, ssh_key, gpu_specs = _provision_gpu(
+        gpu, api_key, verbose, num_gpus=num_gpus,
+        min_vram_gb=min_vram,
+        fallback_gpu_types=_VLLM_COMPATIBLE_GPUS,
+    )
+    _print(f"  Minimum VRAM required: {min_vram} GB")
+
+    _print(f"  Installing vLLM...")
+    _install_vllm_remote(ip, ssh_key, ssh_port, user)
+    _print(f"  [green]✓[/]  vLLM installed")
+
+    tp_size = gpu_specs["num_gpus"] or num_gpus
+    _print(f"  Starting vLLM server ({model}, tp={tp_size})...")
+    _start_vllm_server(
+        ip, model=model, tensor_parallel=tp_size,
+        key_path=ssh_key, port=ssh_port, user=user,
+    )
+
+    _print(f"  Waiting for model to load (this takes a few minutes)...")
+    _wait_for_vllm_ready(ip, ssh_port=ssh_port, user=user, key_path=ssh_key)
+
+    # Compute concurrency from Shadeform specs as initial estimate,
+    # then refine with vLLM's live metrics (actual KV cache blocks
+    # after model loading, embedding allocation, etc.)
+    concurrency = estimate_concurrency(gpu_specs, model)
+
+    live_concurrency = _probe_vllm_concurrency(ip, ssh_key, ssh_port, user)
+    if live_concurrency is not None:
+        _print(
+            f"  [green]✓[/]  vLLM ready  [dim]{ip}:{_VLLM_PORT}  "
+            f"concurrency={live_concurrency} "
+            f"(live, was {concurrency} estimated)[/]"
+        )
+        concurrency = live_concurrency
+    else:
+        _print(
+            f"  [green]✓[/]  vLLM ready  [dim]{ip}:{_VLLM_PORT}  "
+            f"concurrency={concurrency} (estimated)[/]"
+        )
+
+    return {
+        "instance_id": instance_id,
+        "ip": ip,
+        "ssh_port": ssh_port,
+        "ssh_user": user,
+        "ssh_key": ssh_key,
+        "vllm_base_url": f"http://{ip}:{_VLLM_PORT}/v1",
+        "hourly_price": price,
+        "gpu_specs": gpu_specs,
+        "concurrency": concurrency,
+    }
+
 
 def _get_together_key() -> Optional[str]:
     """Resolve Together AI key from env or config."""

@@ -12,10 +12,12 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +30,7 @@ sys.path.insert(0, _PROJECT_ROOT)
 from collections import defaultdict
 from flask import Flask, jsonify, render_template, request
 from jinja2 import ChoiceLoader, FileSystemLoader
+from konash.training.project_state import load_active_run
 from tools.trace_viewer.training_live_service import (
     build_live_training_summary,
     list_live_training_projects,
@@ -57,6 +60,7 @@ STAGE2_PATH = Path(_PROJECT_ROOT) / "stage2_training_data.json"
 ARENA_DATA_DIR = Path(_PROJECT_ROOT) / "tools" / "arena" / "data"
 CHECKPOINTS_DIR = Path(_PROJECT_ROOT) / "checkpoints"
 DEMO_PROJECT = "trainer-live-demo"
+_LIVE_ACTIVITY_STALE_SECONDS = 6 * 60 * 60
 _demo_lock = threading.Lock()
 _demo_generation = 0
 _demo_thread: threading.Thread | None = None
@@ -71,7 +75,7 @@ def _run_demo_training(generation: int) -> None:
     base_entropy = 0.54
     delay = 1.8
 
-    log.start(iterations=1, corpus="financebench", model="unsloth/GLM-4.5-Air")
+    log.start(iterations=1, corpus="financebench", model="zai-org/GLM-4.5-Air")
     time.sleep(delay)
 
     for epoch in range(1, 9):
@@ -120,6 +124,168 @@ def _start_demo_training() -> None:
         daemon=True,
     )
     _demo_thread.start()
+
+
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        normalized = value.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _project_last_activity(project_root: Path, active_updated_at: str | None, timeline_updated_at: str | None) -> datetime | None:
+    candidates: list[datetime] = []
+    for raw in (active_updated_at, timeline_updated_at):
+        parsed = _parse_iso_timestamp(raw)
+        if parsed is not None:
+            candidates.append(parsed)
+    training_log = project_root / "training.jsonl"
+    if training_log.exists():
+        candidates.append(datetime.fromtimestamp(training_log.stat().st_mtime, tz=timezone.utc))
+    if not candidates:
+        return None
+    return max(candidates)
+
+
+_DEBUG_LINE_RE = re.compile(
+    r"^(?P<timestamp>\S+)\s+(?P<level>[A-Z]+)\s+(?P<logger>\S+)\s+(?P<message>.*)$"
+)
+_DEBUG_KV_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=([^=]+?)(?=\s+[a-zA-Z_][a-zA-Z0-9_]*=|$)")
+
+
+def _tail_training_debug_log(project: str, limit: int = 200) -> list[dict[str, Any]]:
+    log_path = Path(os.path.expanduser(f"~/.konash/projects/{project}/training_debug.log"))
+    if not log_path.exists():
+        return []
+
+    try:
+        with open(log_path) as f:
+            lines = f.readlines()[-limit:]
+    except OSError:
+        return []
+
+    entries: list[dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        match = _DEBUG_LINE_RE.match(line)
+        if not match:
+            entries.append({
+                "timestamp": "",
+                "level": "info",
+                "logger": "",
+                "kind": "raw",
+                "title": "Trace",
+                "detail": line,
+                "raw": line,
+            })
+            continue
+
+        message = match.group("message")
+        payload = {}
+        for key, value in _DEBUG_KV_RE.findall(message):
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                value = value[1:-1]
+            payload[key] = value
+
+        title = "Debug"
+        detail = message
+        kind = "debug"
+
+        if message.startswith("synthesis_search_results"):
+            kind = "search"
+            query = payload.get("query", "")
+            preview = payload.get("formatted_preview", "")
+            detail = f"{query} · {payload.get('formatted_len', '?')} chars · {preview}"
+            title = "Search results"
+        elif message.startswith("synthesis_search"):
+            kind = "search"
+            detail = f"{payload.get('query', '')} · {payload.get('results', '?')} results"
+            title = "Corpus search"
+        elif message.startswith("synthesis_step"):
+            kind = "synthesis"
+            detail = (
+                f"step {payload.get('step', '?')} · searched {payload.get('search_count', '?')} times "
+                f"· proposed {payload.get('proposed', '?')} pairs"
+            )
+            content = payload.get("content", "")
+            if content:
+                detail = f"{detail} · {content[:220]}"
+            title = "Synthesis step"
+        elif message.startswith("synthesis_action"):
+            kind = "synthesis"
+            detail = (
+                f"step {payload.get('step', '?')} · action={payload.get('action', '?')} "
+                f"· query={payload.get('query', '')}"
+            )
+            title = "Agent action"
+        elif message.startswith("synthesis_propose"):
+            kind = "synthesis"
+            detail = (
+                f"step {payload.get('step', '?')} · accepted={payload.get('accepted_examples', '?')} "
+                f"· total={payload.get('total_proposed', '?')}"
+            )
+            title = "Proposal accepted"
+        elif message.startswith("synthesis_forced_propose"):
+            kind = "synthesis"
+            detail = f"forced proposal · search_count={payload.get('search_count', '?')} · remaining={payload.get('remaining', '?')}"
+            title = "Forced proposal"
+        elif message.startswith("rollout_start"):
+            kind = "rollout"
+            detail = f"qa={payload.get('qa', '?')} · rollout={payload.get('rollout', '?')} · max_steps={payload.get('max_steps', '?')}"
+            title = "Rollout started"
+        elif message.startswith("rollout_done"):
+            kind = "rollout"
+            detail = (
+                f"qa={payload.get('qa', '?')} · rollout={payload.get('rollout', '?')} "
+                f"· steps={payload.get('steps', '?')} · passed={payload.get('passed', '?')} "
+                f"· elapsed={payload.get('elapsed', '?')}s"
+            )
+            title = "Rollout finished"
+        elif message.startswith("api_call"):
+            kind = "api"
+            detail = (
+                f"{payload.get('model', '?')} · {payload.get('latency', '?')}s "
+                f"· in={payload.get('tokens_in', '?')} out={payload.get('tokens_out', '?')}"
+            )
+            title = "LLM call"
+        elif message.startswith("api_retry"):
+            kind = "warning"
+            detail = (
+                f"attempt {payload.get('attempt', '?')}/{payload.get('max_retries', '?')} "
+                f"· code={payload.get('code', '?')} · backoff={payload.get('backoff', '?')}s"
+            )
+            title = "API retry"
+        elif message.startswith("api_400"):
+            kind = "error"
+            detail = f"{payload.get('model', '?')} · {payload.get('body', '')[:120]}"
+            title = "API 400"
+        elif match.group("level") == "WARNING":
+            kind = "warning"
+            title = "Warning"
+        elif match.group("level") == "ERROR":
+            kind = "error"
+            title = "Error"
+
+        entries.append({
+            "timestamp": match.group("timestamp"),
+            "level": match.group("level").lower(),
+            "logger": match.group("logger"),
+            "kind": kind,
+            "title": title,
+            "detail": detail,
+            "raw": line,
+        })
+
+    return entries
 
 
 # ---------------------------------------------------------------------------
@@ -573,9 +739,75 @@ def training_live_index():
 
 @app.route("/training/api/projects")
 def training_projects():
-    """List all projects with training logs."""
+    """List training projects and identify the best default live target."""
     from konash.training.logger import TrainingLogger
-    return jsonify({"projects": TrainingLogger.list_projects()})
+
+    projects_root = Path(os.path.expanduser("~/.konash/projects"))
+
+    def _infer_pipeline_stage(project: str) -> str:
+        pipeline_dir = projects_root / project / "checkpoints" / "pipeline_state"
+        if not pipeline_dir.exists():
+            return "Awaiting run"
+
+        iter_dirs = sorted(
+            (path for path in pipeline_dir.glob("iter*") if path.is_dir()),
+            key=lambda path: path.name,
+        )
+        if not iter_dirs:
+            return "Awaiting run"
+
+        latest_iter = iter_dirs[-1]
+        if (latest_iter / "stage1_progress.json").exists() and not (latest_iter / "stage2_rollouts.json").exists():
+            return "Synthesis"
+        if (latest_iter / "rollouts_incremental.json").exists() or (latest_iter / "stage2_rollouts.json").exists():
+            return "Rollouts"
+        if (latest_iter / "stage3_oapl.json").exists():
+            return "OAPL"
+        if (latest_iter / "stage1_deduped.json").exists():
+            return "Rollouts"
+        return "Running"
+
+    projects: list[dict[str, Any]] = []
+    for project in TrainingLogger.list_projects():
+        summary = build_live_training_summary(project)
+        active_run = load_active_run(project)
+        status = active_run.status if active_run is not None else summary.status
+        stage = summary.stage
+        if stage == "Awaiting trainer" and status == "running":
+            stage = _infer_pipeline_stage(project)
+        project_root = projects_root / project
+        timeline_updated_at = summary.timeline[-1].timestamp if summary.timeline else None
+        last_activity = _project_last_activity(
+            project_root,
+            active_run.updated_at if active_run is not None else None,
+            timeline_updated_at,
+        )
+        is_recently_active = (
+            status == "running"
+            and last_activity is not None
+            and (datetime.now(timezone.utc) - last_activity).total_seconds() <= _LIVE_ACTIVITY_STALE_SECONDS
+        )
+        updated_at = last_activity.isoformat() if last_activity is not None else ""
+        projects.append({
+            "name": project,
+            "status": status,
+            "stage": stage,
+            "model": summary.summary.model,
+            "updated_at": updated_at,
+            "is_running": is_recently_active,
+        })
+
+    default_project = None
+    running_projects = [project for project in projects if project["is_running"]]
+    if running_projects:
+        default_project = max(running_projects, key=lambda project: project["updated_at"] or "")["name"]
+    elif projects:
+        default_project = max(projects, key=lambda project: project["updated_at"] or "")["name"]
+
+    return jsonify({
+        "projects": projects,
+        "default_project": default_project,
+    })
 
 
 @app.route("/training/api/live/projects")
@@ -600,6 +832,26 @@ def training_logs(project: str):
     from konash.training.logger import TrainingLogger
     events = TrainingLogger.load_records(project)
     return jsonify({"project": project, "events": events})
+
+
+@app.route("/training/api/debug/<project>")
+def training_debug(project: str):
+    """Get the live debug trace for a project."""
+    limit = request.args.get("limit", default=200, type=int) or 200
+    events = _tail_training_debug_log(project, limit=max(1, min(limit, 1000)))
+    debug_path = Path(os.path.expanduser(f"~/.konash/projects/{project}/training_debug.log"))
+    updated_at = ""
+    if debug_path.exists():
+        try:
+            updated_at = datetime.fromtimestamp(debug_path.stat().st_mtime, tz=timezone.utc).isoformat()
+        except OSError:
+            updated_at = ""
+    return jsonify({
+        "project": project,
+        "path": str(debug_path),
+        "updated_at": updated_at,
+        "events": events,
+    })
 
 
 @app.route("/training/api/rollouts/<project>")
@@ -683,7 +935,21 @@ def training_rollouts(project: str):
 
     # Also load synthesis data for QA pairs without rollouts
     synthesis_groups = []
+    synthesis_progress = None
     for iter_dir in sorted(glob.glob(os.path.join(ckpt_base, "iter*"))):
+        progress_path = os.path.join(iter_dir, "stage1_progress.json")
+        if os.path.exists(progress_path):
+            try:
+                with open(progress_path) as f:
+                    progress_data = json.load(f)
+                progress_payload = progress_data.get("data", progress_data)
+                if isinstance(progress_payload, dict):
+                    synthesis_progress = {
+                        **progress_payload,
+                        "iteration": os.path.basename(iter_dir),
+                    }
+            except (json.JSONDecodeError, OSError):
+                pass
         for fname in ["stage1_deduped.json", "stage1_synthesis.json"]:
             fpath = os.path.join(iter_dir, fname)
             if not os.path.exists(fpath):
@@ -705,6 +971,7 @@ def training_rollouts(project: str):
         "project": project,
         "rollout_groups": groups,
         "synthesis_examples": synthesis_groups,
+        "synthesis_progress": synthesis_progress,
         "total_groups": len(groups),
         "total_synthesis": len(synthesis_groups),
     })
