@@ -479,7 +479,7 @@ def _setup_remote(
         "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH && "
         "sudo -E env PATH=$PATH uv pip install --system --link-mode=copy --upgrade "
         "numpy sentence-transformers datasets huggingface_hub torch "
-        "unsloth peft accelerate 'transformers>=5.2.0' && "
+        "unsloth peft accelerate vllm 'transformers>=5.2.0' && "
         "python3 - <<'PY'\n"
         "from importlib.metadata import version\n"
         "from packaging.version import Version\n"
@@ -800,7 +800,7 @@ def _provision_gpu(
 def train_oapl_from_rollouts(
     *,
     rollouts_path: str,
-    base_model: str = "unsloth/GLM-4.5-Air",
+    base_model: str = "zai-org/GLM-4.5-Air-FP8",
     checkpoint_dir: str = "~/.konash/projects/konash-run/checkpoints",
     learning_rate: float = 1e-6,
     cloud: Optional[str] = None,
@@ -868,7 +868,7 @@ def train_oapl_from_rollouts(
 def train_remote(
     *,
     corpus: str = "financebench",
-    base_model: str = "unsloth/GLM-4.5-Air",
+    base_model: str = "zai-org/GLM-4.5-Air-FP8",
     checkpoint_dir: str = "~/.konash/projects/konash-run/checkpoints",
     iterations: int = 1,
     synthesis_calls: int = 1500,
