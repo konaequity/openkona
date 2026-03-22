@@ -234,6 +234,19 @@ class VLLMLifecycle:
         # Let vLLM auto-detect from model config when not specified
         if self._max_model_len is not None:
             cmd.extend(["--max-model-len", str(self._max_model_len)])
+        # Auto-detect tool call parser for known model families
+        model_lower = self._model.lower()
+        if "glm" in model_lower:
+            cmd.extend([
+                "--enable-auto-tool-choice",
+                "--tool-call-parser", "glm45",
+                "--trust-remote-code",
+            ])
+        elif "qwen" in model_lower:
+            cmd.extend([
+                "--enable-auto-tool-choice",
+                "--tool-call-parser", "hermes",
+            ])
         cmd.extend(self._extra_args)
 
         log_path = os.path.join(self._log_dir, "vllm.log")
