@@ -122,6 +122,21 @@ def parse_args():
     return p.parse_args()
 
 
+def _target_synthesis_examples(
+    *,
+    current_count: int,
+    max_examples: int | None,
+    batch_size: int = 8,
+) -> int:
+    """Choose how many examples a synthesis call should request."""
+    if max_examples is None:
+        return batch_size
+    remaining_examples = max_examples - current_count
+    if remaining_examples <= 0:
+        return 0
+    return min(batch_size, remaining_examples)
+
+
 def export_model(engine, args):
     """Export trained model: push to Hub, merge LoRA, convert to GGUF, deploy to Together AI."""
     hf_token = os.environ.get("HF_TOKEN")
@@ -671,12 +686,12 @@ def train_full_pipeline(args):
 
         raw_examples = []
         for call_idx in range(args.synthesis_calls):
-            target_examples = 8
-            if args.max_examples is not None:
-                remaining_examples = args.max_examples - len(raw_examples)
-                if remaining_examples <= 0:
-                    break
-                target_examples = min(target_examples, remaining_examples)
+            target_examples = _target_synthesis_examples(
+                current_count=len(raw_examples),
+                max_examples=args.max_examples,
+            )
+            if target_examples <= 0:
+                break
             batch = synthesizer.synthesize(
                 documents=None,
                 num_examples=target_examples,
@@ -933,12 +948,12 @@ def _train_sleep_wake_pipeline(args):
             print("  Synthesizing QA pairs...")
             raw_examples = []
             for call_idx in range(args.synthesis_calls):
-                target_examples = 8
-                if args.max_examples is not None:
-                    remaining_examples = args.max_examples - len(raw_examples)
-                    if remaining_examples <= 0:
-                        break
-                    target_examples = min(target_examples, remaining_examples)
+                target_examples = _target_synthesis_examples(
+                    current_count=len(raw_examples),
+                    max_examples=args.max_examples,
+                )
+                if target_examples <= 0:
+                    break
                 batch = synthesizer.synthesize(
                     documents=None,
                     num_examples=target_examples,

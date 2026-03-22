@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from scripts.train_oapl_unsloth import _target_synthesis_examples
 from konash.training.execution import plan_training_execution
 
 
@@ -48,3 +49,17 @@ def test_sleep_wake_disabled_for_single_iteration():
 def test_sleep_wake_defaults_to_false():
     plan = plan_training_execution(iterations=2, synthesis_rollout_backend="remote_full")
     assert plan.supports_sleep_wake is False
+
+
+def test_target_synthesis_examples_uses_full_batch_without_cap():
+    assert _target_synthesis_examples(current_count=0, max_examples=None) == 8
+
+
+def test_target_synthesis_examples_respects_remaining_cap():
+    assert _target_synthesis_examples(current_count=0, max_examples=3) == 3
+    assert _target_synthesis_examples(current_count=2, max_examples=3) == 1
+
+
+def test_target_synthesis_examples_returns_zero_when_done():
+    assert _target_synthesis_examples(current_count=3, max_examples=3) == 0
+    assert _target_synthesis_examples(current_count=4, max_examples=3) == 0
