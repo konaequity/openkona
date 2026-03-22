@@ -100,6 +100,10 @@ def parse_args():
                          "vLLM runs for inference, sleeps during OAPL training.")
     p.add_argument("--tensor-parallel", type=int, default=1,
                     help="Tensor parallel size for vLLM (default: 1)")
+    p.add_argument("--vllm-max-model-len", type=int, default=None,
+                    help="Override max model length for vLLM")
+    p.add_argument("--vllm-gpu-memory-utilization", type=float, default=None,
+                    help="Override vLLM GPU memory utilization")
 
     # Output
     p.add_argument("--output", type=str, default="./checkpoints",
@@ -667,7 +671,16 @@ def train_full_pipeline(args):
 
         raw_examples = []
         for call_idx in range(args.synthesis_calls):
-            batch = synthesizer.synthesize(documents=None, num_examples=8)
+            target_examples = 8
+            if args.max_examples is not None:
+                remaining_examples = args.max_examples - len(raw_examples)
+                if remaining_examples <= 0:
+                    break
+                target_examples = min(target_examples, remaining_examples)
+            batch = synthesizer.synthesize(
+                documents=None,
+                num_examples=target_examples,
+            )
             raw_examples.extend(batch)
             # Stream each QA pair to local monitor via ##KONASH## markers
             for ex in batch:
@@ -847,15 +860,27 @@ def _train_sleep_wake_pipeline(args):
     print(f"  Iterations: {args.iterations}")
     print(f"  Synthesis:  {args.synthesis_calls} calls/iter")
     print(f"  TP:         {args.tensor_parallel}")
+    if args.vllm_max_model_len is not None:
+        print(f"  vLLM ctx:   {args.vllm_max_model_len}")
+    if args.vllm_gpu_memory_utilization is not None:
+        print(f"  vLLM mem:   {args.vllm_gpu_memory_utilization}")
     print(f"  Output:     {args.output}")
     print()
 
+    vllm_extra_args: list[str] = []
+    if args.vllm_gpu_memory_utilization is not None:
+        vllm_extra_args.extend([
+            "--gpu-memory-utilization",
+            str(args.vllm_gpu_memory_utilization),
+        ])
+
     # Start vLLM with sleep mode + LoRA.
-    # max_model_len=None lets vLLM auto-detect from the model's config.
     vllm = VLLMLifecycle(
         model=vllm_model,
         tensor_parallel=args.tensor_parallel,
+        max_model_len=args.vllm_max_model_len,
         max_lora_rank=args.lora_r,
+        extra_args=vllm_extra_args,
         log_dir=args.output,
     )
 
@@ -908,7 +933,16 @@ def _train_sleep_wake_pipeline(args):
             print("  Synthesizing QA pairs...")
             raw_examples = []
             for call_idx in range(args.synthesis_calls):
-                batch = synthesizer.synthesize(documents=None, num_examples=8)
+                target_examples = 8
+                if args.max_examples is not None:
+                    remaining_examples = args.max_examples - len(raw_examples)
+                    if remaining_examples <= 0:
+                        break
+                    target_examples = min(target_examples, remaining_examples)
+                batch = synthesizer.synthesize(
+                    documents=None,
+                    num_examples=target_examples,
+                )
                 raw_examples.extend(batch)
                 for ex in batch:
                     q = ex.question.replace('\n', ' ').replace('#', '')

@@ -491,6 +491,7 @@ def _setup_remote(
         "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH && "
         "sudo -E env PATH=$PATH uv pip install --system --link-mode=copy --upgrade "
         "numpy sentence-transformers datasets huggingface_hub torch "
+        "'tqdm<4.67' "
         "unsloth peft accelerate 'vllm>=0.8' 'transformers>=5.2.0' && "
         "python3 - <<'PY'\n"
         "from importlib.metadata import version\n"
@@ -538,13 +539,14 @@ def _run_remote_training(
     remote_cmd = (
         f"cd {_REMOTE_DIR} && "
         f"export PYTHONPATH=. {standby_export}{env_str} && "
-        f"nohup bash -c '{training_cmd} > {_REMOTE_LOG} 2>&1' &"
+        f"nohup bash -lc '{training_cmd} > {_REMOTE_LOG} 2>&1' "
+        "</dev/null >/dev/null 2>&1 &"
     )
 
     # Start training in background
     subprocess.run(
         _ssh_cmd(ip, remote_cmd, key_path, port, user),
-        capture_output=True, timeout=30,
+        capture_output=True, timeout=120,
     )
 
     # Wait a moment for the process to start
@@ -900,8 +902,13 @@ def train_remote(
     """Run the full KARL training pipeline on a cloud GPU."""
     _print = print if verbose else lambda *a, **k: None
 
-    # GLM 4.5 Air needs 2 GPUs for tensor parallelism
-    if num_gpus < 2 and sleep_wake and "GLM-4.5" in base_model.upper():
+    # GLM 4.5 Air needs 2 GPUs on H100, but fits on a single H200.
+    if (
+        num_gpus < 2
+        and sleep_wake
+        and "GLM-4.5" in base_model.upper()
+        and gpu.upper() != "H200"
+    ):
         num_gpus = 2
 
     api_key = _ensure_shadeform(verbose)
@@ -970,8 +977,16 @@ def train_remote(
         if sleep_wake:
             training_cmd += (
                 f" --vllm-sleep-wake --tensor-parallel {num_gpus}"
-                f" --rollout-workers 32 --vllm-model {base_model}"
+                f" --vllm-model {base_model}"
             )
+            if gpu.upper() == "H200" and num_gpus == 1:
+                training_cmd += (
+                    " --rollout-workers 2"
+                    " --vllm-max-model-len 8192"
+                    " --vllm-gpu-memory-utilization 0.90"
+                )
+            else:
+                training_cmd += " --rollout-workers 32"
         env_vars = {}
         local_ckpt = os.path.expanduser(checkpoint_dir)
         os.makedirs(local_ckpt, exist_ok=True)
