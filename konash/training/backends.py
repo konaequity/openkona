@@ -277,9 +277,9 @@ class VLLMLifecycle:
             self._log_fh.close()
             self._log_fh = None
 
-    def sleep(self) -> None:
-        """Offload vLLM weights to CPU pinned memory (~2s)."""
-        self._post("/sleep?level=1", timeout=30)
+    def sleep(self, timeout: int = 180) -> None:
+        """Offload vLLM weights to CPU pinned memory."""
+        self._post("/sleep?level=1", timeout=timeout)
         _log.info("vLLM sleeping — GPU VRAM freed")
 
     def wake(self, timeout: int = 120) -> None:

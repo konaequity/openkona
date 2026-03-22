@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.train_oapl_unsloth import _target_synthesis_examples
+from scripts.train_oapl_unsloth import (
+    _should_sleep_vllm_for_training,
+    _target_synthesis_examples,
+    _trim_messages_for_context,
+)
 from konash.training.execution import plan_training_execution
 
 
@@ -63,3 +67,30 @@ def test_target_synthesis_examples_respects_remaining_cap():
 def test_target_synthesis_examples_returns_zero_when_done():
     assert _target_synthesis_examples(current_count=3, max_examples=3) == 0
     assert _target_synthesis_examples(current_count=4, max_examples=3) == 0
+
+
+def test_should_sleep_vllm_for_intermediate_iteration():
+    assert _should_sleep_vllm_for_training(iteration=0, total_iterations=2) is True
+    assert _should_sleep_vllm_for_training(iteration=1, total_iterations=3) is True
+
+
+def test_should_not_sleep_vllm_for_final_iteration():
+    assert _should_sleep_vllm_for_training(iteration=0, total_iterations=1) is False
+    assert _should_sleep_vllm_for_training(iteration=2, total_iterations=3) is False
+
+
+def test_trim_messages_for_context_preserves_recent_history():
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "u1 " + ("a" * 5000)},
+        {"role": "assistant", "content": "a1 " + ("b" * 5000)},
+        {"role": "tool", "content": "tool " + ("c" * 9000)},
+        {"role": "user", "content": "latest question"},
+    ]
+
+    trimmed = _trim_messages_for_context(messages, max_context_tokens=2048)
+
+    assert trimmed[0]["role"] == "system"
+    assert trimmed[-1]["content"] == "latest question"
+    assert sum(len(m.get("content", "")) for m in trimmed) <= 4096
+    assert any("[truncated]" in m.get("content", "") for m in trimmed)

@@ -309,6 +309,43 @@ class TestRolloutGeneratorStructure:
         )
         assert group.pass_rate == 0.5
 
+    def test_rollout_tool_results_are_truncated(self):
+        llm_responses = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "search",
+                            "arguments": '{"query": "long corpus"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "Final answer."},
+        ]
+        search_results = [
+            {"text": f"Document {idx} " + ("x" * 1000), "score": 0.9 - idx * 0.01}
+            for idx in range(10)
+        ]
+
+        gen = self._make_generator(llm_responses, search_results)
+        rollout = gen.generate_single("Test prompt", reference_answer="Final answer.")
+
+        tool_messages = [
+            msg for msg in rollout.metadata["history"]
+            if msg.get("role") == "tool"
+        ]
+        assert tool_messages, "Expected tool output in rollout history"
+        tool_content = tool_messages[0]["content"]
+        assert "[1]" in tool_content
+        assert "[6]" in tool_content
+        assert "[7]" not in tool_content
+        assert "[+4 more results omitted]" in tool_content
+        assert len(tool_content) < 4000
+
 
 # ======================================================================
 # 4. RLTrainableCompressionPlugin compresses and preserves key info

@@ -217,6 +217,13 @@ def test_vllm_lifecycle_stores_config():
     assert vllm._max_lora_rank == 32
 
 
+def test_vllm_lifecycle_sleep_uses_longer_timeout():
+    vllm = VLLMLifecycle(model="test-model", port=8000)
+    with patch.object(vllm, "_post") as mock_post:
+        vllm.sleep()
+    mock_post.assert_called_once_with("/sleep?level=1", timeout=180)
+
+
 # ---------------------------------------------------------------------------
 # ABC sleep/wake/load_lora defaults
 # ---------------------------------------------------------------------------

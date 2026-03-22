@@ -17,6 +17,34 @@ from konash.plugins.compression import RLTrainableCompressionPlugin
 from konash.plugins.control import StepBudgetPlugin
 
 
+_ROLLOUT_RESULT_LIMIT = 6
+_ROLLOUT_RESULT_CHARS = 400
+
+
+def _format_rollout_results(results: List[Any]) -> str:
+    """Format retrieved passages for rollouts without exploding context size."""
+    if not results:
+        return "[no results]"
+
+    lines: List[str] = []
+    for i, result in enumerate(results[:_ROLLOUT_RESULT_LIMIT], 1):
+        if isinstance(result, dict):
+            score = result.get("score", 0.0)
+            text = result.get("text", "") or ""
+        else:
+            score = 0.0
+            text = str(result)
+        preview = " ".join(text.split())
+        if len(preview) > _ROLLOUT_RESULT_CHARS:
+            preview = preview[:_ROLLOUT_RESULT_CHARS] + "..."
+        lines.append(f"[{i}] (score: {score:.3f}) {preview}")
+
+    remaining = len(results) - _ROLLOUT_RESULT_LIMIT
+    if remaining > 0:
+        lines.append(f"[+{remaining} more results omitted]")
+    return "\n\n".join(lines)
+
+
 class Rollout:
     """A single reasoning rollout: a sequence of steps with a final answer."""
 
@@ -246,11 +274,7 @@ class RolloutGenerator:
         def _tool_executor(tool_call: Any) -> Dict[str, Any]:
             query_text = _extract_tool_query(tool_call)
             results = self._retrieve(query_text, self.top_k)
-            result_text = "\n\n".join(
-                f"[{i+1}] (score: {r.get('score', 0):.3f}) {r.get('text', '')}"
-                if isinstance(r, dict) else f"[{i+1}] {r}"
-                for i, r in enumerate(results)
-            )
+            result_text = _format_rollout_results(results)
             observation: Dict[str, Any] = {"role": "tool", "content": result_text}
             if isinstance(tool_call, dict) and tool_call.get("id"):
                 observation["tool_call_id"] = tool_call["id"]

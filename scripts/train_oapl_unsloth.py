@@ -137,6 +137,76 @@ def _target_synthesis_examples(
     return min(batch_size, remaining_examples)
 
 
+def _should_sleep_vllm_for_training(
+    *,
+    iteration: int,
+    total_iterations: int,
+) -> bool:
+    """Sleep only when a later iteration still needs the live vLLM server."""
+    return iteration < total_iterations - 1
+
+
+def _trim_messages_for_context(
+    messages: list[dict],
+    *,
+    max_context_tokens: int,
+    keep_last_messages: int = 6,
+) -> list[dict]:
+    """Trim oversized chat history to fit within a smaller context window."""
+    if not messages:
+        return []
+
+    char_budget = max(int(max_context_tokens * 2), 4096)
+    kept_messages: list[dict] = []
+    tail_start = max(len(messages) - keep_last_messages, 0)
+
+    for idx, message in enumerate(messages):
+        cloned = dict(message)
+        content = cloned.get("content")
+        if not isinstance(content, str):
+            kept_messages.append(cloned)
+            continue
+
+        if cloned.get("role") == "tool":
+            max_chars = 800
+        elif idx >= tail_start:
+            max_chars = 1600
+        else:
+            max_chars = 400
+
+        if len(content) > max_chars:
+            cloned["content"] = content[:max_chars] + "\n...[truncated]"
+        kept_messages.append(cloned)
+
+    while len(kept_messages) > keep_last_messages + 1:
+        total_chars = sum(len((m.get("content") or "")) for m in kept_messages)
+        if total_chars <= char_budget:
+            break
+        del kept_messages[1]
+
+    total_chars = sum(len((m.get("content") or "")) for m in kept_messages)
+    if total_chars <= char_budget:
+        return kept_messages
+
+    trimmed_messages: list[dict] = []
+    remaining_budget = char_budget
+    for message in reversed(kept_messages):
+        cloned = dict(message)
+        content = cloned.get("content")
+        if not isinstance(content, str):
+            trimmed_messages.append(cloned)
+            continue
+
+        reserve = 256 if remaining_budget > 256 else 0
+        max_chars = max(remaining_budget - reserve, 128)
+        if len(content) > max_chars:
+            cloned["content"] = content[:max_chars] + "\n...[truncated]"
+        remaining_budget -= len(cloned.get("content") or "")
+        trimmed_messages.append(cloned)
+
+    return list(reversed(trimmed_messages))
+
+
 def export_model(engine, args):
     """Export trained model: push to Hub, merge LoRA, convert to GGUF, deploy to Together AI."""
     hf_token = os.environ.get("HF_TOKEN")
@@ -550,7 +620,12 @@ def train_from_rollouts(args):
     return all_stats
 
 
-def _build_vllm_generate_fn(api_url: str, model_name: str):
+def _build_vllm_generate_fn(
+    api_url: str,
+    model_name: str,
+    *,
+    max_context_tokens: int | None = None,
+):
     """Build an llm_fn that calls a vLLM OpenAI-compatible server."""
     import urllib.request
     import urllib.error
@@ -570,8 +645,10 @@ def _build_vllm_generate_fn(api_url: str, model_name: str):
             base_request_body["tool_choice"] = kwargs.pop("tool_choice")
 
         current_max_tokens = max_tokens
-        for attempt_idx in range(2):
+        current_messages = list(messages)
+        for attempt_idx in range(4):
             request_body = dict(base_request_body)
+            request_body["messages"] = current_messages
             request_body["max_tokens"] = current_max_tokens
             body = json.dumps(request_body).encode()
             req = urllib.request.Request(
@@ -593,13 +670,22 @@ def _build_vllm_generate_fn(api_url: str, model_name: str):
                 return result
             except urllib.error.HTTPError as exc:
                 err_body = exc.read().decode("utf-8", errors="replace")
-                if (
-                    exc.code == 400
-                    and "maximum context length" in err_body.lower()
-                    and attempt_idx == 0
-                ):
-                    current_max_tokens = max(current_max_tokens // 2, 128)
-                    continue
+                if exc.code == 400 and "maximum context length" in err_body.lower():
+                    if max_context_tokens is not None:
+                        trimmed_messages = _trim_messages_for_context(
+                            current_messages,
+                            max_context_tokens=max_context_tokens,
+                        )
+                        if trimmed_messages != current_messages:
+                            current_messages = trimmed_messages
+                            current_max_tokens = min(
+                                current_max_tokens,
+                                max(max_context_tokens // 8, 128),
+                            )
+                            continue
+                    if attempt_idx < 3 and current_max_tokens > 128:
+                        current_max_tokens = max(current_max_tokens // 2, 128)
+                        continue
                 raise
 
     return generate_fn
@@ -909,7 +995,11 @@ def _train_sleep_wake_pipeline(args):
     print(f"  vLLM serving: {served_model}")
 
     # Build generate_fn from vLLM API
-    generate_fn = _build_vllm_generate_fn(vllm.api_url, served_model)
+    generate_fn = _build_vllm_generate_fn(
+        vllm.api_url,
+        served_model,
+        max_context_tokens=args.vllm_max_model_len,
+    )
 
     # Ingest corpus
     print("##KONASH:loading_data##", flush=True)
@@ -1018,10 +1108,17 @@ def _train_sleep_wake_pipeline(args):
                   f"{len(dataset)} rollouts")
 
             # ---- Stage 3: OAPL Training (vLLM sleeps) ----
-
-            print("##KONASH:vllm_sleep##", flush=True)
-            print("  Sleeping vLLM (freeing GPU for training)...")
-            vllm.sleep()
+            should_sleep_vllm = _should_sleep_vllm_for_training(
+                iteration=iteration,
+                total_iterations=args.iterations,
+            )
+            if should_sleep_vllm:
+                print("##KONASH:vllm_sleep##", flush=True)
+                print("  Sleeping vLLM (freeing GPU for training)...")
+                vllm.sleep()
+            else:
+                print("  Stopping vLLM for final training pass...")
+                vllm.stop()
 
             # Load Unsloth engine (without fast_inference — vLLM is separate)
             print("  Loading Unsloth engine for OAPL...")
@@ -1097,14 +1194,18 @@ def _train_sleep_wake_pipeline(args):
             del engine
 
             # Wake vLLM and hot-load trained LoRA for next iteration
-            if iteration < args.iterations - 1:
+            if should_sleep_vllm:
                 print("##KONASH:vllm_wake##", flush=True)
                 print("  Waking vLLM...")
                 vllm.wake()
 
                 lora_name = vllm.load_lora(adapter_path)
                 if lora_name:
-                    generate_fn = _build_vllm_generate_fn(vllm.api_url, lora_name)
+                    generate_fn = _build_vllm_generate_fn(
+                        vllm.api_url,
+                        lora_name,
+                        max_context_tokens=args.vllm_max_model_len,
+                    )
                     print(f"  Next iteration using LoRA: {lora_name}")
                 else:
                     print("  WARNING: LoRA hot-load failed, using base model")
