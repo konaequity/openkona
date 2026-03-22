@@ -538,21 +538,32 @@ def _build_vllm_generate_fn(api_url: str, model_name: str):
     def generate_fn(messages, **kwargs):
         max_tokens = kwargs.pop("max_new_tokens", kwargs.pop("max_tokens", 1024))
         temperature = kwargs.pop("temperature", 0.7)
-        body = json.dumps({
+        request_body = {
             "model": model_name, "messages": messages,
             "max_tokens": max_tokens, "temperature": temperature,
-        }).encode()
+        }
+        # Pass through tools/tool_choice for agentic synthesis
+        if "tools" in kwargs:
+            request_body["tools"] = kwargs.pop("tools")
+        if "tool_choice" in kwargs:
+            request_body["tool_choice"] = kwargs.pop("tool_choice")
+        body = json.dumps(request_body).encode()
         req = urllib.request.Request(
             f"{api_url}/chat/completions", data=body,
             headers={"Content-Type": "application/json"}, method="POST",
         )
         with urllib.request.urlopen(req, timeout=300) as resp:
             data = json.loads(resp.read())
-        content = data["choices"][0]["message"]["content"]
+        msg = data["choices"][0]["message"]
+        content = msg.get("content") or ""
         # Strip Qwen3 thinking tags
         content = _re.sub(r"<think>.*?</think>\s*", "", content, flags=_re.DOTALL)
         content = _re.sub(r"<think>.*", "", content, flags=_re.DOTALL).strip()
-        return {"role": "assistant", "content": content}
+        result = {"role": "assistant", "content": content}
+        # Return tool_calls if present
+        if msg.get("tool_calls"):
+            result["tool_calls"] = msg["tool_calls"]
+        return result
 
     return generate_fn
 
