@@ -577,15 +577,11 @@ async function loadProject(project) {
   ]);
   const logsData = await logsResp.json();
   const rolloutsData = await rolloutsResp.json();
-  renderAll(logsData.events, rolloutsData, project);
+  renderAll(logsData.events, rolloutsData, project, logsData.active_run);
 }
 
-function renderAll(events, rolloutsData, project) {
+function renderAll(events, rolloutsData, project, activeRun) {
   const content = document.getElementById('content');
-  if ((!events || events.length === 0) && rolloutsData.total_groups === 0) {
-    content.innerHTML = `<div class="empty-state"><h2>No events for ${project}</h2></div>`;
-    return;
-  }
 
   // Extract summary stats
   const synthesis = events.filter(e => e.event === 'synthesis');
@@ -608,11 +604,37 @@ function renderAll(events, rolloutsData, project) {
   html += `<div class="summary-card"><div class="label">Rollout Groups</div><div class="value">${rolloutsData.total_groups}</div></div>`;
   html += `<div class="summary-card"><div class="label">After Filter</div><div class="value">${totalFiltered}</div></div>`;
   html += `<div class="summary-card"><div class="label">OAPL Loss</div><div class="value">${lastLoss !== null ? lastLoss.toFixed(4) : '\u2014'}</div></div>`;
-  html += `<div class="summary-card"><div class="label">Total Time</div><div class="value">${totalTime ? formatDuration(totalTime) : (lastProgress ? formatDuration(lastProgress.elapsed_seconds) + ' (running)' : '\u2014')}</div></div>`;
-  if (start) {
-    const startTime = start.timestamp ? new Date(start.timestamp).toLocaleString() : '\u2014';
-    html += `<div class="summary-card"><div class="label">Started</div><div class="value" style="font-size:12px;font-family:var(--mono);font-weight:500">${startTime}</div></div>`;
-    html += `<div class="summary-card"><div class="label">Model</div><div class="value" style="font-size:12px;font-family:var(--mono);font-weight:500;word-break:break-all">${start.model || '\u2014'}</div></div>`;
+  // Use billing_started_at (Shadeform provision time) for the clock,
+  // falling back to start event timestamp, then active_run started_at.
+  const billingStart = start && start.billing_started_at
+    ? new Date(start.billing_started_at).getTime()
+    : (start && start.timestamp ? new Date(start.timestamp).getTime()
+    : (activeRun && activeRun.started_at ? new Date(activeRun.started_at).getTime() : null));
+
+  let timeDisplay = '\u2014';
+  if (totalTime) {
+    timeDisplay = formatDuration(totalTime);
+    window._trainingComplete = true;
+  } else if (billingStart && !complete) {
+    const elapsedSec = (Date.now() - billingStart) / 1000;
+    timeDisplay = formatDuration(elapsedSec);
+    window._trainingStartTime = billingStart;
+    window._trainingComplete = false;
+  } else if (lastProgress) {
+    timeDisplay = formatDuration(lastProgress.elapsed_seconds);
+  }
+  if (complete) window._trainingComplete = true;
+  html += `<div class="summary-card"><div class="label">Total Time</div><div class="value" id="live-clock">${timeDisplay}</div></div>`;
+
+  const modelName = (start && start.model) || (activeRun && activeRun.base_model) || null;
+  const startTime = billingStart ? new Date(billingStart).toLocaleString() : '\u2014';
+  html += `<div class="summary-card"><div class="label">Started</div><div class="value" style="font-size:12px;font-family:var(--mono);font-weight:500">${startTime}</div></div>`;
+  if (modelName) {
+    html += `<div class="summary-card"><div class="label">Model</div><div class="value" style="font-size:12px;font-family:var(--mono);font-weight:500;word-break:break-all">${modelName}</div></div>`;
+  }
+  const runStatus = activeRun && activeRun.status ? activeRun.status : (complete ? 'complete' : null);
+  if (runStatus && !complete) {
+    html += `<div class="summary-card"><div class="label">Status</div><div class="value" style="font-size:14px;color:var(--orange)">${runStatus}</div></div>`;
   }
   html += '</div>';
 
@@ -624,24 +646,24 @@ function renderAll(events, rolloutsData, project) {
 
   // Tab bar
   html += '<div class="tab-bar">';
-  html += '<button class="tab-btn active" onclick="switchTab(\'data\')">Rollout Data</button>';
+  html += '<button class="tab-btn active" onclick="switchTab(\'synthesis\')">Synthesis</button>';
+  html += '<button class="tab-btn" onclick="switchTab(\'data\')">Rollout Data</button>';
   html += '<button class="tab-btn" onclick="switchTab(\'events\')">Events</button>';
-  html += '<button class="tab-btn" onclick="switchTab(\'synthesis\')">Synthesis</button>';
+  html += '</div>';
+
+  // Tab: Synthesis
+  html += '<div id="tab-synthesis" class="tab-panel active">';
+  html += renderSynthesis(rolloutsData.synthesis_examples || []);
   html += '</div>';
 
   // Tab: Rollout Data
-  html += '<div id="tab-data" class="tab-panel active">';
+  html += '<div id="tab-data" class="tab-panel">';
   html += renderRolloutData(rolloutsData);
   html += '</div>';
 
   // Tab: Events
   html += '<div id="tab-events" class="tab-panel">';
   html += renderTimeline(events);
-  html += '</div>';
-
-  // Tab: Synthesis
-  html += '<div id="tab-synthesis" class="tab-panel">';
-  html += renderSynthesis(rolloutsData.synthesis_examples || []);
   html += '</div>';
 
   content.innerHTML = html;
@@ -851,6 +873,59 @@ function escapeHtml(str) {
 }
 
 loadProjects();
+
+// Live clock — ticks every second, no network calls
+window._trainingStartTime = null;
+window._trainingComplete = false;
+setInterval(() => {
+  if (!window._trainingStartTime || window._trainingComplete) return;
+  const el = document.getElementById('live-clock');
+  if (!el) return;
+  const elapsed = (Date.now() - window._trainingStartTime) / 1000;
+  el.textContent = formatDuration(elapsed);
+}, 1000);
+
+// Auto-refresh every 3s while a project is selected (live synthesis streaming)
+let _refreshTimer = null;
+let _lastSynthesisCount = 0;
+let _lastEventCount = 0;
+
+function startAutoRefresh() {
+  if (_refreshTimer) clearInterval(_refreshTimer);
+  _refreshTimer = setInterval(async () => {
+    if (!currentProject) return;
+    try {
+      const [logsResp, rolloutsResp] = await Promise.all([
+        fetch(`${API_BASE}/logs/${currentProject}`),
+        fetch(`${API_BASE}/rollouts/${currentProject}`),
+      ]);
+      const logsData = await logsResp.json();
+      const rolloutsData = await rolloutsResp.json();
+      const newSynthCount = (rolloutsData.synthesis_examples || []).length;
+      const newEventCount = (logsData.events || []).length;
+      // Only re-render if data changed — preserves scroll/tab/expanded state
+      if (newSynthCount !== _lastSynthesisCount || newEventCount !== _lastEventCount) {
+        _lastSynthesisCount = newSynthCount;
+        _lastEventCount = newEventCount;
+        // Preserve active tab across re-render
+        const activeTab = document.querySelector('.tab-btn.active');
+        const activeTabName = activeTab ? activeTab.textContent.trim() : null;
+        renderAll(logsData.events, rolloutsData, currentProject, logsData.active_run);
+        if (activeTabName) {
+          const tabs = document.querySelectorAll('.tab-btn');
+          tabs.forEach(t => {
+            if (t.textContent.trim() === activeTabName) {
+              t.click();
+            }
+          });
+        }
+      }
+    } catch (err) {
+      // Silently ignore refresh failures
+    }
+  }, 3000);
+}
+startAutoRefresh();
 </script>
 </body>
 </html>

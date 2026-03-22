@@ -42,7 +42,7 @@ def test_assess_project_reuse_requires_same_dataset_and_model(tmp_path: Path):
     corpus_dir.mkdir()
     dataset_spec = build_dataset_spec([corpus_dir])
     config = TrainingRunConfig(
-        synthesis_backend="together",
+        synthesis_backend="remote_full",
         iterations=1,
         synthesis_calls=1,
         rollouts_per_example=8,
@@ -78,7 +78,7 @@ def test_assess_project_reuse_offers_resume_for_compatible_unfinished_run(tmp_pa
     corpus_dir.mkdir()
     dataset_spec = build_dataset_spec([corpus_dir])
     config = TrainingRunConfig(
-        synthesis_backend="together",
+        synthesis_backend="remote_full",
         iterations=1,
         synthesis_calls=1,
         rollouts_per_example=8,

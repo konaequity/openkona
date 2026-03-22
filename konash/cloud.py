@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import subprocess
 import time
 from pathlib import Path
@@ -357,11 +358,26 @@ def _scp_upload(
     port: int = 22, user: str = "shadeform",
 ) -> None:
     """Upload a file via SCP."""
+    remote_parent = posixpath.dirname(remote.rstrip("/")) or "."
+    mkdir_cmd = f"mkdir -p {remote_parent}"
     subprocess.run(
-        ["scp", *_SSH_OPTS, "-i", key_path, "-P", str(port),
-         local, f"{user}@{ip}:{remote}"],
-        check=True, capture_output=True,
+        _ssh_cmd(ip, mkdir_cmd, key_path, port, user),
+        check=True,
+        capture_output=True,
+        text=True,
     )
+    recursive = ["-r"] if os.path.isdir(local) else []
+    result = subprocess.run(
+        ["scp", *_SSH_OPTS, "-i", key_path, "-P", str(port), *recursive,
+         local, f"{user}@{ip}:{remote}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"SCP upload failed for {local} -> {remote}: "
+            f"{(result.stderr or result.stdout).strip()}"
+        )
 
 
 def _scp_download(
@@ -380,6 +396,51 @@ def _upload_codebase(
     ip: str, key_path: str = _SSH_KEY_PATH,
     port: int = 22, user: str = "shadeform",
 ) -> None:
+    """Upload the KONASH codebase, preferring incremental rsync."""
+    ssh_target = f"{user}@{ip}"
+    ssh_rsh = (
+        f"ssh {' '.join(_SSH_OPTS)} -i {key_path} -p {port}"
+    )
+    remote_dir = f"{_REMOTE_DIR}/"
+
+    try:
+        subprocess.run(["rsync", "--version"], check=True, capture_output=True)
+        remote_rsync = subprocess.run(
+            _ssh_cmd(ip, "command -v rsync", key_path, port, user),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if remote_rsync.stdout.strip():
+            subprocess.run(
+                _ssh_cmd(ip, f"mkdir -p {_REMOTE_DIR}", key_path, port, user),
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            subprocess.run(
+                [
+                    "rsync",
+                    "-az",
+                    "--delete",
+                    "--exclude", ".git",
+                    "--exclude", "__pycache__",
+                    "--exclude", "*.pyc",
+                    "--exclude", ".konash",
+                    "-e", ssh_rsh,
+                    f"{_PROJECT_ROOT}/",
+                    f"{ssh_target}:{remote_dir}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return
+    except Exception:
+        pass
+
     """Upload the KONASH codebase via tar pipe."""
     tar_cmd = [
         "tar", "czf", "-",
@@ -411,15 +472,26 @@ def _setup_remote(
     """Install KONASH dependencies on the remote machine."""
     setup_cmd = (
         f"cd {_REMOTE_DIR} && "
-        "pip3 install numpy sentence-transformers datasets huggingface_hub torch "
-        "unsloth peft accelerate 2>&1 | tail -3"
+        "python3 -m pip install --upgrade pip setuptools wheel && "
+        "python3 -m pip install --upgrade "
+        "numpy sentence-transformers datasets huggingface_hub torch "
+        "unsloth peft accelerate 'transformers>=5.2.0' && "
+        "python3 - <<'PY'\n"
+        "from importlib.metadata import version\n"
+        "from packaging.version import Version\n"
+        "tfm = version('transformers')\n"
+        "if Version(tfm) < Version('5.2.0'):\n"
+        "    raise SystemExit(f'transformers too old: {tfm}')\n"
+        "print(f'transformers={tfm}')\n"
+        "PY"
     )
     result = subprocess.run(
         _ssh_cmd(ip, setup_cmd, key_path, port, user),
         capture_output=True, text=True, timeout=600,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"Remote setup failed: {result.stderr}")
+        details = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"Remote setup failed: {details}")
 
 
 # ---------------------------------------------------------------------------
@@ -429,10 +501,16 @@ def _setup_remote(
 def _run_remote_training(
     ip: str, training_cmd: str, env_vars: dict,
     key_path: str = _SSH_KEY_PATH, port: int = 22, user: str = "shadeform",
-    verbose: bool = True,
+    verbose: bool = True, checkpoint_dir: str | None = None,
 ) -> None:
-    """Run training on the remote machine, streaming ##KONASH## progress markers."""
+    """Run training on the remote machine, streaming ##KONASH## progress markers.
+
+    When *checkpoint_dir* is set, ``qa`` markers are written to local
+    ``stage1_synthesis.json`` files in real-time so the training monitor
+    can display synthesis results as they arrive.
+    """
     _print = print if verbose else lambda *a, **k: None
+    _live_qa: dict[int, list[dict]] = {}  # iteration -> [{question, answer}]
 
     # Build env exports
     env_str = " ".join(f'{k}="{v}"' for k, v in env_vars.items())
@@ -470,7 +548,31 @@ def _run_remote_training(
             elapsed = time.monotonic() - phase_start
             marker = line.split("##KONASH:")[1].rstrip("#")
 
-            if marker == "loading_data":
+            if marker.startswith("qa:"):
+                # Real-time synthesis streaming: qa:<iteration>:<question>\t<answer>
+                if checkpoint_dir:
+                    try:
+                        parts = marker.split(":", 2)  # ["qa", iter, "q\ta"]
+                        iteration = int(parts[1])
+                        qa_text = parts[2]
+                        q, a = qa_text.split("\t", 1) if "\t" in qa_text else (qa_text, "")
+                        if iteration not in _live_qa:
+                            _live_qa[iteration] = []
+                        _live_qa[iteration].append({"question": q, "answer": a})
+                        # Write incrementally to local checkpoint
+                        iter_dir = os.path.join(checkpoint_dir, "pipeline_state", f"iter{iteration}")
+                        os.makedirs(iter_dir, exist_ok=True)
+                        synth_path = os.path.join(iter_dir, "stage1_synthesis.json")
+                        with open(synth_path, "w") as f:
+                            json.dump({
+                                "version": 1, "phase": "synthesis",
+                                "iteration": iteration,
+                                "data": _live_qa[iteration],
+                            }, f, default=str)
+                    except (ValueError, IndexError):
+                        pass  # malformed marker, skip
+
+            elif marker == "loading_data":
                 _print(f"  [green]✓[/]  Instance ready")
                 phase_start = time.monotonic()
 
@@ -720,11 +822,7 @@ def train_oapl_from_rollouts(
             f"--lr {learning_rate} "
             f"--output {_REMOTE_DIR}/checkpoints"
         )
-        env_vars = {"TOGETHER_API_KEY": os.environ.get("TOGETHER_API_KEY", "")}
-        together_key = _get_together_key()
-        if together_key:
-            env_vars["TOGETHER_API_KEY"] = together_key
-
+        env_vars = {}
         _run_remote_training(ip, training_cmd, env_vars, ssh_key, port, user, verbose)
 
         # Download checkpoints
@@ -773,7 +871,25 @@ def train_remote(
     _print = print if verbose else lambda *a, **k: None
 
     api_key = _ensure_shadeform(verbose)
+    from datetime import datetime, timezone as _tz
+    _billing_started_at = datetime.now(_tz.utc).isoformat()
     instance_id, ip, port, user, price, ssh_key = _provision_gpu(gpu, api_key, verbose)
+
+    # Log billing start so the training monitor clock starts from provision time
+    try:
+        from konash.training.logger import TrainingLogger
+        # Derive project name from checkpoint_dir (e.g. ~/.konash/projects/<name>/checkpoints)
+        _ckpt = os.path.expanduser(checkpoint_dir).rstrip("/")
+        _project_name = os.path.basename(os.path.dirname(_ckpt)) if _ckpt.endswith("checkpoints") else "default"
+        _tlog = TrainingLogger(_project_name)
+        _tlog.start(
+            iterations=iterations,
+            corpus=corpus,
+            model=base_model,
+            billing_started_at=_billing_started_at,
+        )
+    except Exception:
+        pass
 
     try:
         _print(f"  Uploading codebase...")
@@ -795,11 +911,15 @@ def train_remote(
                 capture_output=True, timeout=600,
             )
             dataset = get_dataset(corpus)
-            corpus_path = f"/root/.konash/corpora/{dataset.root_dirname}/{dataset.content_subdir}"
+            corpus_path = (
+                f"$HOME/.konash/corpora/"
+                f"{dataset.root_dirname}/{dataset.content_subdir}"
+            )
         else:
             _print(f"  Uploading corpus...")
             _scp_upload(ip, corpus, f"{_REMOTE_DIR}/corpus/", ssh_key, port, user)
-            corpus_path = f"{_REMOTE_DIR}/corpus"
+            corpus_name = os.path.basename(os.path.normpath(corpus))
+            corpus_path = f"{_REMOTE_DIR}/corpus/{corpus_name}"
 
         training_cmd = (
             f"python3 scripts/train_oapl_unsloth.py "
@@ -814,16 +934,15 @@ def train_remote(
         if max_examples is not None:
             training_cmd += f" --max-examples {max_examples}"
         env_vars = {}
-        together_key = _get_together_key()
-        if together_key:
-            env_vars["TOGETHER_API_KEY"] = together_key
-
-        _run_remote_training(ip, training_cmd, env_vars, ssh_key, port, user, verbose)
+        local_ckpt = os.path.expanduser(checkpoint_dir)
+        os.makedirs(local_ckpt, exist_ok=True)
+        _run_remote_training(
+            ip, training_cmd, env_vars, ssh_key, port, user, verbose,
+            checkpoint_dir=local_ckpt,
+        )
 
         _print(f"  Downloading trained model...")
-        checkpoint_dir = os.path.expanduser(checkpoint_dir)
-        os.makedirs(checkpoint_dir, exist_ok=True)
-        _scp_download(ip, f"{_REMOTE_DIR}/checkpoints/", checkpoint_dir, ssh_key, port, user)
+        _scp_download(ip, f"{_REMOTE_DIR}/checkpoints/", local_ckpt, ssh_key, port, user)
         _print(f"  [green]✓[/]  Model downloaded")
 
     finally:
@@ -872,18 +991,3 @@ def stream_logs(verbose: bool = True) -> None:
         )
     except KeyboardInterrupt:
         pass
-
-
-# ---------------------------------------------------------------------------
-# Helper
-# ---------------------------------------------------------------------------
-
-def _get_together_key() -> Optional[str]:
-    """Resolve Together AI key from env or config."""
-    key = os.environ.get("TOGETHER_API_KEY")
-    if key:
-        return key
-    if os.path.exists(_CONFIG_FILE):
-        with open(_CONFIG_FILE) as f:
-            return json.load(f).get("together_api_key")
-    return None

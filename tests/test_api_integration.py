@@ -135,34 +135,58 @@ def test_agent_load_supports_local_inference_via_lazy_engine_init(tmp_path, monk
     assert answer == "loaded answer"
 
 
-def test_train_runs_local_synthesis_then_cloud_oapl(tmp_path, monkeypatch):
-    """Iteration 1: synthesis + rollouts local, OAPL on cloud."""
+def test_train_runs_remote_full_pipeline(tmp_path, monkeypatch):
+    """train() should dispatch to the remote full pipeline."""
     doc_dir = tmp_path / "docs"
     doc_dir.mkdir()
     (doc_dir / "alpha.txt").write_text("alpha facts live here")
 
     corpus = Corpus(doc_dir)
     corpus.ingest()
-    agent = Agent(base_model="stub", corpus=corpus, api_base="http://example", api_key="k")
-
-    # Patch synthesis to return empty (simulating no QA pairs generated)
-    from konash.synthesis.qa import QuestionAnswerSynthesizer
-    monkeypatch.setattr(
-        QuestionAnswerSynthesizer, "synthesize",
-        lambda self, **kwargs: [],
+    monkeypatch.setenv("HOME", str(tmp_path))
+    agent = Agent(
+        base_model="stub",
+        corpus=corpus,
+        api_base="http://example",
+        api_key="k",
+        project="api-train-test",
+        checkpoint_dir=str(tmp_path / "checkpoints"),
     )
 
-    # Patch generate_fn to avoid network calls
-    monkeypatch.setattr(
-        agent, "_get_generate_fn",
-        lambda: (lambda messages, **kw: {"role": "assistant", "content": ""}),
-    )
+    calls = {}
 
-    # train() should complete without calling cloud (no rollout data)
-    result = agent.train(iterations=1, synthesis_calls=1, verbose=False)
+    def fake_train_remote(**kwargs):
+        calls.update(kwargs)
+        return {"stats": [{"loss": 0.1}], "value_model": False}
+
+    monkeypatch.setattr("konash.cloud.train_remote", fake_train_remote)
+
+    result = agent.train(
+        iterations=1,
+        synthesis_calls=1,
+        rollouts_per_example=2,
+        rollout_max_steps=3,
+        max_examples=4,
+        learning_rate=5e-6,
+        keep_alive=True,
+        verbose=False,
+    )
 
     assert result["iterations"] == 1
-    assert result["stats"] == []  # no stats since synthesis produced nothing
+    assert result["stats"] == [{"loss": 0.1}]
+    assert calls == {
+        "corpus": str(corpus.path),
+        "base_model": "stub",
+        "checkpoint_dir": str(tmp_path / "checkpoints"),
+        "iterations": 1,
+        "synthesis_calls": 1,
+        "rollouts_per_example": 2,
+        "rollout_max_steps": 3,
+        "max_examples": 4,
+        "learning_rate": 5e-6,
+        "keep_alive": True,
+        "verbose": False,
+    }
 
 
 def test_agent_defers_local_embed_model_when_prebuilt_index_exists(tmp_path, monkeypatch):

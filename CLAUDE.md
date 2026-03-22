@@ -49,6 +49,8 @@ konash status   # check configuration
 - `filters.py` — Pass-rate filter keeps questions at learning frontier (default range [0.1, 0.9])
 
 ### Training (`konash/training/`)
+- `backends.py` — Synthesis runtime lifecycle: `OpenAIConfig` (resolved connection info), `SynthesisRuntimeBackend` (ABC), `ShadeformSynthesisBackend` (provisions GPU, installs/starts vLLM, verifies `/v1/models`, supports warm reuse and in-place refresh)
+- `execution.py` — Stage-based execution planning: `local_prep` (synthesis via Shadeform vLLM, OAPL on separate GPU) or `remote_full` (all stages on one GPU, required for multi-iteration)
 - `oapl.py` — OAPL trainer: squared-advantage loss with KL regularization, soft value estimation via logsumexp over grouped rollouts
 - `unsloth_engine.py` — Unsloth engine for MoE models (GLM 4.5 Air). LoRA targets: `gate_up_proj`, `down_proj` (NOT `gate_proj`, `up_proj` — these are fused in MoE). No 4-bit for MoE; use FP8.
 - `dataset.py` — `OfflineRolloutDataset` groups rollouts by prompt
@@ -68,7 +70,7 @@ konash status   # check configuration
 
 ## Key Design Patterns
 
-- **Lazy imports**: Core package has minimal deps (numpy, rich, together, google-genai). Training, search, and data deps are optional and imported only when needed.
+- **Lazy imports**: Core package has minimal deps (numpy, rich, google-genai). Training, search, and data deps are optional and imported only when needed.
 - **OpenAI-compatible API**: LLM calls use generic chat completions protocol, abstracting away provider differences.
 - **Spec-first testing**: `tests/conftest.py` uses `SymbolSpec` + `load_symbol()` to verify KARL spec compliance by dynamically importing and checking required symbols.
 - **Qwen3 quirk**: Strip `<think>...</think>` tags (and unclosed `<think>.*`) from all Qwen3 model responses — they consume token budget.
@@ -79,4 +81,4 @@ GitHub Actions on push/PR to main. Matrix: Python 3.11, 3.12. Runs import checks
 
 ## Config & Credentials
 
-API keys stored in `~/.konash/config.json` (created by `konash setup`). Env vars: `TOGETHER_API_KEY`, `GOOGLE_API_KEY`, `HF_TOKEN`, `ZHIPU_API_KEY`. Checkpoints saved under `.konash/<project>/checkpoints/`.
+API keys stored in `~/.konash/config.json` (created by `konash setup`). Env vars: `SHADEFORM_API_KEY`, `GOOGLE_API_KEY`, `HF_TOKEN`, `ZHIPU_API_KEY`. `TOGETHER_API_KEY` is optional (eval/serving only). Checkpoints saved under `.konash/<project>/checkpoints/`.

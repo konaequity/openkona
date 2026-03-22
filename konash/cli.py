@@ -117,7 +117,6 @@ from konash.auth import (
 
 console = Console()
 
-TOGETHER_API_BASE = "https://api.together.xyz/v1"
 DEFAULT_MODEL = "zai-org/GLM-4.5-Air-FP8"
 CONFIG_DIR = os.path.expanduser("~/.konash")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -218,13 +217,9 @@ def _estimate_training_plan(
     oapl_secs = iterations * 15 * 60
 
     gpu_hourly = 2.29  # rough midpoint for a single H100 on Shadeform
-    if synthesis_backend == "shadeform":
-        gpu_secs = synth_secs + rollout_secs + oapl_secs
-        total_cost = gpu_secs / 3600 * gpu_hourly
-        api_cost = 0.0
-    else:
-        gpu_secs = oapl_secs
-        total_cost = api_cost + (gpu_secs / 3600 * gpu_hourly)
+    gpu_secs = synth_secs + rollout_secs + oapl_secs
+    total_cost = gpu_secs / 3600 * gpu_hourly
+    api_cost = 0.0
 
     return {
         "api_cost": api_cost,
@@ -307,51 +302,58 @@ def _render_capability_summary(config: dict) -> None:
 
     stages = [
         (
-            "Core inference",
-            together_key,
-            "Together-backed evals and single-iteration training",
+            "Synthesis + training",
+            shadeform_key,
+            "Shadeform GPU for synthesis, rollouts, and OAPL training",
+            True,  # required
         ),
         (
-            "Cloud training",
-            shadeform_key,
-            "Shadeform-backed training and all multi-iteration runs",
+            "Together AI",
+            together_key,
+            "Eval benchmarks and model serving (optional)",
+            False,
         ),
         (
             "HF assets + embeddings",
             hf_token,
             "HF-hosted corpora/indexes and HF embedding/query paths",
+            False,
         ),
         (
-            "Optional eval judge",
+            "Eval judge",
             openai_key,
             "gpt-4o-mini benchmark judging instead of solver-as-judge fallback",
+            False,
         ),
     ]
 
-    for name, key, effect in stages:
-        status = "[green]Enabled[/]" if key else "[yellow]Optional[/]" if name != "Core inference" else "[red]Missing[/]"
-        if name == "Cloud training" and not key:
-            status = "[yellow]Missing[/]"
+    for name, key, effect, required in stages:
+        if key:
+            status = "[green]Enabled[/]"
+        elif required:
+            status = "[red]Missing[/]"
+        else:
+            status = "[yellow]Optional[/]"
         table.add_row(name, status, effect)
 
     console.print(table)
     console.print()
 
     blocked = []
-    if not together_key:
-        blocked.append("Together-backed evals and single-iteration Together training will fail until Core inference is configured.")
     if not shadeform_key:
-        blocked.append("Shadeform-backed training and all multi-iteration training plans will fail until Cloud training is configured.")
+        blocked.append("Training requires a Shadeform API key for synthesis and OAPL.")
+    if not together_key:
+        blocked.append("Together AI is not configured — eval benchmarks may use solver-as-judge instead.")
     if not hf_token:
         blocked.append("Some HF-hosted corpus/index/embedding flows may prompt later or fall back to slower local paths.")
     if not openai_key:
         blocked.append("Benchmark evals will still run, but judging will fall back to the solver model instead of gpt-4o-mini.")
 
     console.print("[bold]What is enabled[/]")
-    if together_key:
-        console.print("    •  You can run core training and benchmark evals.")
     if shadeform_key:
-        console.print("    •  Cloud-backed and multi-iteration training is enabled.")
+        console.print("    •  Training is ready on Shadeform.")
+    if together_key:
+        console.print("    •  Together AI available for eval and serving.")
     if hf_token:
         console.print("    •  HF-hosted assets and embedding paths are available.")
     if openai_key:
@@ -457,8 +459,10 @@ def _show_training_plan(
     summary.add_row("Rollouts / example", str(rollouts))
     summary.add_row("Rollout steps", str(rollout_steps))
     summary.add_row("Iterations", str(iterations))
-    summary.add_row("Synthesis backend", "Together" if backend == "together" else "Shadeform")
-    summary.add_row("Rollout backend", "Together" if backend == "together" else "Shadeform")
+    synth_label = "Remote GPU"
+    rollout_label = "Remote GPU"
+    summary.add_row("Synthesis backend", synth_label)
+    summary.add_row("Rollout backend", rollout_label)
     summary.add_row("OAPL backend", oapl_backend)
     summary.add_row(
         "Expected cost",
@@ -466,7 +470,7 @@ def _show_training_plan(
     )
     summary.add_row("Expected time", _format_duration(estimate["total_secs"]))
     console.print(summary)
-    if backend == "shadeform" and iterations > 1:
+    if iterations > 1:
         console.print()
         console.print("    [cyan]Bootstrapped multi-iteration training enabled.[/]")
     console.print()
@@ -790,65 +794,65 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
     config = _load_config()
 
-    # ── Stage 1: Core inference ───────────────────────────────────────
-    console.rule("[bold]Core Inference[/]", style="dim")
+    # ── Stage 1: Synthesis + Training (Shadeform — required) ────────
+    console.rule("[bold]Synthesis + Training[/]", style="dim")
     console.print()
-    console.print("    [dim]Together AI powers the default solver backend and single-iteration training.[/]")
+    console.print("    [dim]Shadeform provisions GPUs for synthesis (vLLM) and OAPL training.[/]")
     console.print()
 
-    together_key = _get_together_key()
+    shadeform_key_setup = _get_shadeform_key()
 
-    if together_key:
-        console.print(f"    Key found: [dim]{_mask(together_key)}[/]")
+    if shadeform_key_setup:
+        console.print(f"    Key found: [dim]{_mask(shadeform_key_setup)}[/]")
         with console.status("    Validating...", spinner="dots"):
-            valid, err = validate_together_key(together_key)
+            valid = validate_shadeform_key(shadeform_key_setup)
         if valid:
-            console.print("    [green]✓[/]  Connected to Together AI")
-            config["together_api_key"] = together_key
+            console.print("    [green]✓[/]  Connected to Shadeform")
+            config["shadeform_api_key"] = shadeform_key_setup
         else:
-            console.print(f"    [red]✗[/]  {err}")
-            together_key = None
+            console.print("    [red]✗[/]  Invalid key")
+            shadeform_key_setup = None
 
-    if not together_key:
+    if not shadeform_key_setup:
         idx = _arrow_select(console, [
-            {"label": "Open together.ai", "hint": "Sign up and grab a free API key (takes 30 seconds)"},
+            {"label": "Open shadeform.ai", "hint": "Sign up and grab an API key (free, takes 30 seconds)"},
             {"label": "I already have a key", "hint": ""},
         ])
         console.print()
 
         if idx == 0:
-            webbrowser.open(TOGETHER_KEYS_PAGE)
-            console.print("    [dim]Settings → API Keys → copy the User key (not Legacy)[/]")
+            webbrowser.open(SHADEFORM_KEYS_PAGE)
+            console.print("    [dim]Settings → API Keys → create a key[/]")
             console.print()
 
         while True:
-            together_key = Prompt.ask("    Paste your API key")
+            shadeform_key_setup = Prompt.ask("    Paste your Shadeform API key")
 
-            if not together_key:
+            if not shadeform_key_setup:
                 console.print("    [dim]No key entered. Try again or Ctrl+C to cancel.[/]")
                 console.print()
                 continue
 
             with console.status("    Validating...", spinner="dots"):
-                valid, err = validate_together_key(together_key)
+                valid = validate_shadeform_key(shadeform_key_setup)
             if valid:
-                console.print("    [green]✓[/]  Connected to Together AI")
-                config["together_api_key"] = together_key
+                console.print("    [green]✓[/]  Connected to Shadeform")
+                config["shadeform_api_key"] = shadeform_key_setup
                 break
             else:
-                console.print(f"    [red]✗[/]  {err}")
+                console.print("    [red]✗[/]  Invalid key — check and try again")
                 console.print()
 
-    # ── Stage 2: Cloud training ──────────────────────────────────────
+    # ── Stage 2: Together AI (optional — for eval/serving) ───────────
     _prompt_optional_key(
-        stage_name="Cloud Training",
-        existing_key=_get_shadeform_key(),
-        config_key="shadeform_api_key",
-        console_hint="Shadeform provisions the GPU for cloud-backed training and all multi-iteration runs.",
-        open_url=SHADEFORM_KEYS_PAGE,
-        validate_fn=lambda key: (validate_shadeform_key(key), "Invalid API key"),
-        prompt_label="Open shadeform.ai, create an API key, then paste it here.",
-        success_label="Cloud training enabled",
+        stage_name="Together AI (Optional)",
+        existing_key=_get_together_key(),
+        config_key="together_api_key",
+        console_hint="Together AI is optional — used for eval benchmarks and model serving, not required for training.",
+        open_url=TOGETHER_KEYS_PAGE,
+        validate_fn=validate_together_key,
+        prompt_label="Open together.ai, create an API key, then paste it here.",
+        success_label="Together AI enabled",
         config=config,
     )
 
@@ -1014,12 +1018,11 @@ def _start_web_ui() -> None:
     # Prefer unified server (arena + traces + training) over trace_viewer alone
     server_path = os.path.join(os.path.dirname(__file__), "..", "tools", "server.py")
     app_path = os.path.join(os.path.dirname(__file__), "..", "tools", "trace_viewer", "app.py")
+    port = int(os.environ.get("KONASH_PORT", 5050))
     if os.path.exists(server_path):
         launch_path = server_path
-        port = 5117
     elif os.path.exists(app_path):
         launch_path = app_path
-        port = 5050
     else:
         return  # Not available (pip install, no tools/)
 
@@ -1059,17 +1062,16 @@ def cmd_train(args: argparse.Namespace) -> None:
     try:
         plan = plan_training_execution(
             iterations=args.iterations,
-            synthesis_rollout_backend=args.synthesis_backend,
+            synthesis_rollout_backend="remote_full",
         )
     except ValueError as exc:
         console.print(f"\n[red]{exc}[/]\n")
         sys.exit(1)
 
-    api_key = _get_together_key() or args.api_key
-    if plan.synthesis_rollout_backend == "together" and not api_key:
+    shadeform_key = _get_shadeform_key()
+    if not shadeform_key:
         console.print(
-            "\n[red]No Together API key found.[/] Run [cyan]konash setup[/] first "
-            "or choose [cyan]--synthesis-backend shadeform[/].\n"
+            "\n[red]No Shadeform API key found.[/] Run [cyan]konash setup[/] first.\n"
         )
         sys.exit(1)
 
@@ -1098,6 +1100,7 @@ def cmd_train(args: argparse.Namespace) -> None:
     console.print()
 
     corpus = args.corpus
+    remote_corpus_name = None
     if not corpus:
         options = [
             {"label": ds.name, "hint": ds.description}
@@ -1114,12 +1117,22 @@ def cmd_train(args: argparse.Namespace) -> None:
 
         if idx < len(DATASETS):
             ds = DATASETS[idx]
+            remote_corpus_name = ds.key
             corpus = _download_dataset(ds.key)
         else:
             corpus = _interactive_path_picker(console)
 
-    if not corpus or not os.path.exists(corpus):
-        console.print(f"    [red]Path not found:[/] {corpus}")
+    # Resolve named datasets (e.g. "financebench") to local paths
+    if corpus and not os.path.exists(corpus):
+        try:
+            remote_corpus_name = corpus
+            corpus = _download_dataset(corpus)
+        except (KeyError, SystemExit):
+            console.print(f"    [red]Path not found and not a known dataset:[/] {corpus}")
+            sys.exit(1)
+
+    if not corpus:
+        console.print(f"    [red]No corpus specified[/]")
         sys.exit(1)
 
     # ── Model + Scale (with ability to go back) ────────────────────
@@ -1130,8 +1143,6 @@ def cmd_train(args: argparse.Namespace) -> None:
     iterations = args.iterations
     lr = args.lr
     chunk_size = args.chunk_size
-    backend_choice = args.synthesis_backend
-
     def _pick_model() -> str:
         console.print()
         console.rule("[bold]Model[/]", style="dim")
@@ -1177,28 +1188,12 @@ def cmd_train(args: argparse.Namespace) -> None:
         it = IntPrompt.ask("    Training iterations", default=DEFAULT_SCALE_PRESET["iterations"])
         return qp, ro, rs, it
 
-    def _pick_backend() -> str:
-        console.print()
-        console.rule("[bold]Execution[/]", style="dim")
-        console.print()
-        opts = [
-            {"label": "Auto", "hint": "Use Together for 1 iteration, Shadeform for multi-iteration"},
-            {"label": "Together", "hint": "Synthesis + rollouts on Together, OAPL on Shadeform (single iteration only)"},
-            {"label": "Shadeform", "hint": "Run synthesis + rollouts + OAPL on Shadeform"},
-        ]
-        console.print("    [dim]Use arrow keys, press Enter to select[/]")
-        console.print()
-        idx = _arrow_select(console, opts)
-        console.print()
-        return ["auto", "together", "shadeform"][idx]
-
     # Skip interactive wizard in non-TTY environments (pipes, Colab, CI).
     # CLI args already have sensible defaults from argparse.
-    _interactive = sys.stdin.isatty()
+    _interactive = sys.stdin.isatty() and not getattr(args, "yes", False)
     if _interactive:
         model = _pick_model()
         qa_pairs, rollouts, rollout_steps, iterations = _pick_scale()
-        backend_choice = _pick_backend()
 
     # ── Summary + confirm (with go-back loop) ────────────────────────
     requested_project = args.project
@@ -1206,12 +1201,11 @@ def cmd_train(args: argparse.Namespace) -> None:
         try:
             plan = plan_training_execution(
                 iterations=iterations,
-                synthesis_rollout_backend=backend_choice,
+                synthesis_rollout_backend="remote_full",
             )
         except ValueError as exc:
             console.print(f"    [red]{exc}[/]")
             console.print()
-            backend_choice = _pick_backend()
             continue
 
         console.print()
@@ -1237,7 +1231,6 @@ def cmd_train(args: argparse.Namespace) -> None:
             {"label": "Approve plan", "hint": "Begin training with this execution plan"},
             {"label": "Change model", "hint": f"Currently: {model}"},
             {"label": "Change scale", "hint": f"Currently: ~{qa_pairs:,} QA pairs"},
-            {"label": "Change execution", "hint": f"Currently: {backend_choice}"},
             {"label": "Cancel", "hint": "Exit without training"},
         ]
         confirm_idx = _arrow_select(console, confirm_options)
@@ -1249,8 +1242,6 @@ def cmd_train(args: argparse.Namespace) -> None:
             model = _pick_model()
         elif confirm_idx == 2:
             qa_pairs, rollouts, rollout_steps, iterations = _pick_scale()
-        elif confirm_idx == 3:
-            backend_choice = _pick_backend()
         else:
             console.print("    [dim]Cancelled.[/]\n")
             return
@@ -1259,7 +1250,7 @@ def cmd_train(args: argparse.Namespace) -> None:
     try:
         plan = plan_training_execution(
             iterations=iterations,
-            synthesis_rollout_backend=backend_choice,
+            synthesis_rollout_backend="remote_full",
         )
     except ValueError as exc:
         console.print(f"\n[red]{exc}[/]\n")
@@ -1421,16 +1412,18 @@ def cmd_train(args: argparse.Namespace) -> None:
         backend=plan.synthesis_rollout_backend,
     )
 
+    # Start the dashboard before provisioning so the training page is
+    # already available while Shadeform boots and vLLM loads.
+    _start_web_ui()  # no-op if already running from setup
+
     agent = Agent(
         base_model=model,
         corpus=corpus,
         project=project_name,
-        api_base=TOGETHER_API_BASE if plan.synthesis_rollout_backend == "together" else None,
-        api_key=api_key,
         hf_token=_get_hf_token(),
+        remote_corpus_name=remote_corpus_name,
         chunk_size=chunk_size,
     )
-    _start_web_ui()  # no-op if already running from setup
     train_start = time.monotonic()
     try:
         agent.train(
@@ -1441,10 +1434,16 @@ def cmd_train(args: argparse.Namespace) -> None:
             max_examples=args.max_examples,
             learning_rate=lr,
             synthesis_rollout_backend=plan.synthesis_rollout_backend,
+            keep_alive=args.keep_alive,
             verbose=True,
         )
     except Exception:
         mark_training_run_status(project_name, status="failed", projects_dir=PROJECTS_DIR)
+        if args.keep_alive:
+            console.print(
+                "    [yellow]GPU kept alive[/] — fix the issue and re-run, "
+                "or release with [bold]konash teardown[/]"
+            )
         raise
     mark_training_run_status(project_name, status="completed", projects_dir=PROJECTS_DIR)
     elapsed = time.monotonic() - train_start
@@ -1682,7 +1681,7 @@ def _preview_training_ui(args: argparse.Namespace) -> None:
         rollouts=args.rollouts,
         rollout_steps=args.rollout_steps,
         iterations=args.iterations,
-        backend=args.synthesis_backend,
+        backend="remote_full",
     )
     console.print("  [dim]Preview mode · no API calls · no corpus indexing · no checkpoints[/]")
     console.print()
@@ -1827,17 +1826,20 @@ def main(argv: list[str] | None = None) -> None:
         "--chunk-size", type=int, default=512, help="Chunk size in words.",
     )
     p_train.add_argument(
-        "--synthesis-backend",
-        choices=["auto", "together", "shadeform"],
-        default="auto",
-        help=(
-            "Where synthesis + rollout generation run. "
-            "auto chooses together for 1 iteration and shadeform for multi-iteration."
-        ),
+        "--gpu-type", default="H100",
+        help="Shadeform GPU type for remote_full training (default: H100).",
+    )
+    p_train.add_argument(
+        "--keep-alive", action="store_true",
+        help="Keep the Shadeform GPU alive after training (success or failure). Use konash teardown to release later.",
+    )
+    p_train.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Skip interactive confirmation and start training immediately.",
     )
     p_train.add_argument(
         "--api-key", default=None,
-        help="Together AI key (or run konash setup).",
+        help="Shadeform API key (or run konash setup).",
     )
     p_train.add_argument(
         "--resume", action="store_true",

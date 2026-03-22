@@ -106,14 +106,26 @@ class TrainingLogger:
         with open(self._path, "a") as f:
             f.write(json.dumps(record, default=str) + "\n")
 
-    def start(self, *, iterations: int, corpus: str, model: str) -> None:
-        """Log training start."""
+    def start(
+        self, *, iterations: int, corpus: str, model: str,
+        billing_started_at: str = "",
+    ) -> None:
+        """Log training start.
+
+        Parameters
+        ----------
+        billing_started_at:
+            ISO-8601 timestamp of when Shadeform billing began (instance
+            provisioning).  Used by the training monitor to show wall-clock
+            cost time rather than just synthesis time.
+        """
         self._write(TrainingStarted(
             project=self.project,
             elapsed_seconds=self._elapsed_seconds(),
             iterations=iterations,
             corpus=corpus,
             model=model,
+            billing_started_at=billing_started_at,
         ))
 
     def synthesis(
@@ -317,13 +329,22 @@ class TrainingLogger:
 
     @staticmethod
     def list_projects() -> list[str]:
-        """List all projects that have training logs."""
+        """List all projects that have training logs or active runs, most recent first."""
         projects_dir = os.path.expanduser("~/.konash/projects")
         if not os.path.isdir(projects_dir):
             return []
         projects = []
-        for name in sorted(os.listdir(projects_dir)):
-            log_path = os.path.join(projects_dir, name, "training.jsonl")
+        for name in os.listdir(projects_dir):
+            project_dir = os.path.join(projects_dir, name)
+            log_path = os.path.join(project_dir, "training.jsonl")
+            active_path = os.path.join(project_dir, "active_run.json")
+            has_active = os.path.exists(active_path)
             if os.path.exists(log_path):
-                projects.append(name)
-        return projects
+                mtime = os.path.getmtime(log_path)
+                projects.append((name, mtime, has_active))
+            elif has_active:
+                mtime = os.path.getmtime(active_path)
+                projects.append((name, mtime, True))
+        # Active runs always sort first, then by most recent
+        projects.sort(key=lambda x: (x[2], x[1]), reverse=True)
+        return [name for name, _, _ in projects]

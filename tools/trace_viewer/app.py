@@ -599,7 +599,18 @@ def training_logs(project: str):
     """Get training log events for a project."""
     from konash.training.logger import TrainingLogger
     events = TrainingLogger.load_records(project)
-    return jsonify({"project": project, "events": events})
+
+    # Include active run info so the UI can show status before events exist
+    active_run = None
+    active_path = os.path.expanduser(f"~/.konash/projects/{project}/active_run.json")
+    if os.path.exists(active_path):
+        try:
+            with open(active_path) as f:
+                active_run = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return jsonify({"project": project, "events": events, "active_run": active_run})
 
 
 @app.route("/training/api/rollouts/<project>")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """OAPL training with Unsloth on GLM 4.5 Air.
 
-Designed for Together AI GPU clusters (2× H100 SXM, 160 GB total VRAM).
+Designed for Shadeform GPU clusters (2× H100 SXM, 160 GB total VRAM).
 
 Usage:
     # From pre-generated rollouts (Stage 3 output):
@@ -22,7 +22,7 @@ Usage:
         --output ./checkpoints/iter2
 
 Environment:
-    TOGETHER_API_KEY       — Only needed for API-backed rollout generation
+    SHADEFORM_API_KEY      — For Shadeform provisioning (if not running on-box)
     UNSLOTH_VLLM_STANDBY=1 — Enable vLLM weight sharing (saves ~9 GB)
 """
 
@@ -537,8 +537,12 @@ def train_full_pipeline(args):
     print(f"  Output:     {args.output}")
     print()
 
+    print("##KONASH:loading_data##", flush=True)
+
     # Load model
+    print("##KONASH:loading_model##", flush=True)
     print("Loading model via Unsloth...")
+    _model_t0 = time.time()
     engine = UnslothEngine(
         model_name=args.model,
         max_seq_length=args.max_seq_length,
@@ -546,6 +550,7 @@ def train_full_pipeline(args):
         lora_alpha=args.lora_alpha,
         load_in_fp8=args.fp8 and not args.no_fp8,
     )
+    print(f"##KONASH:model_loaded:{time.time() - _model_t0:.1f}s##", flush=True)
 
     # Ingest corpus
     print("Ingesting corpus...")
@@ -589,13 +594,36 @@ def train_full_pipeline(args):
         )
 
         raw_examples = []
-        for _ in range(args.synthesis_calls):
-            raw_examples.extend(synthesizer.synthesize(documents=None, num_examples=8))
+        for call_idx in range(args.synthesis_calls):
+            batch = synthesizer.synthesize(documents=None, num_examples=8)
+            raw_examples.extend(batch)
+            # Stream each QA pair to local monitor via ##KONASH## markers
+            for ex in batch:
+                q = ex.question.replace('\n', ' ').replace('#', '')
+                a = ex.answer.replace('\n', ' ').replace('#', '')
+                print(f"##KONASH:qa:{iteration + 1}:{q}\t{a}##", flush=True)
+            print(f"  Call {call_idx + 1}/{args.synthesis_calls}: +{len(batch)} pairs ({len(raw_examples)} total)")
         examples = pipeline.deduplicate(raw_examples)
         if args.max_examples is not None:
             examples = examples[:args.max_examples]
         pipeline.synthetic_examples = examples
         print(f"  Generated {len(examples)} QA pairs")
+
+        # Save synthesis checkpoints so the training monitor can display them
+        iter_dir = os.path.join(args.output, f"iter{iteration + 1}")
+        os.makedirs(iter_dir, exist_ok=True)
+        with open(os.path.join(iter_dir, "stage1_synthesis.json"), "w") as f:
+            json.dump({
+                "version": 1, "phase": "synthesis",
+                "iteration": iteration + 1,
+                "data": [{"question": e.question, "answer": e.answer} for e in raw_examples],
+            }, f, default=str)
+        with open(os.path.join(iter_dir, "stage1_deduped.json"), "w") as f:
+            json.dump({
+                "version": 1, "phase": "dedup",
+                "iteration": iteration + 1,
+                "data": [{"question": e.question, "answer": e.answer} for e in examples],
+            }, f, default=str)
 
         # Stage 2: Rollouts + filtering
         print("  Generating rollouts...")
@@ -627,6 +655,7 @@ def train_full_pipeline(args):
         print("  Training with OAPL...")
         import time as _time
         _oapl_start = _time.monotonic()
+        print("##KONASH:oapl_start##", flush=True)
         stats = trainer.train_epoch_torch(
             dataset=dataset,
             model_engine=engine,
@@ -637,6 +666,7 @@ def train_full_pipeline(args):
         print(f"  Loss: {stats['mean_loss']:.4f}  "
               f"Groups: {stats['num_groups']}  "
               f"Rollouts: {stats['num_rollouts']}")
+        print(f"##KONASH:oapl_done:loss={stats['mean_loss']:.4f}##", flush=True)
 
         # Log OAPL stats
         try:
@@ -676,6 +706,7 @@ def train_full_pipeline(args):
     # Train value model (KARL Section 5.2: Qwen3-4B-Thinking)
     vm_stats = _train_value_model(args.output, args.iterations)
     if vm_stats:
+        print("##KONASH:value_model_start##", flush=True)
         try:
             from konash.training.logger import TrainingLogger
             _log = TrainingLogger(os.path.basename(args.output) or "default")
@@ -686,6 +717,10 @@ def train_full_pipeline(args):
             )
         except Exception:
             pass
+        print(
+            f"##KONASH:value_model_done:loss={vm_stats.get('final_loss', 0):.4f}##",
+            flush=True,
+        )
 
     # Save final meta
     meta_path = os.path.join(args.output, "training_meta.json")
@@ -701,6 +736,7 @@ def train_full_pipeline(args):
     print(f"  Pipeline complete! {len(all_iteration_stats)} iterations")
     print(f"  Checkpoints: {args.output}")
     print(f"{'='*60}")
+    print("##KONASH:complete##", flush=True)
 
     # Export (push to Hub, merge, GGUF)
     if args.push_to_hub or args.merge_and_export or args.export_gguf or args.deploy_together:

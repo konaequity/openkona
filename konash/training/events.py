@@ -41,6 +41,7 @@ class TrainingStarted(BaseTrainingEvent):
     iterations: int = 0
     corpus: str = ""
     model: str = ""
+    billing_started_at: str = ""
 
 
 @dataclass(slots=True)

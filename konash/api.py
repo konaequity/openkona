@@ -23,13 +23,7 @@ from konash.plugins.compression import RLTrainableCompressionPlugin
 from konash.plugins.control import StepBudgetPlugin
 from konash.inference.parallel import ParallelThinkingEngine
 from konash.inference.aggregation import GenerativeAggregator
-from konash.synthesis.pipeline import SynthesisPipeline
-from konash.synthesis.config import SynthesisTaskConfig
-from konash.synthesis.qa import QuestionAnswerSynthesizer, SyntheticExample
-from konash.synthesis.rollouts import RolloutGenerator
-from konash.training.dataset import OfflineRolloutDataset
-from konash.training.oapl import OAPLTrainer
-from konash.training.iteration import IterativeTrainingPipeline
+from konash.synthesis.qa import SyntheticExample
 from konash.training.project_state import build_dataset_spec, suggest_project_name
 from konash.models import ModelPreset, get_model_presets
 
@@ -242,6 +236,7 @@ class Agent:
         inference_api_key: Optional[str] = None,
         inference_model: Optional[str] = None,
         hf_token: Optional[str] = None,
+        remote_corpus_name: Optional[str] = None,
         checkpoint_dir: Optional[str] = None,
         chunk_size: int = 512,
         embedding_provider: str = "local",
@@ -265,10 +260,14 @@ class Agent:
         self._use_unsloth = use_unsloth
         self._load_in_fp8 = load_in_fp8
         self._hf_token = hf_token or os.environ.get("HF_TOKEN")
+        self.remote_corpus_name = remote_corpus_name
 
         # LLM connection
         self.api_base = api_base or os.environ.get("KONASH_API_BASE")
         self.api_key = api_key or os.environ.get("KONASH_API_KEY", "no-key")
+
+        # Billing clock — set by CLI when Shadeform instance is provisioned
+        self.billing_started_at: str = ""
 
         # Corpus — choose embedding provider
         self.embedding_provider = embedding_provider
@@ -415,19 +414,15 @@ class Agent:
         learning_rate: float = 1e-6,
         beta_kl: float = 0.001,
         beta_value: float = 1.0,
-        synthesis_rollout_backend: str = "auto",
+        synthesis_rollout_backend: str = "remote_full",
+        keep_alive: bool = False,
         verbose: bool = True,
     ) -> Dict[str, Any]:
         """Run the full KONASH training loop.
 
-        1. Load the model locally (with LoRA).
-        2. Ingest the corpus and build the vector search index.
-        3. Synthesize QA pairs via *synthesis_calls* independent calls
-           (KARL: 1,735 calls × 8 candidates each).
-        4. Deduplicate and generate rollouts, filter by pass rate.
-        5. Train with OAPL (real gradient updates on LoRA params).
-        6. Repeat for *iterations* rounds.
-        7. Save the LoRA adapter checkpoint.
+        Training now runs as a single remote Shadeform pipeline. The remote
+        worker handles synthesis, rollouts, and OAPL on GPU and writes the
+        resulting checkpoint back to the project directory.
 
         Parameters
         ----------
@@ -452,6 +447,10 @@ class Agent:
             KL regularisation coefficient.
         beta_value : float
             Temperature for soft value estimation.
+        synthesis_rollout_backend : str
+            Training execution mode. Only ``"remote_full"`` is supported.
+        keep_alive : bool
+            Keep the remote Shadeform instance alive after training or failure.
         verbose : bool
             Print progress updates.
 
@@ -468,21 +467,7 @@ class Agent:
             iterations=iterations,
             synthesis_rollout_backend=synthesis_rollout_backend,
         )
-
-        if plan.requires_remote_full_pipeline:
-            return self._train_with_remote_full_pipeline(
-                log=log,
-                plan=plan,
-                iterations=iterations,
-                synthesis_calls=synthesis_calls,
-                rollouts_per_example=rollouts_per_example,
-                rollout_max_steps=rollout_max_steps,
-                max_examples=max_examples,
-                learning_rate=learning_rate,
-                verbose=verbose,
-                console=console,
-            )
-        return self._train_with_local_prep_and_cloud_oapl(
+        return self._train_with_remote_full_pipeline(
             log=log,
             plan=plan,
             iterations=iterations,
@@ -490,8 +475,8 @@ class Agent:
             rollouts_per_example=rollouts_per_example,
             rollout_max_steps=rollout_max_steps,
             max_examples=max_examples,
-            few_shot_examples=few_shot_examples,
             learning_rate=learning_rate,
+            keep_alive=keep_alive,
             verbose=verbose,
             console=console,
         )
@@ -512,8 +497,9 @@ class Agent:
         self._log = TrainingLogger(self.project)
         self._log.start(
             iterations=iterations,
-            corpus=str(self.corpus.path),
+            corpus=self.remote_corpus_name or str(self.corpus.path),
             model=self.base_model,
+            billing_started_at=self.billing_started_at,
         )
         return self._log
 
@@ -576,6 +562,7 @@ class Agent:
         rollout_max_steps: int,
         max_examples: Optional[int],
         learning_rate: float,
+        keep_alive: bool,
         verbose: bool,
         console: Any,
     ) -> Dict[str, Any]:
@@ -590,7 +577,7 @@ class Agent:
             console.print("  [cyan]Finding cheapest GPU via Shadeform...[/]")
 
         cloud_result = train_remote(
-            corpus=str(self.corpus.path),
+            corpus=self.remote_corpus_name or str(self.corpus.path),
             base_model=self.base_model,
             checkpoint_dir=self.checkpoint_dir,
             iterations=iterations,
@@ -599,7 +586,7 @@ class Agent:
             rollout_max_steps=rollout_max_steps,
             max_examples=max_examples,
             learning_rate=learning_rate,
-            keep_alive=False,
+            keep_alive=keep_alive,
             verbose=verbose,
         )
         stats = list(cloud_result.get("stats") or [])
@@ -616,618 +603,6 @@ class Agent:
             verbose=verbose,
             console=console,
         )
-
-    def _train_with_local_prep_and_cloud_oapl(
-        self,
-        *,
-        log: Any,
-        plan: Any,
-        iterations: int,
-        synthesis_calls: int,
-        rollouts_per_example: int,
-        rollout_max_steps: int,
-        max_examples: Optional[int],
-        few_shot_examples: Optional[List[SyntheticExample]],
-        learning_rate: float,
-        verbose: bool,
-        console: Any,
-    ) -> Dict[str, Any]:
-        """Run local synthesis/rollouts, then send rollouts to cloud OAPL."""
-        from konash.cloud import train_oapl_from_rollouts
-
-        if verbose and console is not None:
-            console.print()
-            console.rule(f"[bold]Iteration 1/{iterations}[/]", style="dim")
-            console.print()
-            console.print("  [dim]Phase 1: Synthesis + rollouts (Together API)[/]")
-
-        rollouts_path = self._run_iteration_local(
-            iteration=0,
-            synthesis_calls=synthesis_calls,
-            rollouts_per_example=rollouts_per_example,
-            rollout_max_steps=rollout_max_steps,
-            max_examples=max_examples,
-            few_shot_examples=few_shot_examples,
-            learning_rate=learning_rate,
-            verbose=verbose,
-        )
-        if not rollouts_path:
-            if verbose and console is not None:
-                console.print("  [yellow]–[/]  No training data produced.")
-            self._trained = True
-            self._iteration = 1
-            return {"iterations": 1, "stats": []}
-
-        if verbose and console is not None:
-            console.print()
-            console.print("  [dim]Phase 2: OAPL training (cloud GPU)[/]")
-            console.print("  [cyan]Finding cheapest GPU via Shadeform...[/]")
-
-        cloud_result = train_oapl_from_rollouts(
-            rollouts_path=rollouts_path,
-            base_model=self.base_model,
-            checkpoint_dir=self.checkpoint_dir,
-            learning_rate=learning_rate,
-            keep_alive=False,
-            verbose=verbose,
-        )
-        stats: List[Dict[str, Any]] = []
-        iter_stats = (cloud_result.get("stats", [{}]) or [{}])[-1]
-        if iter_stats:
-            stats.append(iter_stats)
-        self._save_training_metadata(
-            iterations=iterations,
-            stats=stats,
-            value_model=cloud_result.get("value_model", False),
-            synthesis_rollout_backend=plan.synthesis_rollout_backend,
-        )
-        return self._complete_training_run(
-            log=log,
-            iterations=iterations,
-            stats=stats,
-            verbose=verbose,
-            console=console,
-        )
-
-    def _run_iteration_local(
-        self,
-        *,
-        iteration: int,
-        synthesis_calls: int,
-        rollouts_per_example: int,
-        rollout_max_steps: int,
-        max_examples: Optional[int],
-        few_shot_examples: Optional[List[SyntheticExample]],
-        learning_rate: float,
-        verbose: bool,
-    ) -> Optional[str]:
-        """Run synthesis + rollouts locally, return path to rollout checkpoint.
-
-        Checkpoints after each phase so interrupted runs can resume.
-        Returns None if no training data was produced.
-        """
-        from konash.training import checkpoint as ckpt
-
-        if verbose:
-            from rich.console import Console as _Console
-            _con = _Console()
-
-        # Check for existing checkpoints (resume)
-        latest = ckpt.find_latest_phase(self.checkpoint_dir, iteration + 1)
-        if latest and verbose:
-            _con.print(
-                f"  [dim]Resuming from {latest.name.lower()} checkpoint[/]"
-            )
-
-        # ── Corpus ingestion ──
-        if not self.corpus.indexed:
-            if verbose:
-                with _con.status("  [cyan]Indexing corpus...", spinner="dots"):
-                    self.corpus.ingest()
-                _con.print(
-                    f"  [green]✓[/]  Indexed [bold]{self.corpus.num_documents:,}[/] chunks"
-                )
-            else:
-                self.corpus.ingest()
-
-        # ── Stage 1: Synthesis ──
-        # Try to resume from checkpoint — but ignore empty ones
-        examples = []
-        resumed = False
-
-        if latest and latest >= ckpt.Phase.DEDUP:
-            examples_data = ckpt.load(
-                self.checkpoint_dir, iteration + 1, ckpt.Phase.DEDUP
-            )
-            examples = [
-                SyntheticExample(
-                    question=e.get("question", ""),
-                    answer=e.get("answer", ""),
-                )
-                for e in (examples_data or [])
-            ]
-            if examples:
-                resumed = True
-                if verbose:
-                    _con.print(
-                        f"  [green]✓[/]  {len(examples)} examples (from checkpoint)"
-                    )
-
-        if not resumed and latest and latest >= ckpt.Phase.SYNTHESIS:
-            # Have raw synthesis checkpoint — check it has data
-            synth_data = ckpt.load(
-                self.checkpoint_dir, iteration + 1, ckpt.Phase.SYNTHESIS
-            )
-            raw_examples = [
-                SyntheticExample(
-                    question=e.get("question", ""),
-                    answer=e.get("answer", ""),
-                )
-                for e in (synth_data.get("examples", []) if synth_data else [])
-            ]
-            if raw_examples:
-                resumed = True
-                examples = self._run_dedup(raw_examples, max_examples, verbose)
-                ckpt.save(
-                    self.checkpoint_dir, iteration + 1, ckpt.Phase.DEDUP,
-                    [{"question": e.question, "answer": e.answer} for e in examples],
-                )
-
-        if not resumed:
-            # No valid checkpoint — run synthesis from scratch
-            raw_examples = self._run_synthesis(
-                synthesis_calls, few_shot_examples, iteration, verbose,
-            )
-            if not raw_examples:
-                if verbose:
-                    _con.print("  [yellow]–[/]  No QA pairs synthesized.")
-                return None
-
-            examples = self._run_dedup(raw_examples, max_examples, verbose)
-            ckpt.save(
-                self.checkpoint_dir, iteration + 1, ckpt.Phase.DEDUP,
-                [{"question": e.question, "answer": e.answer} for e in examples],
-            )
-
-        if not examples:
-            if verbose:
-                _con.print("  [yellow]–[/]  No examples after dedup.")
-            return None
-
-        # ── Stage 2: Rollouts + filtering ──
-        if latest and latest >= ckpt.Phase.ROLLOUTS:
-            rollouts_path = os.path.join(
-                ckpt.checkpoint_dir(self.checkpoint_dir, iteration + 1),
-                "stage2_rollouts.json",
-            )
-            if verbose:
-                _con.print(
-                    f"  [green]✓[/]  Rollouts loaded from checkpoint"
-                )
-        else:
-            rollouts_path = self._run_rollouts(
-                examples, rollouts_per_example, rollout_max_steps,
-                iteration, verbose,
-            )
-            if not rollouts_path:
-                if verbose:
-                    _con.print("  [yellow]–[/]  No training data after filtering.")
-                return {}
-
-        # Save run manifest listing all artifacts for this iteration
-        try:
-            from konash.training.logger import configure_file_logging  # noqa: already imported above
-            debug_log = os.path.expanduser(
-                f"~/.konash/projects/{self.project}/training_debug.log"
-            )
-            jsonl_log = os.path.expanduser(
-                f"~/.konash/projects/{self.project}/training.jsonl"
-            )
-            ckpt.save_manifest(
-                self.checkpoint_dir, iteration + 1,
-                {
-                    "artifacts": {
-                        "rollouts_checkpoint": rollouts_path,
-                        "debug_log": debug_log,
-                        "training_log_jsonl": jsonl_log,
-                        "corpus_index_cache": os.path.join(
-                            self.checkpoint_dir, "index_cache",
-                        ),
-                    },
-                    "counts": {
-                        "deduped_examples": len(examples),
-                    },
-                },
-            )
-        except Exception:
-            _api_logger.debug("Failed to save manifest", exc_info=True)
-
-        return rollouts_path
-
-    def _run_synthesis(
-        self,
-        synthesis_calls: int,
-        few_shot_examples: Optional[List[SyntheticExample]],
-        iteration: int,
-        verbose: bool,
-    ) -> List[SyntheticExample]:
-        """Run QA synthesis via API with checkpointing."""
-        from konash.training import checkpoint as ckpt
-        from concurrent.futures import ThreadPoolExecutor
-
-        if verbose:
-            from rich.console import Console as _Console
-            _con = _Console()
-
-        generate_fn = self._get_generate_fn()
-
-        def _synthesis_fn(messages, **kwargs):
-            kwargs.setdefault("max_new_tokens", 2048)
-            return generate_fn(messages, **kwargs)
-
-        synthesizer = QuestionAnswerSynthesizer(
-            vector_search_tool=self.corpus,
-            llm_fn=_synthesis_fn,
-            few_shot_examples=few_shot_examples,
-        )
-
-        # Check for incremental checkpoint
-        existing = ckpt.load_synthesis_incremental(
-            self.checkpoint_dir, iteration + 1,
-        )
-        all_raw: List[SyntheticExample] = []
-        start_call = 0
-        if existing:
-            all_raw = [
-                SyntheticExample(question=e["question"], answer=e["answer"])
-                for e in existing["examples"]
-            ]
-            start_call = existing["calls_completed"]
-            if verbose:
-                _con.print(
-                    f"  [dim]Resuming synthesis from call "
-                    f"{start_call}/{synthesis_calls} "
-                    f"({len(all_raw)} pairs so far)[/]"
-                )
-
-        remaining = synthesis_calls - start_call
-        if remaining <= 0:
-            return all_raw
-
-        def _synth_one(_ci):
-            try:
-                return synthesizer.synthesize(documents=None, num_examples=8)
-            except (ValueError, RuntimeError, OSError):
-                return []
-
-        completed = [start_call]
-        workers = min(remaining, 20)
-        checkpoint_interval = max(remaining // 10, 10)
-
-        if verbose:
-            import threading
-            from rich.live import Live
-            from rich.table import Table as _Table
-            from rich.text import Text
-
-            _synth_lock = threading.Lock()
-            _latest_q = [""]
-            _latest_a = [""]
-            _synth_started_at = time.monotonic()
-
-            def _build_display() -> _Table:
-                outer = _Table(
-                    box=None, show_header=False, pad_edge=False,
-                    expand=True, padding=(0, 0),
-                )
-                done = completed[0]
-                pct = done * 100 // synthesis_calls if synthesis_calls else 0
-                bar_w = 32
-                filled = bar_w * done // synthesis_calls if synthesis_calls else 0
-                bar = f"[cyan]{'━' * filled}[/][dim]{'─' * (bar_w - filled)}[/]"
-                elapsed = max(time.monotonic() - _synth_started_at, 0.0)
-                pending = max(synthesis_calls - done, 0)
-                active = min(workers, pending)
-                spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"]
-                spinner = spinner_frames[int(elapsed * 8) % len(spinner_frames)]
-                response_window = 90.0
-                progress_window = min(elapsed / response_window, 1.0)
-                pulse_width = 10
-                pulse_start = min(
-                    int((bar_w - pulse_width) * progress_window),
-                    max(bar_w - pulse_width, 0),
-                )
-                pulse_bar = (
-                    f"[dim]{'─' * pulse_start}[/]"
-                    f"[cyan]{'━' * pulse_width}[/]"
-                    f"[dim]{'─' * max(bar_w - pulse_start - pulse_width, 0)}[/]"
-                )
-                if elapsed < 8:
-                    status_hint = "warming up request"
-                elif elapsed < 25:
-                    status_hint = "reading retrieved passages"
-                elif elapsed < 60:
-                    status_hint = "drafting grounded questions"
-                else:
-                    status_hint = "taking longer than usual"
-
-                outer.add_row(Text("  Synthesizing QA pairs", style="bold"))
-                outer.add_row(Text(""))
-                outer.add_row(Text.from_markup(
-                    f"    {bar}  [dim]{done}/{synthesis_calls}[/]  "
-                    f"[bold]{len(all_raw)}[/] pairs  [dim]{pct}%[/]"
-                ))
-                if pending > 0:
-                    outer.add_row(Text.from_markup(
-                        f"    [cyan]{spinner}[/]  "
-                        f"[dim]Calling {self.base_model} for {active} active synthesis "
-                        f"{'request' if active == 1 else 'requests'} · "
-                        f"{elapsed:.1f}s elapsed[/]"
-                    ))
-                    outer.add_row(Text.from_markup(
-                        f"    [dim]Model activity · {status_hint} · usual response window 20-90s[/]"
-                    ))
-                    outer.add_row(Text.from_markup(
-                        f"    {pulse_bar}  [dim]in-flight response progress[/]"
-                    ))
-
-                if _latest_q[0]:
-                    q = _latest_q[0][:90]
-                    outer.add_row(Text(""))
-                    outer.add_row(Text.from_markup(
-                        f"    [dim]Q:[/]  {q}" + ("[dim]...[/]" if len(_latest_q[0]) > 90 else "")
-                    ))
-                if _latest_a[0]:
-                    a = _latest_a[0][:90]
-                    outer.add_row(Text.from_markup(
-                        f"    [dim]A:[/]  {a}" + ("[dim]...[/]" if len(_latest_a[0]) > 90 else "")
-                    ))
-                return outer
-
-            with Live(
-                _build_display(), console=_con,
-                refresh_per_second=4, transient=True,
-            ) as live:
-                with ThreadPoolExecutor(max_workers=workers) as pool:
-                    futures = [pool.submit(_synth_one, ci) for ci in range(remaining)]
-                    for fut in futures:
-                        batch = fut.result()
-                        with _synth_lock:
-                            all_raw.extend(batch)
-                            completed[0] += 1
-                            if batch:
-                                _latest_q[0] = batch[-1].question or ""
-                                _latest_a[0] = batch[-1].answer or ""
-                            live.update(_build_display())
-
-                        if completed[0] % checkpoint_interval == 0:
-                            ckpt.save_synthesis_incremental(
-                                self.checkpoint_dir, iteration + 1,
-                                [{"question": e.question, "answer": e.answer} for e in all_raw],
-                                completed[0], synthesis_calls,
-                            )
-        else:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(_synth_one, ci) for ci in range(remaining)]
-                for fut in futures:
-                    batch = fut.result()
-                    all_raw.extend(batch)
-                    completed[0] += 1
-
-                    if completed[0] % checkpoint_interval == 0:
-                        ckpt.save_synthesis_incremental(
-                            self.checkpoint_dir, iteration + 1,
-                            [{"question": e.question, "answer": e.answer} for e in all_raw],
-                            completed[0], synthesis_calls,
-                        )
-
-        # Final checkpoint
-        ckpt.save_synthesis_incremental(
-            self.checkpoint_dir, iteration + 1,
-            [{"question": e.question, "answer": e.answer} for e in all_raw],
-            synthesis_calls, synthesis_calls,
-        )
-
-        if verbose:
-            _con.print(
-                f"  [green]✓[/]  {len(all_raw)} QA pairs synthesized"
-            )
-
-        if hasattr(self, "_log"):
-            self._log.synthesis(
-                iteration=iteration + 1,
-                calls_completed=synthesis_calls,
-                calls_total=synthesis_calls,
-                raw_pairs=len(all_raw),
-                deduped=0,  # dedup happens separately
-            )
-
-        return all_raw
-
-    def _run_dedup(
-        self,
-        raw_examples: List[SyntheticExample],
-        max_examples: Optional[int],
-        verbose: bool,
-    ) -> List[SyntheticExample]:
-        """Deduplicate synthesized examples."""
-        if verbose:
-            from rich.console import Console as _Console
-            _con = _Console()
-
-        generate_fn = self._get_generate_fn()
-
-        def _synthesis_fn(messages, **kwargs):
-            kwargs.setdefault("max_new_tokens", 2048)
-            return generate_fn(messages, **kwargs)
-
-        def _rollout_fn(messages, **kwargs):
-            kwargs.setdefault("max_new_tokens", 512)
-            return generate_fn(messages, **kwargs)
-
-        pipeline = SynthesisPipeline(
-            config=SynthesisTaskConfig(task_name=self._task_name),
-            synthesizer=QuestionAnswerSynthesizer(
-                vector_search_tool=self.corpus,
-                llm_fn=_synthesis_fn,
-            ),
-            rollout_generator=RolloutGenerator(
-                search_tool=self.corpus,
-                llm_fn=_rollout_fn,
-            ),
-        )
-
-        if verbose:
-            with _con.status(
-                f"  [cyan]Deduplicating {len(raw_examples)} pairs...",
-                spinner="dots",
-            ):
-                examples = pipeline.deduplicate(raw_examples)
-        else:
-            examples = pipeline.deduplicate(raw_examples)
-
-        if max_examples and len(examples) > max_examples:
-            examples = examples[:max_examples]
-
-        if verbose:
-            _con.print(f"  [green]✓[/]  {len(examples)} unique examples")
-
-        return examples
-
-    def _run_rollouts(
-        self,
-        examples: List[SyntheticExample],
-        rollouts_per_example: int,
-        rollout_max_steps: int,
-        iteration: int,
-        verbose: bool,
-    ) -> Optional[str]:
-        """Generate rollouts, filter, checkpoint, return path to rollout JSON."""
-        from konash.training import checkpoint as ckpt
-
-        if verbose:
-            from rich.console import Console as _Console
-            _con = _Console()
-
-        generate_fn = self._get_generate_fn()
-
-        def _rollout_fn(messages, **kwargs):
-            kwargs.setdefault("max_new_tokens", 512)
-            return generate_fn(messages, **kwargs)
-
-        def _judge_fn(messages, **kwargs):
-            kwargs.setdefault("max_new_tokens", 1024)
-            return generate_fn(messages, **kwargs)
-
-        rollout_gen = RolloutGenerator(
-            search_tool=self.corpus,
-            llm_fn=_rollout_fn,
-            max_steps=rollout_max_steps,
-        )
-        pipeline = SynthesisPipeline(
-            config=SynthesisTaskConfig(task_name=self._task_name),
-            synthesizer=QuestionAnswerSynthesizer(
-                vector_search_tool=self.corpus,
-                llm_fn=_rollout_fn,
-            ),
-            rollout_generator=rollout_gen,
-            judge_fn=_judge_fn,
-        )
-
-        # Incremental rollout checkpointing — pass checkpoint_dir so
-        # completed groups are saved every 50 QA pairs
-        rollout_ckpt_dir = self.checkpoint_dir
-
-        # Progress callback → JSONL log
-        import time as _time
-        _rollout_t0 = _time.monotonic()
-
-        def _on_progress(completed: int, total: int) -> None:
-            if hasattr(self, "_log"):
-                self._log.rollout_progress(
-                    iteration=iteration + 1,
-                    completed=completed,
-                    total=total,
-                    elapsed_seconds=_time.monotonic() - _rollout_t0,
-                )
-
-        stage_two_kwargs = dict(
-            examples=examples,
-            num_rollouts=rollouts_per_example,
-            checkpoint_dir=rollout_ckpt_dir,
-            checkpoint_iteration=iteration + 1,
-            on_rollout_progress=_on_progress,
-        )
-
-        if verbose:
-            with _con.status(
-                f"  [cyan]Generating rollouts "
-                f"({len(examples)} × {rollouts_per_example})...",
-                spinner="dots",
-            ):
-                final_examples = pipeline.run_stage_two(**stage_two_kwargs)
-        else:
-            final_examples = pipeline.run_stage_two(**stage_two_kwargs)
-
-        if verbose:
-            _con.print(
-                f"  [green]✓[/]  {len(final_examples)} examples after "
-                f"pass-rate filtering"
-            )
-
-        if not final_examples or not pipeline.filtered_groups:
-            return None
-
-        # Build rollout data in the format expected by train_oapl_unsloth.py
-        groups = []
-        for group in pipeline.filtered_groups:
-            groups.append({
-                "prompt": group.prompt,
-                "question": group.prompt,
-                "rollouts": [
-                    {
-                        "steps": r.steps,
-                        "final_answer": r.final_answer,
-                        "passed": r.passed,
-                    }
-                    for r in group.rollouts
-                ],
-            })
-
-        # Save checkpoint
-        rollouts_path = ckpt.save(
-            self.checkpoint_dir, iteration + 1, ckpt.Phase.ROLLOUTS,
-            {"groups": groups},
-        )
-
-        if verbose:
-            _con.print(
-                f"  [green]✓[/]  Rollouts checkpointed to {rollouts_path}"
-            )
-
-        if hasattr(self, "_log"):
-            total_rollouts = sum(len(g["rollouts"]) for g in groups)
-            self._log.rollouts(
-                iteration=iteration + 1,
-                examples=len(examples),
-                rollouts=total_rollouts,
-                filtered=len(groups),
-            )
-            # Log filter summaries
-            self._log.filter_summary(
-                iteration=iteration + 1,
-                phase="pass_rate",
-                input_count=len(pipeline.rollout_groups),
-                output_count=len(pipeline.filtered_groups),
-            )
-            self._log.filter_summary(
-                iteration=iteration + 1,
-                phase="quality",
-                input_count=len(pipeline.filtered_groups),
-                output_count=len(final_examples),
-            )
-
-        return rollouts_path
 
     # ------------------------------------------------------------------
     # Solve (inference)

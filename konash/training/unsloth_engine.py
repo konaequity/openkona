@@ -35,9 +35,12 @@ Requirements: ``pip install unsloth``
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import subprocess
+import sys
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -142,9 +145,25 @@ class UnslothEngine:
         logger.info("Loading model via Unsloth: %s", model_name)
         print(f"[konash] Loading model via Unsloth: {model_name}")
 
-        self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-            **load_kwargs,
-        )
+        try:
+            self.model, self.tokenizer = FastLanguageModel.from_pretrained(
+                **load_kwargs,
+            )
+        except RuntimeError as exc:
+            if not self._should_retry_without_fast_inference(exc, load_kwargs):
+                raise
+            retry_kwargs = dict(load_kwargs)
+            retry_kwargs.pop("fast_inference", None)
+            retry_kwargs.pop("gpu_memory_utilization", None)
+            logger.warning(
+                "Fast inference load failed for %s; retrying without vLLM path: %s",
+                model_name,
+                exc,
+            )
+            print("[konash] Fast inference load failed; retrying without vLLM path")
+            self.model, self.tokenizer = FastLanguageModel.from_pretrained(
+                **retry_kwargs,
+            )
 
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -184,6 +203,146 @@ class UnslothEngine:
         name_lower = model_name.lower()
         return any(pat in name_lower for pat in _MOE_PATTERNS)
 
+    @staticmethod
+    def _should_retry_without_fast_inference(
+        exc: RuntimeError,
+        load_kwargs: Dict[str, Any],
+    ) -> bool:
+        """Detect Unsloth/vLLM load failures that should fall back."""
+        if "fast_inference" not in load_kwargs:
+            return False
+        message = str(exc).lower()
+        retry_markers = (
+            "fast inference is only supported",
+            "faketensormode",
+            "standalone_compile",
+            "vllm",
+        )
+        return any(marker in message for marker in retry_markers)
+
+    def _resolve_generate_fn(self):
+        """Prefer Unsloth's saved pre-patch generate implementation."""
+        seen: set[int] = set()
+        queue = [self.model]
+
+        while queue:
+            obj = queue.pop(0)
+            if obj is None:
+                continue
+            obj_id = id(obj)
+            if obj_id in seen:
+                continue
+            seen.add(obj_id)
+
+            old_generate = getattr(obj, "_old_generate", None)
+            if callable(old_generate):
+                logger.info("Using _old_generate from %s", type(obj).__name__)
+                return old_generate
+
+            for attr in ("base_model", "model"):
+                child = getattr(obj, attr, None)
+                if child is not None:
+                    queue.append(child)
+
+        logger.warning("Falling back to patched generate; no _old_generate found")
+        return self.model.generate
+
+    @staticmethod
+    def _should_fallback_to_standard_generate(exc: RuntimeError) -> bool:
+        """Detect generation-time Unsloth failures that need a plain HF model."""
+        message = str(exc).lower()
+        fallback_markers = (
+            "broadcast shape",
+            "fast_forward_inference",
+            "standalone_compile",
+            "faketensormode",
+        )
+        return any(marker in message for marker in fallback_markers)
+
+    def _standard_generate(
+        self,
+        prompt: str,
+        *,
+        temperature: float,
+        max_new_tokens: int,
+    ) -> Dict[str, Any]:
+        """Generate with a plain Transformers causal LM in a fresh process.
+
+        Unsloth monkeypatches can bleed into the current interpreter even when we
+        try to load ``AutoModelForCausalLM`` directly. Spawning a clean Python
+        subprocess guarantees a vanilla Transformers path for the fallback.
+        """
+        script = """
+import json
+import sys
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+payload = json.loads(sys.stdin.read())
+model_name = payload["model_name"]
+prompt = payload["prompt"]
+temperature = payload["temperature"]
+max_new_tokens = payload["max_new_tokens"]
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.bfloat16,
+    device_map=None,
+)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model.to(device)
+model.eval()
+
+inputs = tokenizer(prompt, return_tensors="pt").to(device)
+gen_kwargs = {
+    "max_new_tokens": max_new_tokens,
+    "pad_token_id": tokenizer.pad_token_id,
+}
+if temperature > 0:
+    gen_kwargs.update(do_sample=True, temperature=temperature, top_p=0.9)
+else:
+    gen_kwargs["do_sample"] = False
+
+with torch.no_grad():
+    out = model.generate(**inputs, **gen_kwargs)
+
+new_tokens = out[0][inputs["input_ids"].shape[1]:]
+content = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+print(json.dumps({"content": content}))
+"""
+        payload = {
+            "model_name": self.model_name,
+            "prompt": prompt,
+            "temperature": temperature,
+            "max_new_tokens": max_new_tokens,
+        }
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "Plain Transformers fallback failed: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+        try:
+            decoded = json.loads(result.stdout.strip() or "{}")
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Plain Transformers fallback returned invalid JSON: {result.stdout!r}"
+            ) from exc
+        return {"role": "assistant", "content": decoded.get("content", "").strip()}
+
     # ------------------------------------------------------------------
     # Text generation
     # ------------------------------------------------------------------
@@ -197,7 +356,6 @@ class UnslothEngine:
 
         Returns ``{"role": "assistant", "content": "..."}``.
         """
-        from unsloth import FastLanguageModel
         torch = self._torch
 
         try:
@@ -221,11 +379,35 @@ class UnslothEngine:
         else:
             gen_kwargs["do_sample"] = False
 
-        # Unsloth: switch to inference mode for fast generation
-        FastLanguageModel.for_inference(self.model)
+        was_training = self.model.training
+        self.model.eval()
+        fallback_response: Optional[Dict[str, Any]] = None
 
-        with torch.no_grad():
-            out = self.model.generate(**inputs, **gen_kwargs)
+        try:
+            generate_fn = self._resolve_generate_fn()
+            with torch.no_grad():
+                try:
+                    out = generate_fn(**inputs, **gen_kwargs)
+                except RuntimeError as exc:
+                    if not self._should_fallback_to_standard_generate(exc):
+                        raise
+                    logger.warning(
+                        "Falling back to standard Transformers generate for %s: %s",
+                        self.model_name,
+                        exc,
+                    )
+                    print("[konash] Falling back to standard Transformers generate")
+                    fallback_response = self._standard_generate(
+                        text,
+                        temperature=temp,
+                        max_new_tokens=max_tok,
+                    )
+        finally:
+            if was_training:
+                self.model.train()
+
+        if fallback_response is not None:
+            return fallback_response
 
         new_tokens = out[0][inputs["input_ids"].shape[1]:]
         content = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
@@ -234,9 +416,6 @@ class UnslothEngine:
         content = re.sub(r"<think>.*?</think>\s*", "", content, flags=re.DOTALL)
         content = re.sub(r"<think>.*", "", content, flags=re.DOTALL).strip()
         content = re.sub(r"</arg_value>\s*", "", content)
-
-        # Switch back to training mode
-        FastLanguageModel.for_training(self.model)
 
         return {"role": "assistant", "content": content}
 

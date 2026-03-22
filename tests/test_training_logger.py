@@ -54,6 +54,7 @@ def test_training_logger_load_records_returns_json_safe_dicts(monkeypatch, tmp_p
             "iterations": 1,
             "corpus": "corpus",
             "model": "model",
+            "billing_started_at": "",
             "elapsed_seconds": records[0]["elapsed_seconds"],
             "timestamp": records[0]["timestamp"],
         }
