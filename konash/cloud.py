@@ -472,8 +472,12 @@ def _setup_remote(
     """Install KONASH dependencies on the remote machine."""
     setup_cmd = (
         f"cd {_REMOTE_DIR} && "
-        "python3 -m pip install --upgrade pip setuptools wheel && "
-        "python3 -m pip install --upgrade "
+        # Install uv if not present (10-50x faster than pip)
+        "command -v uv >/dev/null 2>&1 || "
+        "(curl -LsSf https://astral.sh/uv/install.sh | sh && "
+        "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH) && "
+        "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH && "
+        "uv pip install --system --upgrade "
         "numpy sentence-transformers datasets huggingface_hub torch "
         "unsloth peft accelerate 'transformers>=5.2.0' && "
         "python3 - <<'PY'\n"
@@ -502,6 +506,7 @@ def _run_remote_training(
     ip: str, training_cmd: str, env_vars: dict,
     key_path: str = _SSH_KEY_PATH, port: int = 22, user: str = "shadeform",
     verbose: bool = True, checkpoint_dir: str | None = None,
+    sleep_wake: bool = False,
 ) -> None:
     """Run training on the remote machine, streaming ##KONASH## progress markers.
 
@@ -514,11 +519,13 @@ def _run_remote_training(
 
     # Build env exports
     env_str = " ".join(f'{k}="{v}"' for k, v in env_vars.items())
+    # In sleep/wake mode, vLLM and Unsloth alternate — no weight sharing
+    standby_export = "" if sleep_wake else "UNSLOTH_VLLM_STANDBY=1 "
 
     # Run under nohup so SSH disconnection doesn't kill training
     remote_cmd = (
         f"cd {_REMOTE_DIR} && "
-        f"export PYTHONPATH=. UNSLOTH_VLLM_STANDBY=1 {env_str} && "
+        f"export PYTHONPATH=. {standby_export}{env_str} && "
         f"nohup bash -c '{training_cmd} > {_REMOTE_LOG} 2>&1' &"
     )
 
@@ -583,6 +590,14 @@ def _run_remote_training(
             elif marker.startswith("model_loaded:"):
                 load_time = marker.split(":")[1]
                 _print(f"  [green]✓[/]  Model loaded  [dim]{load_time}[/]")
+
+            elif marker == "vllm_sleep":
+                _print(f"  Sleeping vLLM (freeing GPU for training)...")
+                phase_start = time.monotonic()
+
+            elif marker == "vllm_wake":
+                elapsed = time.monotonic() - phase_start
+                _print(f"  [green]✓[/]  vLLM awake  [dim]{elapsed:.0f}s[/]")
 
             elif marker == "oapl_start":
                 _print(f"  Training OAPL...")
@@ -865,6 +880,7 @@ def train_remote(
     use_spot: bool = False,
     push_to_hub: Optional[str] = None,
     keep_alive: bool = False,
+    sleep_wake: bool = False,
     verbose: bool = True,
 ) -> dict:
     """Run the full KARL training pipeline on a cloud GPU."""
@@ -933,12 +949,15 @@ def train_remote(
         )
         if max_examples is not None:
             training_cmd += f" --max-examples {max_examples}"
+        if sleep_wake:
+            training_cmd += " --vllm-sleep-wake --tensor-parallel 2 --rollout-workers 32"
         env_vars = {}
         local_ckpt = os.path.expanduser(checkpoint_dir)
         os.makedirs(local_ckpt, exist_ok=True)
         _run_remote_training(
             ip, training_cmd, env_vars, ssh_key, port, user, verbose,
             checkpoint_dir=local_ckpt,
+            sleep_wake=sleep_wake,
         )
 
         _print(f"  Downloading trained model...")

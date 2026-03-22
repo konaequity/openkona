@@ -12,6 +12,7 @@ from konash.training.backends import (
     OpenAIConfig,
     ShadeformSynthesisBackend,
     SynthesisRuntimeBackend,
+    VLLMLifecycle,
 )
 
 
@@ -184,3 +185,115 @@ def test_openai_config_usable_as_agent_kwargs():
     kwargs = {"api_base": cfg.api_base, "api_key": cfg.api_key}
     assert kwargs["api_base"] == "http://1.2.3.4:8000/v1"
     assert kwargs["api_key"] == "not-needed"
+
+
+# ---------------------------------------------------------------------------
+# VLLMLifecycle
+# ---------------------------------------------------------------------------
+
+
+def test_vllm_lifecycle_urls():
+    vllm = VLLMLifecycle(model="test-model", port=8000)
+    assert vllm.base_url == "http://localhost:8000"
+    assert vllm.api_url == "http://localhost:8000/v1"
+
+
+def test_vllm_lifecycle_custom_port():
+    vllm = VLLMLifecycle(model="test-model", port=9999)
+    assert vllm.base_url == "http://localhost:9999"
+    assert vllm.api_url == "http://localhost:9999/v1"
+
+
+def test_vllm_lifecycle_stores_config():
+    vllm = VLLMLifecycle(
+        model="zai-org/GLM-4.5-Air-FP8",
+        tensor_parallel=2,
+        max_model_len=131072,
+        max_lora_rank=32,
+    )
+    assert vllm._model == "zai-org/GLM-4.5-Air-FP8"
+    assert vllm._tensor_parallel == 2
+    assert vllm._max_model_len == 131072
+    assert vllm._max_lora_rank == 32
+
+
+# ---------------------------------------------------------------------------
+# ABC sleep/wake/load_lora defaults
+# ---------------------------------------------------------------------------
+
+
+def test_abc_sleep_wake_defaults_are_noop():
+    """Default ABC methods should not raise."""
+    backend = ShadeformSynthesisBackend(api_key="k", verbose=False)
+    # sleep/wake inherited from ABC are overridden, but load_lora default
+    # on the ABC should return None
+    assert SynthesisRuntimeBackend.load_lora(backend, "/path") is None
+
+
+# ---------------------------------------------------------------------------
+# ShadeformSynthesisBackend sleep/wake via SSH
+# ---------------------------------------------------------------------------
+
+
+def test_shadeform_sleep_calls_ssh():
+    backend = ShadeformSynthesisBackend(
+        api_key="k", verbose=False, sleep_mode=True,
+    )
+    backend._ip = "1.2.3.4"
+    backend._instance_id = "inst-1"
+    with patch.object(backend, "_ssh_run") as mock_ssh:
+        mock_ssh.return_value = MagicMock(returncode=0)
+        backend.sleep()
+    mock_ssh.assert_called_once()
+    assert "sleep?level=1" in mock_ssh.call_args[0][0]
+
+
+def test_shadeform_wake_calls_ssh_and_polls():
+    backend = ShadeformSynthesisBackend(
+        api_key="k", verbose=False, sleep_mode=True,
+    )
+    backend._ip = "1.2.3.4"
+    backend._instance_id = "inst-1"
+    with patch.object(backend, "_ssh_run") as mock_ssh, \
+         patch.object(backend, "_check_vllm_health", return_value=True):
+        mock_ssh.return_value = MagicMock(returncode=0)
+        backend.wake()
+    assert "wake_up" in mock_ssh.call_args[0][0]
+
+
+def test_shadeform_load_lora_returns_name():
+    backend = ShadeformSynthesisBackend(
+        api_key="k", verbose=False, sleep_mode=True,
+    )
+    backend._ip = "1.2.3.4"
+    backend._instance_id = "inst-1"
+    with patch.object(backend, "_ssh_run") as mock_ssh:
+        mock_ssh.return_value = MagicMock(returncode=0)
+        name = backend.load_lora("/path/to/adapter", lora_name="test-lora")
+    assert name == "test-lora"
+    assert "load_lora_adapter" in mock_ssh.call_args[0][0]
+
+
+def test_shadeform_load_lora_returns_none_on_failure():
+    backend = ShadeformSynthesisBackend(
+        api_key="k", verbose=False, sleep_mode=True,
+    )
+    backend._ip = "1.2.3.4"
+    backend._instance_id = "inst-1"
+    with patch.object(backend, "_ssh_run") as mock_ssh:
+        mock_ssh.return_value = MagicMock(returncode=1, stderr="connection refused")
+        name = backend.load_lora("/path/to/adapter")
+    assert name is None
+
+
+def test_shadeform_sleep_mode_flag():
+    """sleep_mode=True should be stored for _start_vllm."""
+    backend = ShadeformSynthesisBackend(
+        api_key="k", verbose=False, sleep_mode=True,
+    )
+    assert backend._sleep_mode is True
+
+    backend2 = ShadeformSynthesisBackend(
+        api_key="k", verbose=False,
+    )
+    assert backend2._sleep_mode is False

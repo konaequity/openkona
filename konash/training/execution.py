@@ -37,12 +37,14 @@ class TrainingExecutionPlan:
     requested_mode: str
     synthesis_rollout_backend: str
     requires_remote_full_pipeline: bool
+    supports_sleep_wake: bool = False
 
 
 def plan_training_execution(
     *,
     iterations: int,
     synthesis_rollout_backend: str = "remote_full",
+    sleep_wake: bool = False,
 ) -> TrainingExecutionPlan:
     """Resolve how synthesis, rollouts, and OAPL should be executed.
 
@@ -52,6 +54,9 @@ def plan_training_execution(
         Number of RL training iterations.
     synthesis_rollout_backend:
         Execution mode. Training now only supports ``remote_full``.
+    sleep_wake:
+        Enable vLLM sleep/wake mode for single-GPU iterative training.
+        Only meaningful for multi-iteration runs (``iterations > 1``).
 
     Rules
     -----
@@ -70,4 +75,5 @@ def plan_training_execution(
         requested_mode=synthesis_rollout_backend,
         synthesis_rollout_backend=mode,
         requires_remote_full_pipeline=True,
+        supports_sleep_wake=sleep_wake and iterations > 1,
     )

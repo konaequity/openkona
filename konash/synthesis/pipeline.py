@@ -113,7 +113,7 @@ class SynthesisPipeline:
         examples: Optional[List[SyntheticExample]] = None,
         num_rollouts: Optional[int] = None,
         reference_documents: Optional[List[str]] = None,
-        parallel_workers: int = 4,
+        parallel_workers: int = 32,
         checkpoint_dir: Optional[str] = None,
         checkpoint_iteration: int = 1,
         checkpoint_interval: int = 50,
@@ -134,7 +134,8 @@ class SynthesisPipeline:
         reference_documents : list[str] | None
             Documents for quality filter reference-accuracy checking.
         parallel_workers : int
-            Number of QA pairs to process in parallel (default 4).
+            Number of QA pairs to process in parallel (default 32).
+            High values work well with vLLM's continuous batching.
         checkpoint_dir : str | None
             Project checkpoint directory for incremental rollout checkpoints.
             When set, completed rollout groups are saved every

@@ -105,6 +105,7 @@ class UnslothEngine:
         gpu_memory_utilization: float = 0.90,
         max_new_tokens: int = 1024,
         temperature: float = 0.7,
+        fast_inference: Optional[bool] = None,
     ):
         try:
             from unsloth import FastLanguageModel
@@ -135,12 +136,18 @@ class UnslothEngine:
             load_kwargs["load_in_fp8"] = True
             logger.info("Loading in FP8 (H100 native precision)")
 
-        # Enable vLLM standby if fast_inference is available
-        try:
-            load_kwargs["fast_inference"] = True
-            load_kwargs["gpu_memory_utilization"] = gpu_memory_utilization
-        except Exception:
-            pass
+        # Enable vLLM standby if fast_inference is available.
+        # fast_inference=None (default) auto-detects from UNSLOTH_VLLM_STANDBY.
+        # fast_inference=False skips it (for sleep/wake mode with separate vLLM).
+        _use_fast = fast_inference
+        if _use_fast is None:
+            _use_fast = os.environ.get("UNSLOTH_VLLM_STANDBY") == "1"
+        if _use_fast:
+            try:
+                load_kwargs["fast_inference"] = True
+                load_kwargs["gpu_memory_utilization"] = gpu_memory_utilization
+            except Exception:
+                pass
 
         logger.info("Loading model via Unsloth: %s", model_name)
         print(f"[konash] Loading model via Unsloth: {model_name}")
@@ -196,6 +203,25 @@ class UnslothEngine:
         )
 
         print(f"[konash] Unsloth engine ready ({model_name})")
+
+    def cleanup(self) -> None:
+        """Release GPU VRAM held by this engine.
+
+        Used in sleep/wake mode where Unsloth must fully vacate GPU
+        before vLLM can wake up.
+        """
+        import gc
+
+        if hasattr(self, "model"):
+            del self.model
+        if hasattr(self, "tokenizer"):
+            del self.tokenizer
+        self._ref_lora_state = None
+        gc.collect()
+        try:
+            self._torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     @staticmethod
     def _detect_moe(model_name: str) -> bool:

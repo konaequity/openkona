@@ -195,8 +195,11 @@ class RolloutGenerator:
             temp = max(0.1, min(1.2, temp))  # clamp
             rollout_args.append((i, temp))
 
-        # Run rollouts in parallel — they are independent I/O-bound LLM chains
-        max_workers = min(num_rollouts, 4)
+        # Run rollouts in parallel — they are independent I/O-bound LLM chains.
+        # All rollouts fire concurrently; vLLM's continuous batching handles
+        # throughput internally.  No reason to cap below num_rollouts since
+        # each thread is just waiting on HTTP I/O (GIL released).
+        max_workers = num_rollouts
         rollouts: List[Optional[Rollout]] = [None] * num_rollouts
 
         def _run_rollout(idx_temp):

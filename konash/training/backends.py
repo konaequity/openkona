@@ -126,6 +126,228 @@ class SynthesisRuntimeBackend(ABC):
             model=model, model_revision=model_revision, force_fresh=True,
         )
 
+    def sleep(self) -> None:
+        """Offload runtime weights to CPU to free GPU VRAM.
+
+        Default implementation is a no-op.  Backends that support sleep mode
+        (vLLM with ``--enable-sleep-mode``) should override this.
+        """
+
+    def wake(self) -> None:
+        """Reload runtime weights from CPU to GPU after sleep.
+
+        Default implementation is a no-op.
+        """
+
+    def load_lora(
+        self, adapter_path: str, lora_name: str = "",
+    ) -> str | None:
+        """Hot-load a LoRA adapter into the running runtime.
+
+        Returns the adapter name to use in subsequent requests, or ``None``
+        if hot-loading is not supported.
+        """
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Local vLLM lifecycle (on-GPU usage)
+# ---------------------------------------------------------------------------
+
+
+class VLLMLifecycle:
+    """Manages a local vLLM server process with sleep/wake and LoRA support.
+
+    Used by the on-GPU training script to alternate between vLLM inference
+    and Unsloth training on a single GPU.
+
+    Lifecycle::
+
+        vllm = VLLMLifecycle(model="zai-org/GLM-4.5-Air-FP8")
+        vllm.start()                       # launch + wait for health
+        # ... synthesis + rollouts via vllm.api_url ...
+        vllm.sleep()                       # offload weights to CPU (~2s)
+        # ... Unsloth OAPL training ...
+        vllm.wake()                        # reload weights to GPU (~10s)
+        vllm.load_lora("iter1/adapter")    # hot-load trained LoRA
+        # ... next iteration with updated policy ...
+        vllm.stop()
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        port: int = 8000,
+        tensor_parallel: int = 1,
+        max_model_len: int = 65536,
+        max_lora_rank: int = 16,
+        extra_args: list[str] | None = None,
+        log_dir: str = ".",
+    ) -> None:
+        self._model = model
+        self._port = port
+        self._tensor_parallel = tensor_parallel
+        self._max_model_len = max_model_len
+        self._max_lora_rank = max_lora_rank
+        self._extra_args = extra_args or []
+        self._log_dir = log_dir
+        self._proc: subprocess.Popen | None = None
+        self._log_fh = None
+        self._lora_counter = 0
+
+    # -- Properties --------------------------------------------------------
+
+    @property
+    def base_url(self) -> str:
+        return f"http://localhost:{self._port}"
+
+    @property
+    def api_url(self) -> str:
+        return f"{self.base_url}/v1"
+
+    # -- Lifecycle ---------------------------------------------------------
+
+    def start(self, timeout: int = 600) -> None:
+        """Launch ``vllm serve`` with sleep mode + LoRA and wait for health."""
+        import shutil
+
+        vllm_bin = shutil.which("vllm") or "vllm"
+        hf_token = os.environ.get("HF_TOKEN", "")
+        env = {
+            **os.environ,
+            "HF_TOKEN": hf_token,
+            "VLLM_SERVER_DEV_MODE": "1",
+            "VLLM_ALLOW_RUNTIME_LORA_UPDATING": "1",
+        }
+
+        cmd = [
+            vllm_bin, "serve", self._model,
+            "--port", str(self._port),
+            "--host", "0.0.0.0",
+            "--tensor-parallel-size", str(self._tensor_parallel),
+            "--max-model-len", str(self._max_model_len),
+            "--enable-sleep-mode",
+            "--enable-lora",
+            "--max-lora-rank", str(self._max_lora_rank),
+            "--enforce-eager",
+            *self._extra_args,
+        ]
+
+        log_path = os.path.join(self._log_dir, "vllm.log")
+        self._log_fh = open(log_path, "w")
+        _log.info("Starting vLLM: %s", " ".join(cmd))
+
+        self._proc = subprocess.Popen(
+            cmd, stdout=self._log_fh, stderr=subprocess.STDOUT,
+            env=env,
+        )
+
+        # Poll /v1/models until healthy
+        self._wait_healthy(timeout)
+        _log.info("vLLM ready on port %d (pid %d)", self._port, self._proc.pid)
+
+    def stop(self) -> None:
+        """Terminate the vLLM process."""
+        if self._proc is not None:
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+                self._proc.wait(timeout=5)
+            _log.info("vLLM stopped (pid %d)", self._proc.pid)
+            self._proc = None
+        if self._log_fh is not None:
+            self._log_fh.close()
+            self._log_fh = None
+
+    def sleep(self) -> None:
+        """Offload vLLM weights to CPU pinned memory (~2s)."""
+        self._post("/sleep?level=1", timeout=30)
+        _log.info("vLLM sleeping — GPU VRAM freed")
+
+    def wake(self, timeout: int = 120) -> None:
+        """Reload vLLM weights from CPU to GPU and wait for health."""
+        self._post("/wake_up", timeout=timeout)
+        self._wait_healthy(timeout)
+        _log.info("vLLM awake — GPU VRAM reclaimed")
+
+    def load_lora(self, adapter_path: str) -> str | None:
+        """Hot-load a LoRA adapter.  Returns the adapter name or None."""
+        self._lora_counter += 1
+        lora_name = f"konash-iter-{self._lora_counter}"
+        body = json.dumps({
+            "lora_name": lora_name,
+            "lora_path": os.path.abspath(adapter_path),
+        }).encode()
+        try:
+            self._post(
+                "/v1/load_lora_adapter", timeout=60,
+                data=body,
+                headers={"Content-Type": "application/json"},
+            )
+            _log.info("Loaded LoRA adapter %s from %s", lora_name, adapter_path)
+            return lora_name
+        except Exception as exc:
+            _log.warning("LoRA hot-load failed: %s", exc)
+            return None
+
+    def served_model(self) -> str:
+        """Return the model name reported by ``/v1/models``."""
+        import urllib.request
+        req = urllib.request.Request(f"{self.api_url}/models")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        models = data.get("data", [])
+        return models[0]["id"] if models else self._model
+
+    def is_healthy(self) -> bool:
+        """Return True if vLLM is responding to health checks."""
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{self.base_url}/health")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    # -- Internals ---------------------------------------------------------
+
+    def _post(
+        self, path: str, *, timeout: int = 30,
+        data: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> bytes:
+        import urllib.request
+        url = f"{self.base_url}{path}"
+        req = urllib.request.Request(url, data=data or b"", method="POST")
+        for k, v in (headers or {}).items():
+            req.add_header(k, v)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+
+    def _wait_healthy(self, timeout: int) -> None:
+        """Poll ``/v1/models`` until vLLM responds or timeout."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                import urllib.request
+                req = urllib.request.Request(f"{self.api_url}/models")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read())
+                    if data.get("data"):
+                        return
+            except Exception:
+                pass
+            # Check process is still alive
+            if self._proc is not None and self._proc.poll() is not None:
+                raise RuntimeError(
+                    f"vLLM process exited with code {self._proc.returncode}"
+                )
+            time.sleep(10)
+        raise RuntimeError(f"vLLM did not become healthy within {timeout}s")
+
 
 # ---------------------------------------------------------------------------
 # Shadeform implementation
@@ -177,6 +399,7 @@ class ShadeformSynthesisBackend(SynthesisRuntimeBackend):
         gpu_type: str = "H100",
         vllm_port: int = _DEFAULT_VLLM_PORT,
         vllm_extra_args: list[str] | None = None,
+        sleep_mode: bool = False,
         verbose: bool = True,
     ) -> None:
         self._api_key = api_key or _resolve_shadeform_key()
@@ -187,6 +410,7 @@ class ShadeformSynthesisBackend(SynthesisRuntimeBackend):
         self._gpu_type = gpu_type
         self._vllm_port = vllm_port
         self._vllm_extra_args = vllm_extra_args or list(_DEFAULT_VLLM_ARGS)
+        self._sleep_mode = sleep_mode
         self._verbose = verbose
 
         # Mutable state — populated by prepare()
@@ -332,6 +556,48 @@ class ShadeformSynthesisBackend(SynthesisRuntimeBackend):
             model=model, model_revision=model_revision, force_fresh=True,
         )
 
+    def sleep(self) -> None:
+        """Sleep vLLM on the remote instance via SSH."""
+        result = self._ssh_run(
+            f"curl -s -X POST http://localhost:{self._vllm_port}/sleep?level=1",
+            timeout=30,
+        )
+        if result.returncode != 0:
+            _log.warning("vLLM sleep failed: %s", result.stderr)
+        else:
+            _log.info("vLLM sleeping on %s", self._ip)
+
+    def wake(self) -> None:
+        """Wake vLLM on the remote instance via SSH."""
+        self._ssh_run(
+            f"curl -s -X POST http://localhost:{self._vllm_port}/wake_up",
+            timeout=120,
+        )
+        for _ in range(30):
+            if self._check_vllm_health():
+                _log.info("vLLM awake on %s", self._ip)
+                return
+            time.sleep(2)
+        _log.warning("vLLM wake health check timed out on %s", self._ip)
+
+    def load_lora(
+        self, adapter_path: str, lora_name: str = "",
+    ) -> str | None:
+        """Hot-load a LoRA adapter on the remote instance via SSH."""
+        if not lora_name:
+            lora_name = f"konash-{int(time.time())}"
+        body = json.dumps({"lora_name": lora_name, "lora_path": adapter_path})
+        result = self._ssh_run(
+            f"curl -s -X POST -H 'Content-Type: application/json' "
+            f"-d '{body}' http://localhost:{self._vllm_port}/v1/load_lora_adapter",
+            timeout=60,
+        )
+        if result.returncode == 0:
+            _log.info("Loaded LoRA %s on %s", lora_name, self._ip)
+            return lora_name
+        _log.warning("LoRA hot-load failed on %s: %s", self._ip, result.stderr)
+        return None
+
     # -- Provisioning ------------------------------------------------------
 
     def _provision(self, model: str) -> None:
@@ -372,12 +638,15 @@ class ShadeformSynthesisBackend(SynthesisRuntimeBackend):
         self._print(f"  Installing vLLM on synthesis instance...")
 
         # Symlink HF cache to ephemeral disk (root disk is only ~97GB,
-        # model is ~65GB).  Then install vLLM.
+        # model is ~65GB).  Install uv if needed, then install vLLM.
         setup_cmds = (
             "mkdir -p /ephemeral/hf_cache ~/.cache && "
             "rm -rf ~/.cache/huggingface 2>/dev/null; "
             "ln -sf /ephemeral/hf_cache ~/.cache/huggingface && "
-            "pip install vllm --quiet 2>&1 | tail -3"
+            "command -v uv >/dev/null 2>&1 || "
+            "(curl -LsSf https://astral.sh/uv/install.sh | sh) && "
+            "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH && "
+            "uv pip install --system vllm 2>&1 | tail -3"
         )
         result = self._ssh_run(setup_cmds, timeout=600)
         if result.returncode != 0:
@@ -391,8 +660,19 @@ class ShadeformSynthesisBackend(SynthesisRuntimeBackend):
         self._print(f"  Starting vLLM ({model})...")
 
         args_str = " ".join(self._vllm_extra_args)
+        if self._sleep_mode:
+            args_str += (
+                " --enable-sleep-mode --enable-lora"
+                " --max-lora-rank 16 --enforce-eager"
+            )
+        env_exports = "export PATH=$PATH:$HOME/.local/bin"
+        if self._sleep_mode:
+            env_exports += (
+                " VLLM_SERVER_DEV_MODE=1"
+                " VLLM_ALLOW_RUNTIME_LORA_UPDATING=1"
+            )
         cmd = (
-            f"export PATH=$PATH:$HOME/.local/bin && "
+            f"{env_exports} && "
             f"nohup vllm serve {model} "
             f"{args_str} "
             f"--port {self._vllm_port} "

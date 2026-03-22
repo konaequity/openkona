@@ -87,6 +87,18 @@ def parse_args():
     p.add_argument("--max-seq-length", type=int, default=2048,
                     help="Max sequence length")
 
+    # Parallelism
+    p.add_argument("--rollout-workers", type=int, default=32,
+                    help="Max concurrent QA pairs for rollout generation (default: 32). "
+                         "High values work well with vLLM; lower for local models.")
+
+    # Sleep/wake mode
+    p.add_argument("--vllm-sleep-wake", action="store_true",
+                    help="Use vLLM sleep/wake mode for single-GPU iterative training. "
+                         "vLLM runs for inference, sleeps during OAPL training.")
+    p.add_argument("--tensor-parallel", type=int, default=1,
+                    help="Tensor parallel size for vLLM (default: 1)")
+
     # Output
     p.add_argument("--output", type=str, default="./checkpoints",
                     help="Output directory for checkpoints")
@@ -517,8 +529,39 @@ def train_from_rollouts(args):
     return all_stats
 
 
+def _build_vllm_generate_fn(api_url: str, model_name: str):
+    """Build an llm_fn that calls a vLLM OpenAI-compatible server."""
+    import re as _re
+    import urllib.request
+    import urllib.error
+
+    def generate_fn(messages, **kwargs):
+        max_tokens = kwargs.pop("max_new_tokens", kwargs.pop("max_tokens", 1024))
+        temperature = kwargs.pop("temperature", 0.7)
+        body = json.dumps({
+            "model": model_name, "messages": messages,
+            "max_tokens": max_tokens, "temperature": temperature,
+        }).encode()
+        req = urllib.request.Request(
+            f"{api_url}/chat/completions", data=body,
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            data = json.loads(resp.read())
+        content = data["choices"][0]["message"]["content"]
+        # Strip Qwen3 thinking tags
+        content = _re.sub(r"<think>.*?</think>\s*", "", content, flags=_re.DOTALL)
+        content = _re.sub(r"<think>.*", "", content, flags=_re.DOTALL).strip()
+        return {"role": "assistant", "content": content}
+
+    return generate_fn
+
+
 def train_full_pipeline(args):
     """Full iterative pipeline: synthesis → rollouts → OAPL → repeat."""
+    if args.vllm_sleep_wake:
+        return _train_sleep_wake_pipeline(args)
+
     from konash.training.unsloth_engine import UnslothEngine
     from konash.training.oapl import OAPLTrainer
     from konash.training.dataset import OfflineRolloutDataset
@@ -626,10 +669,13 @@ def train_full_pipeline(args):
             }, f, default=str)
 
         # Stage 2: Rollouts + filtering
-        print("  Generating rollouts...")
+        # Cap workers for local Unsloth model (can't batch like vLLM)
+        _rollout_workers = min(args.rollout_workers, 8)
+        print(f"  Generating rollouts ({_rollout_workers} workers)...")
         final_examples = pipeline.run_stage_two(
             examples=examples,
             num_rollouts=args.rollouts_per_example,
+            parallel_workers=_rollout_workers,
         )
         print(f"  {len(final_examples)} examples after filtering")
 
@@ -741,6 +787,286 @@ def train_full_pipeline(args):
     # Export (push to Hub, merge, GGUF)
     if args.push_to_hub or args.merge_and_export or args.export_gguf or args.deploy_together:
         export_model(engine, args)
+
+
+def _train_sleep_wake_pipeline(args):
+    """Full pipeline with vLLM sleep/wake for single-GPU iterative training.
+
+    vLLM serves inference (synthesis + rollouts), then sleeps to free GPU.
+    Unsloth loads for OAPL training, saves adapter, cleans up.
+    vLLM wakes and hot-loads the trained LoRA for the next iteration.
+    """
+    from konash.training.backends import VLLMLifecycle
+    from konash.training.unsloth_engine import UnslothEngine
+    from konash.training.oapl import OAPLTrainer
+    from konash.training.dataset import OfflineRolloutDataset
+    from konash.corpus import Corpus
+    from konash.synthesis.pipeline import SynthesisPipeline
+    from konash.synthesis.qa import QuestionAnswerSynthesizer
+    from konash.synthesis.rollouts import RolloutGenerator
+
+    # Disable weight sharing — vLLM and Unsloth alternate, not share
+    os.environ.pop("UNSLOTH_VLLM_STANDBY", None)
+
+    print("=" * 60)
+    print("  KONASH Sleep/Wake Pipeline (vLLM + Unsloth OAPL)")
+    print("=" * 60)
+    print(f"  Model:      {args.model}")
+    print(f"  Corpus:     {args.corpus}")
+    print(f"  Iterations: {args.iterations}")
+    print(f"  Synthesis:  {args.synthesis_calls} calls/iter")
+    print(f"  TP:         {args.tensor_parallel}")
+    print(f"  Output:     {args.output}")
+    print()
+
+    # Start vLLM with sleep mode + LoRA
+    vllm = VLLMLifecycle(
+        model=args.model,
+        tensor_parallel=args.tensor_parallel,
+        max_model_len=args.max_seq_length,
+        max_lora_rank=args.lora_r,
+        log_dir=args.output,
+    )
+
+    os.makedirs(args.output, exist_ok=True)
+    print("##KONASH:loading_model##", flush=True)
+    print("Starting vLLM with sleep mode...")
+    _model_t0 = time.time()
+    vllm.start()
+    served_model = vllm.served_model()
+    print(f"##KONASH:model_loaded:{time.time() - _model_t0:.1f}s##", flush=True)
+    print(f"  vLLM serving: {served_model}")
+
+    # Build generate_fn from vLLM API
+    generate_fn = _build_vllm_generate_fn(vllm.api_url, served_model)
+
+    # Ingest corpus
+    print("##KONASH:loading_data##", flush=True)
+    print("Ingesting corpus...")
+    corpus = Corpus(args.corpus, chunk_size=512)
+    corpus.ingest()
+    print(f"  Indexed {corpus.num_documents} chunks")
+
+    trainer = OAPLTrainer(beta_kl=args.beta_kl, beta_value=args.beta_value)
+    all_iteration_stats = []
+    prev_adapter_path = args.adapter  # None on first run
+
+    try:
+        for iteration in range(args.iterations):
+            print(f"\n{'='*60}")
+            print(f"  Iteration {iteration + 1}/{args.iterations}")
+            print(f"{'='*60}")
+
+            # ---- Stages 1+2: vLLM ACTIVE (synthesis + rollouts) ----
+
+            synthesizer = QuestionAnswerSynthesizer(
+                vector_search_tool=corpus.vector_search,
+                llm_fn=generate_fn,
+            )
+            rollout_gen = RolloutGenerator(
+                search_tool=corpus.vector_search,
+                llm_fn=generate_fn,
+                max_steps=args.rollout_max_steps,
+            )
+            pipeline = SynthesisPipeline(
+                synthesizer=synthesizer,
+                rollout_generator=rollout_gen,
+            )
+
+            # Stage 1: Synthesis
+            print("  Synthesizing QA pairs...")
+            raw_examples = []
+            for call_idx in range(args.synthesis_calls):
+                batch = synthesizer.synthesize(documents=None, num_examples=8)
+                raw_examples.extend(batch)
+                for ex in batch:
+                    q = ex.question.replace('\n', ' ').replace('#', '')
+                    a = ex.answer.replace('\n', ' ').replace('#', '')
+                    print(f"##KONASH:qa:{iteration + 1}:{q}\t{a}##", flush=True)
+                print(f"  Call {call_idx + 1}/{args.synthesis_calls}: "
+                      f"+{len(batch)} pairs ({len(raw_examples)} total)")
+            examples = pipeline.deduplicate(raw_examples)
+            if args.max_examples is not None:
+                examples = examples[:args.max_examples]
+            pipeline.synthetic_examples = examples
+            print(f"  Generated {len(examples)} QA pairs")
+
+            # Save synthesis checkpoints
+            iter_dir = os.path.join(args.output, f"iter{iteration + 1}")
+            os.makedirs(iter_dir, exist_ok=True)
+            with open(os.path.join(iter_dir, "stage1_synthesis.json"), "w") as f:
+                json.dump({
+                    "version": 1, "phase": "synthesis",
+                    "iteration": iteration + 1,
+                    "data": [{"question": e.question, "answer": e.answer}
+                             for e in raw_examples],
+                }, f, default=str)
+            with open(os.path.join(iter_dir, "stage1_deduped.json"), "w") as f:
+                json.dump({
+                    "version": 1, "phase": "dedup",
+                    "iteration": iteration + 1,
+                    "data": [{"question": e.question, "answer": e.answer}
+                             for e in examples],
+                }, f, default=str)
+
+            # Stage 2: Rollouts + filtering
+            # vLLM backend — use full parallelism, continuous batching handles it
+            print(f"  Generating rollouts ({args.rollout_workers} workers)...")
+            final_examples = pipeline.run_stage_two(
+                examples=examples,
+                num_rollouts=args.rollouts_per_example,
+                parallel_workers=args.rollout_workers,
+            )
+            print(f"  {len(final_examples)} examples after filtering")
+
+            if not final_examples or not pipeline.filtered_groups:
+                print("  No training data — skipping.")
+                continue
+
+            # Build dataset
+            rollout_dicts = []
+            for group in pipeline.filtered_groups:
+                for rollout in group.rollouts:
+                    rollout_dicts.append({
+                        "prompt": group.prompt,
+                        "rollout": rollout.steps,
+                        "reward": 1.0 if rollout.passed else 0.0,
+                    })
+
+            dataset = OfflineRolloutDataset.from_rollouts(rollout_dicts)
+            print(f"  Training on {len(dataset.prompts)} groups, "
+                  f"{len(dataset)} rollouts")
+
+            # ---- Stage 3: OAPL Training (vLLM sleeps) ----
+
+            print("##KONASH:vllm_sleep##", flush=True)
+            print("  Sleeping vLLM (freeing GPU for training)...")
+            vllm.sleep()
+
+            # Load Unsloth engine (without fast_inference — vLLM is separate)
+            print("  Loading Unsloth engine for OAPL...")
+            engine = UnslothEngine(
+                model_name=args.model,
+                max_seq_length=args.max_seq_length,
+                lora_r=args.lora_r,
+                lora_alpha=args.lora_alpha,
+                load_in_fp8=args.fp8 and not args.no_fp8,
+                fast_inference=False,
+            )
+
+            # Load previous adapter for continued training (iteration 2+)
+            if prev_adapter_path:
+                print(f"  Loading previous adapter: {prev_adapter_path}")
+                from peft import PeftModel
+                engine.model = PeftModel.from_pretrained(
+                    engine.model, prev_adapter_path, is_trainable=True,
+                )
+
+            engine.snapshot_reference()
+
+            # OAPL training
+            print("  Training with OAPL...")
+            _oapl_start = time.monotonic()
+            print("##KONASH:oapl_start##", flush=True)
+            stats = trainer.train_epoch_torch(
+                dataset=dataset,
+                model_engine=engine,
+                learning_rate=args.lr,
+                max_grad_norm=args.max_grad_norm,
+            )
+            _oapl_dur = time.monotonic() - _oapl_start
+            print(f"  Loss: {stats['mean_loss']:.4f}  "
+                  f"Groups: {stats['num_groups']}  "
+                  f"Rollouts: {stats['num_rollouts']}")
+            print(f"##KONASH:oapl_done:loss={stats['mean_loss']:.4f}##", flush=True)
+
+            # Log OAPL stats
+            try:
+                from konash.training.logger import TrainingLogger
+                _log = TrainingLogger(os.path.basename(args.output) or "default")
+                _log.oapl(
+                    iteration=iteration + 1,
+                    loss=stats["mean_loss"],
+                    entropy=stats.get("mean_entropy", 0),
+                    num_groups=stats["num_groups"],
+                    num_rollouts=stats["num_rollouts"],
+                    learning_rate=args.lr,
+                    duration_seconds=_oapl_dur,
+                )
+            except Exception:
+                pass
+
+            all_iteration_stats.append({
+                "iteration": iteration + 1,
+                "examples": len(final_examples),
+                **stats,
+            })
+
+            # Save adapter
+            adapter_path = os.path.join(iter_dir, "adapter")
+            engine.save_adapter(adapter_path)
+            prev_adapter_path = adapter_path
+
+            # Save rollouts
+            with open(os.path.join(iter_dir, "rollouts.json"), "w") as f:
+                json.dump(rollout_dicts, f, indent=2, default=str)
+
+            # Free GPU VRAM before waking vLLM
+            print("  Releasing Unsloth model...")
+            engine.cleanup()
+            del engine
+
+            # Wake vLLM and hot-load trained LoRA for next iteration
+            if iteration < args.iterations - 1:
+                print("##KONASH:vllm_wake##", flush=True)
+                print("  Waking vLLM...")
+                vllm.wake()
+
+                lora_name = vllm.load_lora(adapter_path)
+                if lora_name:
+                    generate_fn = _build_vllm_generate_fn(vllm.api_url, lora_name)
+                    print(f"  Next iteration using LoRA: {lora_name}")
+                else:
+                    print("  WARNING: LoRA hot-load failed, using base model")
+
+    finally:
+        vllm.stop()
+
+    # Value model training (KARL Section 5.2)
+    vm_stats = _train_value_model(args.output, args.iterations)
+    if vm_stats:
+        print("##KONASH:value_model_start##", flush=True)
+        try:
+            from konash.training.logger import TrainingLogger
+            _log = TrainingLogger(os.path.basename(args.output) or "default")
+            _log.value_model(
+                loss=vm_stats.get("final_loss", 0),
+                epochs=vm_stats.get("epochs", 0),
+                duration_seconds=0,
+            )
+        except Exception:
+            pass
+        print(
+            f"##KONASH:value_model_done:loss={vm_stats.get('final_loss', 0):.4f}##",
+            flush=True,
+        )
+
+    # Save final meta
+    meta_path = os.path.join(args.output, "training_meta.json")
+    with open(meta_path, "w") as f:
+        json.dump({
+            "model": args.model,
+            "iterations": len(all_iteration_stats),
+            "stats": all_iteration_stats,
+            "value_model": True,
+            "sleep_wake": True,
+        }, f, indent=2)
+
+    print(f"\n{'='*60}")
+    print(f"  Pipeline complete! {len(all_iteration_stats)} iterations")
+    print(f"  Checkpoints: {args.output}")
+    print(f"{'='*60}")
+    print("##KONASH:complete##", flush=True)
 
 
 def main():
