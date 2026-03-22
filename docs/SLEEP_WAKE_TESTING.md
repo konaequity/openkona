@@ -18,12 +18,31 @@ The sleep/wake pipeline (`--vllm-sleep-wake` flag) enables single-GPU iterative 
 
 ## Current Status
 
-All code is implemented and unit-tested (211 tests pass). The pipeline has been tested on Shadeform 2x H100 PCIe with GLM 4.5 Air FP8. The infrastructure plumbing works but **synthesis is too slow on PCIe H100s** — each LLM call takes 5+ minutes due to slow inter-GPU communication.
+All code is implemented and unit-tested (211 tests pass). The pipeline has been tested on Shadeform 2x H100 PCIe with GLM 4.5 Air FP8.
+
+### What Has Been Verified
+- vLLM starts and serves the model (TP=2, sleep mode, LoRA enabled, tool parser)
+- Corpus ingests 53,803 financebench chunks
+- `Corpus.search()` returns results with text populated from disk
+- vLLM responds to tool calls (tested manually with curl)
+- `[synth]` trace shows synthesis loop entering, calling LLM, parsing SEARCH actions
+- Synthesis step 0 sends SEARCH, gets 20 results back
+
+### What Has NOT Been Verified
+- **No corpus-grounded QA pair was ever successfully generated.** In ~2 hours of testing, the pipeline either produced generic trivia (before fixes) or timed out (after fixes). We never confirmed that the full path works: search → results with text → model reads text → proposes financebench-specific QA pairs.
+- **Sleep/wake cycle** — never reached stage 3 (OAPL training) because synthesis never completed
+- **LoRA hot-loading** — never tested on real hardware
+- **Rollout generation** — never reached this stage
+- **The corpus text resolution fix is unverified in production.** We confirmed `Corpus.search()` returns text in an isolated Python test, but never saw it work through the full synthesis loop producing a corpus-grounded QA pair.
+
+### Root Cause of Failure
+GLM 4.5 Air FP8 on **PCIe** H100s (no NVLink) is extremely slow for TP=2 inference — each LLM call takes 5+ minutes. The synthesis agentic loop needs 10+ LLM calls per batch, making a single synthesis call take 50+ minutes. The HTTP timeout (originally 300s, bumped to 600s) is often exceeded.
 
 ## What Needs To Be Done
 
-1. **Get synthesis working end-to-end on appropriate hardware**
+1. **Get a single corpus-grounded QA pair generated** — this is the first milestone. Use faster hardware (H100 SXM or H200) or a smaller model (Qwen2.5-7B-Instruct).
 2. **Verify the full loop**: synthesis → rollouts → vLLM sleep → OAPL training → wake → LoRA hot-load
+3. **Debug if search results are actually being read by the model** — the `[synth]` traces show SEARCH actions happening, but we never confirmed the model actually reads and uses the returned text to formulate questions
 
 ## Hardware Requirements
 
