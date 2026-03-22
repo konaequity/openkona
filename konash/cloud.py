@@ -134,11 +134,11 @@ def _ensure_ssh_key(api_key: str) -> str:
 # Instance lifecycle
 # ---------------------------------------------------------------------------
 
-def _find_cheapest_gpu(gpu_type: str = "H100", api_key: Optional[str] = None) -> dict:
+def _find_cheapest_gpu(gpu_type: str = "H100", api_key: Optional[str] = None, num_gpus: int = 1) -> dict:
     """Find the cheapest available GPU instance."""
     data = _shadeform_request(
         "GET",
-        f"/instances/types?gpu_type={gpu_type}&num_gpus=1&available=true&sort=price",
+        f"/instances/types?gpu_type={gpu_type}&num_gpus={num_gpus}&available=true&sort=price",
         api_key=api_key,
     )
     instances = data.get("instance_types", [])
@@ -702,7 +702,7 @@ def _ensure_shadeform(verbose: bool = True) -> str:
 # ---------------------------------------------------------------------------
 
 def _provision_gpu(
-    gpu: str, api_key: str, verbose: bool = True,
+    gpu: str, api_key: str, verbose: bool = True, num_gpus: int = 1,
 ) -> tuple:
     """Find, launch, and wait for a GPU instance.
 
@@ -715,8 +715,9 @@ def _provision_gpu(
 
     ssh_key = _ensure_ssh_key(api_key)
 
-    _print(f"  Finding cheapest {gpu}...")
-    best = _find_cheapest_gpu(gpu, api_key)
+    gpu_label = f"{num_gpus}x {gpu}" if num_gpus > 1 else gpu
+    _print(f"  Finding cheapest {gpu_label}...")
+    best = _find_cheapest_gpu(gpu, api_key, num_gpus=num_gpus)
     price = best["hourly_price"] / 100
     provider = best["cloud"]
     region = best.get("_region", "")
@@ -877,6 +878,7 @@ def train_remote(
     learning_rate: float = 1e-6,
     cloud: Optional[str] = None,
     gpu: str = "H100",
+    num_gpus: int = 1,
     use_spot: bool = False,
     push_to_hub: Optional[str] = None,
     keep_alive: bool = False,
@@ -886,10 +888,14 @@ def train_remote(
     """Run the full KARL training pipeline on a cloud GPU."""
     _print = print if verbose else lambda *a, **k: None
 
+    # GLM 4.5 Air needs 2 GPUs for tensor parallelism
+    if num_gpus < 2 and sleep_wake and "GLM-4.5" in base_model.upper():
+        num_gpus = 2
+
     api_key = _ensure_shadeform(verbose)
     from datetime import datetime, timezone as _tz
     _billing_started_at = datetime.now(_tz.utc).isoformat()
-    instance_id, ip, port, user, price, ssh_key = _provision_gpu(gpu, api_key, verbose)
+    instance_id, ip, port, user, price, ssh_key = _provision_gpu(gpu, api_key, verbose, num_gpus=num_gpus)
 
     # Log billing start so the training monitor clock starts from provision time
     try:
@@ -950,7 +956,7 @@ def train_remote(
         if max_examples is not None:
             training_cmd += f" --max-examples {max_examples}"
         if sleep_wake:
-            training_cmd += " --vllm-sleep-wake --tensor-parallel 2 --rollout-workers 32"
+            training_cmd += f" --vllm-sleep-wake --tensor-parallel {num_gpus} --rollout-workers 32"
         env_vars = {}
         local_ckpt = os.path.expanduser(checkpoint_dir)
         os.makedirs(local_ckpt, exist_ok=True)
