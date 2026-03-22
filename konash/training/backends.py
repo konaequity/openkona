@@ -648,7 +648,7 @@ class ShadeformSynthesisBackend(SynthesisRuntimeBackend):
             "command -v uv >/dev/null 2>&1 || "
             "(curl -LsSf https://astral.sh/uv/install.sh | sh) && "
             "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH && "
-            "sudo -E env PATH=$PATH uv pip install --system --link-mode=copy vllm 2>&1 | tail -3"
+            "sudo -E env PATH=$PATH uv pip install --system --link-mode=copy 'vllm>=0.8' 2>&1 | tail -3"
         )
         result = self._ssh_run(setup_cmds, timeout=600)
         if result.returncode != 0:

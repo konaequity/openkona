@@ -472,6 +472,11 @@ def _setup_remote(
     """Install KONASH dependencies on the remote machine."""
     setup_cmd = (
         f"cd {_REMOTE_DIR} && "
+        # Symlink HF cache to ephemeral disk (root disk is often <100GB,
+        # not enough for large model downloads)
+        "mkdir -p /ephemeral/hf_cache ~/.cache && "
+        "rm -rf ~/.cache/huggingface 2>/dev/null; "
+        "ln -sf /ephemeral/hf_cache ~/.cache/huggingface && "
         # Install uv if not present (10-50x faster than pip)
         "command -v uv >/dev/null 2>&1 || "
         "(curl -LsSf https://astral.sh/uv/install.sh | sh && "
@@ -479,7 +484,7 @@ def _setup_remote(
         "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH && "
         "sudo -E env PATH=$PATH uv pip install --system --link-mode=copy --upgrade "
         "numpy sentence-transformers datasets huggingface_hub torch "
-        "unsloth peft accelerate vllm 'transformers>=5.2.0' && "
+        "unsloth peft accelerate 'vllm>=0.8' 'transformers>=5.2.0' && "
         "python3 - <<'PY'\n"
         "from importlib.metadata import version\n"
         "from packaging.version import Version\n"
