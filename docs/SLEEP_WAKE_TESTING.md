@@ -48,13 +48,34 @@ GLM 4.5 Air FP8 on **PCIe** H100s (no NVLink) is extremely slow for TP=2 inferen
 
 | Model | Size (FP8) | Min Hardware | Recommended |
 |-------|-----------|-------------|-------------|
-| GLM 4.5 Air | ~53GB | 2x H100 SXM (NVLink) | 1x H200 (141GB) |
-| Qwen2.5-7B-Instruct | ~14GB | 1x any H100 | 1x H100 PCIe |
-| Qwen3.5-9B | ~18GB | 1x any H100 | 1x H100 PCIe (but it's a VL model) |
+| GLM 4.5 Air FP8 | ~53GB | 2x H100 SXM (NVLink) | 1x H200 (141GB) |
 
-**Critical**: GLM 4.5 Air on **PCIe** H100s is ~5x slower than SXM due to TP=2 cross-GPU communication. Use SXM or a single H200.
+**Critical**: GLM 4.5 Air on **PCIe** H100s is ~5x slower than SXM due to TP=2 cross-GPU communication. Each LLM call takes 5+ minutes on PCIe vs ~30-60s on SXM. Use SXM or a single H200.
 
-**For pipeline validation**, use `Qwen2.5-7B-Instruct` on 1x H100 — it's fast and text-only.
+## Lessons From the `codex-pre-rollback-40032c6` Branch
+
+An earlier branch had additional patterns worth incorporating:
+
+### 1. Context Length Retry
+When vLLM returns 400 for "maximum context length exceeded", the old branch retried with halved `max_tokens`:
+```python
+if e.code == 400 and "maximum context length" in err_body:
+    retry_tokens = max(max_tokens // 2, 128)
+    # retry with reduced tokens
+```
+Our current code just crashes on this error.
+
+### 2. VRAM-Aware GPU Selection
+The old branch had `_model_weight_gb()` and `_min_vram_for_model()` to auto-select GPU types based on model size, with fallback across GPU types (`A6000 → A100_80G → H100 → H200`). Our current code just takes whatever GPU type you specify.
+
+### 3. vLLM Concurrency Probing
+After vLLM starts, the old branch probed `/metrics` for `num_gpu_blocks` to calculate actual KV cache capacity and set optimal concurrency. This is useful for maximizing rollout throughput.
+
+### 4. Tool Call Parser Was `hermes` Not `glm45`
+The old branch used `--tool-call-parser hermes` for all models. Our current code auto-detects (`glm45` for GLM, `hermes` for Qwen). The `hermes` parser may work for GLM too — worth testing if `glm45` causes issues.
+
+### 5. Smoke Test Mode
+`--smoke-test` flag forced minimal settings for fast validation. This is exactly what we need for debugging.
 
 ## Pitfalls (Hard-Won Lessons)
 
@@ -115,33 +136,20 @@ nvidia-smi --query-gpu=memory.used --format=csv,noheader  # Verify 0 MiB
 
 ## Testing Checklist
 
-### Quick Validation (Qwen2.5-7B, 1x H100, ~$1.90/hr)
-```bash
-python3 -u -c "
-from konash.cloud import train_remote
-train_remote(
-    corpus='financebench',
-    base_model='Qwen/Qwen2.5-7B-Instruct',
-    iterations=1, synthesis_calls=2,
-    rollouts_per_example=2, rollout_max_steps=5,
-    gpu='H100', keep_alive=True, sleep_wake=True,
-)
-"
-```
-
-### Full Test (GLM 4.5 Air, needs SXM H100 or H200)
+### GLM 4.5 Air Test (needs SXM H100 or H200)
 ```bash
 python3 -u -c "
 from konash.cloud import train_remote
 train_remote(
     corpus='financebench',
     base_model='zai-org/GLM-4.5-Air-FP8',
-    iterations=2, synthesis_calls=5,
+    iterations=1, synthesis_calls=3,
     rollouts_per_example=4, rollout_max_steps=10,
     gpu='H100', keep_alive=True, sleep_wake=True,
 )
 "
 ```
+**First milestone**: See a `##KONASH:qa:` marker with a financebench-specific question (mentions a company, financial metric, or SEC filing).
 
 ### Manual SSH Debugging
 ```bash
