@@ -556,9 +556,9 @@ def _build_vllm_generate_fn(api_url: str, model_name: str):
             data = json.loads(resp.read())
         msg = data["choices"][0]["message"]
         content = msg.get("content") or ""
-        # Strip Qwen3 thinking tags
-        content = _re.sub(r"<think>.*?</think>\s*", "", content, flags=_re.DOTALL)
-        content = _re.sub(r"<think>.*", "", content, flags=_re.DOTALL).strip()
+        # Don't strip <think> tags here — callers like qa.py's
+        # _clean_thinking_tags handle it correctly. Stripping here
+        # with a greedy regex destroys SEARCH:/PROPOSE: actions.
         result = {"role": "assistant", "content": content}
         # Return tool_calls if present
         if msg.get("tool_calls"):
