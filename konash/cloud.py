@@ -477,7 +477,7 @@ def _setup_remote(
         "(curl -LsSf https://astral.sh/uv/install.sh | sh && "
         "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH) && "
         "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH && "
-        "uv pip install --system --upgrade "
+        "sudo -E env PATH=$PATH uv pip install --system --link-mode=copy --upgrade "
         "numpy sentence-transformers datasets huggingface_hub torch "
         "unsloth peft accelerate 'transformers>=5.2.0' && "
         "python3 - <<'PY'\n"

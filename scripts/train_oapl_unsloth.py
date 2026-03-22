@@ -819,11 +819,14 @@ def _train_sleep_wake_pipeline(args):
     print(f"  Output:     {args.output}")
     print()
 
-    # Start vLLM with sleep mode + LoRA
+    # Start vLLM with sleep mode + LoRA.
+    # vLLM context length should be much larger than training seq length —
+    # synthesis/rollouts need full context for search results.
+    vllm_context = max(args.max_seq_length, 32768)
     vllm = VLLMLifecycle(
         model=args.model,
         tensor_parallel=args.tensor_parallel,
-        max_model_len=args.max_seq_length,
+        max_model_len=vllm_context,
         max_lora_rank=args.lora_r,
         log_dir=args.output,
     )
