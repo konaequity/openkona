@@ -552,7 +552,7 @@ def _build_vllm_generate_fn(api_url: str, model_name: str):
             f"{api_url}/chat/completions", data=body,
             headers={"Content-Type": "application/json"}, method="POST",
         )
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=600) as resp:
             data = json.loads(resp.read())
         msg = data["choices"][0]["message"]
         content = msg.get("content") or ""
@@ -634,11 +634,11 @@ def train_full_pipeline(args):
         # Stage 1: Synthesis
         print("  Synthesizing QA pairs...")
         synthesizer = QuestionAnswerSynthesizer(
-            vector_search_tool=corpus.vector_search,
+            vector_search_tool=corpus,
             llm_fn=generate_fn,
         )
         rollout_gen = RolloutGenerator(
-            search_tool=corpus.vector_search,
+            search_tool=corpus,
             llm_fn=generate_fn,
             max_steps=args.rollout_max_steps,
         )
@@ -871,11 +871,11 @@ def _train_sleep_wake_pipeline(args):
             # ---- Stages 1+2: vLLM ACTIVE (synthesis + rollouts) ----
 
             synthesizer = QuestionAnswerSynthesizer(
-                vector_search_tool=corpus.vector_search,
+                vector_search_tool=corpus,
                 llm_fn=generate_fn,
             )
             rollout_gen = RolloutGenerator(
-                search_tool=corpus.vector_search,
+                search_tool=corpus,
                 llm_fn=generate_fn,
                 max_steps=args.rollout_max_steps,
             )

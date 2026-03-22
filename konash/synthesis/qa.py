@@ -308,8 +308,14 @@ class QuestionAnswerSynthesizer:
             if len(proposed) >= count:
                 break
 
+            print(f"    [synth] step {step_idx}: calling LLM...", flush=True)
             response = self.llm_fn(messages)
             content = _clean_thinking_tags(response)
+            print(
+                f"    [synth] step {step_idx}: got {len(content)} chars, "
+                f"preview: {content[:120]!r}",
+                flush=True,
+            )
             _qa_logger.debug(
                 "synthesis_step step=%d search_count=%d proposed=%d content=%r",
                 step_idx,
@@ -320,6 +326,7 @@ class QuestionAnswerSynthesizer:
 
             if not content:
                 empty_count += 1
+                print(f"    [synth] step {step_idx}: EMPTY response (#{empty_count})", flush=True)
                 _qa_logger.debug(
                     "synthesis_empty_response step=%d empty_count=%d",
                     step_idx,
@@ -333,6 +340,12 @@ class QuestionAnswerSynthesizer:
             empty_count = 0
 
             action = self._parse_action(content, search_count=search_count)
+            print(
+                f"    [synth] step {step_idx}: action={action['type']}"
+                f"{' query=' + repr(action['query'][:80]) if action.get('query') else ''}"
+                f"{' examples=' + str(len(action.get('examples', []) or [])) if action['type'] == 'propose' else ''}",
+                flush=True,
+            )
             _qa_logger.debug(
                 "synthesis_action step=%d action=%s query=%r extracted_examples=%d",
                 step_idx,
@@ -364,6 +377,11 @@ class QuestionAnswerSynthesizer:
                 results = self._search(query)
                 search_count += 1
                 formatted_results = self._format_results(results, query)
+                print(
+                    f"    [synth] step {step_idx}: SEARCH #{search_count} "
+                    f"query={query!r} -> {len(results)} results",
+                    flush=True,
+                )
                 _qa_logger.debug(
                     "synthesis_search step=%d query=%r results=%d",
                     step_idx,
