@@ -382,6 +382,19 @@ class QuestionAnswerSynthesizer:
                     f"query={query!r} -> {len(results)} results",
                     flush=True,
                 )
+                for result_idx, result in enumerate(results[:3], 1):
+                    if isinstance(result, dict):
+                        text = result.get("text", "") or ""
+                        source = result.get("source", "") or "?"
+                    else:
+                        text = str(result)
+                        source = "?"
+                    preview = " ".join(text.split())[:120]
+                    print(
+                        f"    [synth] step {step_idx}: result[{result_idx}] "
+                        f"text_len={len(text)} source={source!r} preview={preview!r}",
+                        flush=True,
+                    )
                 _qa_logger.debug(
                     "synthesis_search step=%d query=%r results=%d",
                     step_idx,

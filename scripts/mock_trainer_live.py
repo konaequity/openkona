@@ -15,7 +15,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project", default="trainer-live-demo", help="Project name to write under ~/.konash/projects/")
     parser.add_argument("--epochs", type=int, default=8, help="Number of mock OAPL epochs to emit")
     parser.add_argument("--delay", type=float, default=2.5, help="Seconds between epochs")
-    parser.add_argument("--model", default="unsloth/GLM-4.5-Air", help="Model name to display")
+    parser.add_argument("--model", default="zai-org/GLM-4.5-Air-FP8", help="Model name to display")
     parser.add_argument("--corpus", default="financebench", help="Corpus name to display")
     return parser.parse_args()
 

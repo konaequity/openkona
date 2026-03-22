@@ -48,8 +48,10 @@ def parse_args():
                     help="Path to corpus directory (for full pipeline)")
 
     # Model
-    p.add_argument("--model", type=str, default="unsloth/GLM-4.5-Air",
-                    help="Unsloth model ID")
+    p.add_argument("--model", type=str, default="zai-org/GLM-4.5-Air-FP8",
+                    help="Training model ID")
+    p.add_argument("--vllm-model", type=str, default=None,
+                    help="Raw model ID for vLLM serving (defaults to --model)")
     p.add_argument("--adapter", type=str, default=None,
                     help="Path to existing LoRA adapter (for resuming)")
     p.add_argument("--fp8", action="store_true", default=True,
@@ -531,39 +533,55 @@ def train_from_rollouts(args):
 
 def _build_vllm_generate_fn(api_url: str, model_name: str):
     """Build an llm_fn that calls a vLLM OpenAI-compatible server."""
-    import re as _re
     import urllib.request
     import urllib.error
 
     def generate_fn(messages, **kwargs):
         max_tokens = kwargs.pop("max_new_tokens", kwargs.pop("max_tokens", 1024))
         temperature = kwargs.pop("temperature", 0.7)
-        request_body = {
-            "model": model_name, "messages": messages,
-            "max_tokens": max_tokens, "temperature": temperature,
+        base_request_body = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": temperature,
         }
         # Pass through tools/tool_choice for agentic synthesis
         if "tools" in kwargs:
-            request_body["tools"] = kwargs.pop("tools")
+            base_request_body["tools"] = kwargs.pop("tools")
         if "tool_choice" in kwargs:
-            request_body["tool_choice"] = kwargs.pop("tool_choice")
-        body = json.dumps(request_body).encode()
-        req = urllib.request.Request(
-            f"{api_url}/chat/completions", data=body,
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=600) as resp:
-            data = json.loads(resp.read())
-        msg = data["choices"][0]["message"]
-        content = msg.get("content") or ""
-        # Don't strip <think> tags here — callers like qa.py's
-        # _clean_thinking_tags handle it correctly. Stripping here
-        # with a greedy regex destroys SEARCH:/PROPOSE: actions.
-        result = {"role": "assistant", "content": content}
-        # Return tool_calls if present
-        if msg.get("tool_calls"):
-            result["tool_calls"] = msg["tool_calls"]
-        return result
+            base_request_body["tool_choice"] = kwargs.pop("tool_choice")
+
+        current_max_tokens = max_tokens
+        for attempt_idx in range(2):
+            request_body = dict(base_request_body)
+            request_body["max_tokens"] = current_max_tokens
+            body = json.dumps(request_body).encode()
+            req = urllib.request.Request(
+                f"{api_url}/chat/completions", data=body,
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=600) as resp:
+                    data = json.loads(resp.read())
+                msg = data["choices"][0]["message"]
+                content = msg.get("content") or ""
+                # Don't strip <think> tags here — callers like qa.py's
+                # _clean_thinking_tags handle it correctly. Stripping here
+                # with a greedy regex destroys SEARCH:/PROPOSE: actions.
+                result = {"role": "assistant", "content": content}
+                # Return tool_calls if present
+                if msg.get("tool_calls"):
+                    result["tool_calls"] = msg["tool_calls"]
+                return result
+            except urllib.error.HTTPError as exc:
+                err_body = exc.read().decode("utf-8", errors="replace")
+                if (
+                    exc.code == 400
+                    and "maximum context length" in err_body.lower()
+                    and attempt_idx == 0
+                ):
+                    current_max_tokens = max(current_max_tokens // 2, 128)
+                    continue
+                raise
 
     return generate_fn
 
@@ -822,7 +840,9 @@ def _train_sleep_wake_pipeline(args):
     print("=" * 60)
     print("  KONASH Sleep/Wake Pipeline (vLLM + Unsloth OAPL)")
     print("=" * 60)
-    print(f"  Model:      {args.model}")
+    vllm_model = args.vllm_model or args.model
+    print(f"  Train:      {args.model}")
+    print(f"  vLLM:       {vllm_model}")
     print(f"  Corpus:     {args.corpus}")
     print(f"  Iterations: {args.iterations}")
     print(f"  Synthesis:  {args.synthesis_calls} calls/iter")
@@ -833,7 +853,7 @@ def _train_sleep_wake_pipeline(args):
     # Start vLLM with sleep mode + LoRA.
     # max_model_len=None lets vLLM auto-detect from the model's config.
     vllm = VLLMLifecycle(
-        model=args.model,
+        model=vllm_model,
         tensor_parallel=args.tensor_parallel,
         max_lora_rank=args.lora_r,
         log_dir=args.output,

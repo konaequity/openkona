@@ -384,6 +384,18 @@ _DEFAULT_VLLM_ARGS = [
     "--tool-call-parser", "glm45",
 ]
 
+
+def _tensor_parallel_from_args(args: list[str]) -> int:
+    """Extract the requested tensor-parallel size from vLLM args."""
+    tensor_parallel = 1
+    for idx, arg in enumerate(args):
+        if arg == "--tensor-parallel-size" and idx + 1 < len(args):
+            try:
+                tensor_parallel = max(1, int(args[idx + 1]))
+            except ValueError:
+                pass
+    return tensor_parallel
+
 # SSH options (mirrors cloud.py)
 _SSH_OPTS = [
     "-o", "StrictHostKeyChecking=no",
@@ -623,8 +635,12 @@ class ShadeformSynthesisBackend(SynthesisRuntimeBackend):
         """
         from konash.cloud import _provision_gpu
 
+        num_gpus = _tensor_parallel_from_args(self._vllm_extra_args)
         instance_id, ip, port, user, price, ssh_key = _provision_gpu(
-            self._gpu_type, self._api_key, verbose=self._verbose,
+            self._gpu_type,
+            self._api_key,
+            verbose=self._verbose,
+            num_gpus=num_gpus,
         )
         self._instance_id = instance_id
         self._ip = ip
@@ -652,12 +668,16 @@ class ShadeformSynthesisBackend(SynthesisRuntimeBackend):
 
         self._print(f"  Installing vLLM on synthesis instance...")
 
-        # Symlink HF cache to ephemeral disk (root disk is only ~97GB,
-        # model is ~65GB).  Install uv if needed, then install vLLM.
+        # Use /ephemeral when present; otherwise fall back to root-disk cache.
         setup_cmds = (
-            "mkdir -p /ephemeral/hf_cache ~/.cache && "
-            "rm -rf ~/.cache/huggingface 2>/dev/null; "
-            "ln -sf /ephemeral/hf_cache ~/.cache/huggingface && "
+            "if [ -d /ephemeral ]; then "
+            "  KONASH_HF_CACHE_ROOT=/ephemeral/hf_cache; "
+            "else "
+            "  KONASH_HF_CACHE_ROOT=$HOME/.cache/hf_cache; "
+            "fi && "
+            "mkdir -p \"$KONASH_HF_CACHE_ROOT\" \"$KONASH_HF_CACHE_ROOT/hub\" ~/.cache && "
+            "rm -rf ~/.cache/huggingface 2>/dev/null && "
+            "ln -sfn \"$KONASH_HF_CACHE_ROOT\" ~/.cache/huggingface && "
             "command -v uv >/dev/null 2>&1 || "
             "(curl -LsSf https://astral.sh/uv/install.sh | sh) && "
             "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH && "
@@ -710,7 +730,7 @@ class ShadeformSynthesisBackend(SynthesisRuntimeBackend):
         while time.monotonic() < deadline:
             try:
                 result = self._ssh_run(
-                    f"curl -s http://localhost:{self._vllm_port}/v1/models",
+                    f"curl -sS --max-time 10 http://localhost:{self._vllm_port}/v1/models",
                     timeout=15,
                 )
                 if result.returncode == 0 and result.stdout.strip():
@@ -721,8 +741,29 @@ class ShadeformSynthesisBackend(SynthesisRuntimeBackend):
                         self._print(f"  [green]✓[/]  vLLM serving {served}")
                         _log.info("vLLM healthy on %s, serving %s", self._ip, served)
                         return served
+                if result.returncode != 0:
+                    last_err = (result.stderr or result.stdout or "").strip()
             except (json.JSONDecodeError, KeyError, IndexError) as exc:
                 last_err = str(exc)
+
+            proc_result = self._ssh_run(
+                "pgrep -af 'vllm serve' || true",
+                timeout=10,
+            )
+            if not (proc_result.stdout or "").strip():
+                log_result = self._ssh_run(
+                    "tail -n 40 ~/vllm_synthesis.log 2>/dev/null || true",
+                    timeout=10,
+                )
+                log_tail = (log_result.stdout or log_result.stderr or "").strip()
+                if log_tail:
+                    raise RuntimeError(
+                        f"vLLM process exited before becoming healthy on {self._ip}.\n"
+                        f"Recent vLLM log:\n{log_tail}"
+                    )
+                raise RuntimeError(
+                    f"vLLM process exited before becoming healthy on {self._ip}."
+                )
             time.sleep(poll_interval)
 
         raise RuntimeError(

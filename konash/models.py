@@ -216,7 +216,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
     ),
     ModelCatalogEntry(
         key="glm-4.5-air-unsloth",
-        base_model="unsloth/GLM-4.5-Air",
+        base_model="zai-org/GLM-4.5-Air-FP8",
         name="GLM 4.5 Air (Unsloth)",
         description="GLM 4.5 Air via Unsloth (local OAPL training, FP8)",
         use_unsloth=True,

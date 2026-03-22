@@ -470,13 +470,20 @@ def _setup_remote(
     port: int = 22, user: str = "shadeform",
 ) -> None:
     """Install KONASH dependencies on the remote machine."""
+    hf_cache_setup = (
+        "if [ -d /ephemeral ]; then "
+        "  KONASH_HF_CACHE_ROOT=/ephemeral/hf_cache; "
+        "else "
+        "  KONASH_HF_CACHE_ROOT=$HOME/.cache/hf_cache; "
+        "fi && "
+        "mkdir -p \"$KONASH_HF_CACHE_ROOT\" \"$KONASH_HF_CACHE_ROOT/hub\" ~/.cache && "
+        "rm -rf ~/.cache/huggingface 2>/dev/null && "
+        "ln -sfn \"$KONASH_HF_CACHE_ROOT\" ~/.cache/huggingface"
+    )
     setup_cmd = (
         f"cd {_REMOTE_DIR} && "
-        # Symlink HF cache to ephemeral disk (root disk is often <100GB,
-        # not enough for large model downloads)
-        "mkdir -p /ephemeral/hf_cache ~/.cache && "
-        "rm -rf ~/.cache/huggingface 2>/dev/null; "
-        "ln -sf /ephemeral/hf_cache ~/.cache/huggingface && "
+        # Use /ephemeral when present, otherwise fall back to root-disk cache.
+        + hf_cache_setup + " && "
         # Install uv if not present (10-50x faster than pip)
         "command -v uv >/dev/null 2>&1 || "
         "(curl -LsSf https://astral.sh/uv/install.sh | sh && "
@@ -766,7 +773,7 @@ def _provision_gpu(
                 _print(f"  [yellow]Launch failed: {msg}[/]")
                 _print(f"  [dim]Retrying with a different provider...[/]")
                 # Try next cheapest GPU
-                best = _find_cheapest_gpu(gpu, api_key)
+                best = _find_cheapest_gpu(gpu, api_key, num_gpus=num_gpus)
                 provider = best["cloud"]
                 region = best.get("_region", "")
                 continue
@@ -961,7 +968,10 @@ def train_remote(
         if max_examples is not None:
             training_cmd += f" --max-examples {max_examples}"
         if sleep_wake:
-            training_cmd += f" --vllm-sleep-wake --tensor-parallel {num_gpus} --rollout-workers 32"
+            training_cmd += (
+                f" --vllm-sleep-wake --tensor-parallel {num_gpus}"
+                f" --rollout-workers 32 --vllm-model {base_model}"
+            )
         env_vars = {}
         local_ckpt = os.path.expanduser(checkpoint_dir)
         os.makedirs(local_ckpt, exist_ok=True)

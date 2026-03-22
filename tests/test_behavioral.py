@@ -1104,3 +1104,32 @@ class TestCompressionBeforeStepHook:
             history=[{"role": "user", "content": "Hi"}],
         )
         assert result is None
+
+
+class TestQuestionAnswerSynthesizerDebugLogging:
+    def test_search_debug_logs_text_lengths(self, capsys):
+        from konash.synthesis.qa import QuestionAnswerSynthesizer
+
+        class StubSearch:
+            def search(self, query, top_k=20):
+                return [
+                    {"text": "", "source": "empty.txt"},
+                    {"text": "Revenue grew 12 percent year over year.", "source": "filled.txt"},
+                ]
+
+        responses = iter([
+            {"role": "assistant", "content": "SEARCH: revenue growth"},
+            {"role": "assistant", "content": "PROPOSE:\nQ: What grew fast enough to trigger logging output?\nA: Revenue grew 12 percent year over year."},
+        ])
+
+        synth = QuestionAnswerSynthesizer(
+            vector_search_tool=StubSearch(),
+            llm_fn=lambda messages, **kwargs: next(responses),
+            max_steps=1,
+        )
+
+        synth.synthesize(num_examples=1)
+        out = capsys.readouterr().out
+        assert "SEARCH #1" in out
+        assert "result[1] text_len=0" in out
+        assert "result[2] text_len=39" in out
