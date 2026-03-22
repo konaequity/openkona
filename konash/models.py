@@ -96,6 +96,8 @@ class ModelCatalogEntry:
 
 
 _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
+    # Together AI models — arena uses live fetch from /v1/models instead.
+    # These remain for CLI usage (cli_visible) and preset resolution.
     ModelCatalogEntry(
         key="glm-5",
         base_model="zai-org/GLM-5",
@@ -104,7 +106,6 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         hint="Frontier  ·  latest generation  ·  strongest",
         api_base=TOGETHER_API_BASE,
         api_key_env="TOGETHER_API_KEY",
-        arena_visible=True,
     ),
     ModelCatalogEntry(
         key="qwen3.5-397b",
@@ -114,7 +115,6 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         hint="MoE  ·  largest open MoE  ·  frontier-scale",
         api_base=TOGETHER_API_BASE,
         api_key_env="TOGETHER_API_KEY",
-        arena_visible=True,
     ),
     ModelCatalogEntry(
         key="minimax-m2.5",
@@ -124,7 +124,6 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         hint="Frontier MoE  ·  strong general reasoning  ·  Together AI",
         api_base=TOGETHER_API_BASE,
         api_key_env="TOGETHER_API_KEY",
-        arena_visible=True,
         cli_visible=True,
     ),
     ModelCatalogEntry(
@@ -135,7 +134,6 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         hint="MoE  ·  reasoning-focused  ·  Together AI",
         api_base=TOGETHER_API_BASE,
         api_key_env="TOGETHER_API_KEY",
-        arena_visible=True,
     ),
     ModelCatalogEntry(
         key="glm-4.7",
@@ -145,7 +143,6 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         hint="Frontier  ·  prior generation  ·  Together AI",
         api_base=TOGETHER_API_BASE,
         api_key_env="TOGETHER_API_KEY",
-        arena_visible=True,
     ),
     ModelCatalogEntry(
         key="qwen3.5-9b",
@@ -155,7 +152,6 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         hint="Dense 9B  ·  fast and cheap  ·  Together AI",
         api_base=TOGETHER_API_BASE,
         api_key_env="TOGETHER_API_KEY",
-        arena_visible=True,
     ),
     ModelCatalogEntry(
         key="deepseek-r1",
@@ -165,7 +161,6 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         hint="Reasoning model  ·  671B MoE  ·  chain-of-thought",
         api_base=TOGETHER_API_BASE,
         api_key_env="TOGETHER_API_KEY",
-        arena_visible=True,
         cli_visible=True,
     ),
     ModelCatalogEntry(
@@ -176,7 +171,6 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         hint="MoE  ·  3B active params  ·  very cheap",
         api_base=TOGETHER_API_BASE,
         api_key_env="TOGETHER_API_KEY",
-        arena_visible=True,
         cli_visible=True,
     ),
     ModelCatalogEntry(
@@ -187,7 +181,6 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         hint="Dense 70B  ·  strong reasoning  ·  moderate cost",
         api_base=TOGETHER_API_BASE,
         api_key_env="TOGETHER_API_KEY",
-        arena_visible=True,
         cli_visible=True,
     ),
     ModelCatalogEntry(
@@ -198,7 +191,6 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         hint="MoE  ·  176B total / 39B active  ·  balanced",
         api_base=TOGETHER_API_BASE,
         api_key_env="TOGETHER_API_KEY",
-        arena_visible=True,
         cli_visible=True,
     ),
     ModelCatalogEntry(
@@ -209,7 +201,6 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         hint="Dense 72B  ·  multilingual  ·  moderate cost",
         api_base=TOGETHER_API_BASE,
         api_key_env="TOGETHER_API_KEY",
-        arena_visible=True,
         cli_visible=True,
     ),
     ModelCatalogEntry(
@@ -256,3 +247,88 @@ def get_cli_models() -> list[CliModelOption]:
 
 def get_arena_preset_order() -> list[str]:
     return [model.key for model in _MODEL_CATALOG if model.arena_visible]
+
+
+def fetch_together_models(api_key: str = "") -> list[ModelCatalogEntry]:
+    """Fetch live chat models from Together AI's ``/v1/models`` endpoint.
+
+    Returns ``ModelCatalogEntry`` objects for every chat model not already
+    in the static catalog.  Falls back to an empty list on network errors.
+    """
+    import json
+    import logging
+    import urllib.request
+    import urllib.error
+
+    _log = logging.getLogger(__name__)
+
+    if not api_key:
+        import os
+        api_key = os.environ.get("TOGETHER_API_KEY", "")
+    if not api_key:
+        try:
+            import os
+            with open(os.path.expanduser("~/.konash/config.json")) as f:
+                api_key = json.load(f).get("together_api_key", "")
+        except Exception:
+            pass
+    if not api_key:
+        return []
+
+    try:
+        req = urllib.request.Request(f"{TOGETHER_API_BASE}/models")
+        req.add_header("Authorization", f"Bearer {api_key}")
+        req.add_header("User-Agent", "konash/0.2")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:
+        _log.debug("Failed to fetch Together AI models: %s", exc)
+        return []
+
+    raw = data if isinstance(data, list) else data.get("data", [])
+    chat_models = [m for m in raw if m.get("type") == "chat"]
+
+    # Sort by total price (input + output) descending — most expensive first
+    def _total_price(m):
+        p = m.get("pricing") or {}
+        return (p.get("input", 0) or 0) + (p.get("output", 0) or 0)
+
+    seen_ids: set[str] = set()
+    entries = []
+    for m in sorted(chat_models, key=_total_price, reverse=True):
+        model_id = m.get("id", "")
+        if not model_id or model_id in seen_ids:
+            continue
+        seen_ids.add(model_id)
+        # Skip vision and coder models — not useful for text-only search agents
+        id_lower = model_id.lower()
+        if any(tag in id_lower for tag in ("-vl-", "-vl", "vision", "coder", "instruct")):
+            continue
+        # Derive a short display name from the model ID
+        name = model_id.split("/")[-1] if "/" in model_id else model_id
+        key = model_id.lower().replace("/", "-").replace(".", "-")
+        # Extract pricing
+        p = m.get("pricing") or {}
+        pricing = None
+        if p.get("input") or p.get("output"):
+            pricing = ModelPricing(
+                input_per_m=float(p.get("input", 0)),
+                output_per_m=float(p.get("output", 0)),
+            )
+        price_hint = ""
+        if pricing:
+            price_hint = f"  ·  ${pricing.input_per_m:.2f}/${pricing.output_per_m:.2f} per M tok"
+        entries.append(ModelCatalogEntry(
+            key=key,
+            base_model=model_id,
+            name=name,
+            description=name,
+            hint=f"Together AI{price_hint}",
+            api_base=TOGETHER_API_BASE,
+            api_key_env="TOGETHER_API_KEY",
+            pricing=pricing,
+            arena_visible=True,
+        ))
+
+    _log.info("Fetched %d live Together AI chat models (%d new)", len(chat_models), len(entries))
+    return entries

@@ -41,9 +41,11 @@ from konash.eval.harness import (
     TOGETHER_API_BASE,
     ZHIPU_API_BASE,
 )
-from konash.models import ModelPreset, get_arena_preset_order
+from konash.models import ModelPreset, get_arena_preset_order, fetch_together_models
 
 _ARENA_PRESET_ORDER = get_arena_preset_order()
+_TOGETHER_MODELS_CACHE: list | None = None
+_TOGETHER_MODELS_FETCHED_AT: float = 0
 
 # ---------------------------------------------------------------------------
 # Flask setup
@@ -796,10 +798,21 @@ def index():
 
 @app.route("/arena/api/presets")
 def api_presets():
-    """Return available model presets as an ordered list."""
+    """Return available model presets as an ordered list.
+
+    Static catalog models appear first, then live Together AI models
+    (fetched once, cached for 5 minutes).
+    """
+    global _TOGETHER_MODELS_CACHE, _TOGETHER_MODELS_FETCHED_AT
+
     # Build ordered list: arena extras first (in defined order), then any from konash
     seen = set()
     presets = []
+
+    def _pricing_str(cfg):
+        if cfg.pricing:
+            return f"${cfg.pricing.input_per_m:.2f}/${cfg.pricing.output_per_m:.2f}"
+        return ""
 
     # Arena models first, in the shared order defined by the catalog
     for name in _ARENA_PRESET_ORDER:
@@ -811,19 +824,53 @@ def api_presets():
             "description": cfg.description,
             "base_model": cfg.base_model,
             "has_api": True,
+            "pricing": _pricing_str(cfg),
         })
         seen.add(name)
+        seen.add(cfg.base_model)
 
-    # Then any konash presets not already listed
+    # Then any non-Together konash presets not already listed (e.g. Zhipu)
     for name, cfg in MODEL_PRESETS.items():
         if name in seen or not cfg.api_base:
+            continue
+        # Skip Together AI models — the live fetch covers them with pricing
+        if cfg.api_base and "together" in cfg.api_base:
             continue
         presets.append({
             "name": name,
             "description": cfg.description,
             "base_model": cfg.base_model,
             "has_api": True,
+            "pricing": _pricing_str(cfg),
         })
+        seen.add(name)
+        seen.add(cfg.base_model)
+
+    # Append live Together AI models (cached 5 min)
+    import time as _time
+    if _TOGETHER_MODELS_CACHE is None or _time.time() - _TOGETHER_MODELS_FETCHED_AT > 300:
+        _TOGETHER_MODELS_CACHE = fetch_together_models()
+        _TOGETHER_MODELS_FETCHED_AT = _time.time()
+
+    for entry in _TOGETHER_MODELS_CACHE:
+        if entry.key in seen or entry.base_model in seen:
+            continue
+        # Register into MODEL_PRESETS so _ensure_preset can resolve it
+        if entry.key not in MODEL_PRESETS:
+            MODEL_PRESETS[entry.key] = entry.to_preset()
+        pricing = ""
+        if entry.pricing:
+            pricing = f"${entry.pricing.input_per_m:.2f}/${entry.pricing.output_per_m:.2f}"
+        presets.append({
+            "name": entry.key,
+            "description": entry.description,
+            "base_model": entry.base_model,
+            "has_api": True,
+            "live": True,
+            "pricing": pricing,
+        })
+        seen.add(entry.key)
+        seen.add(entry.base_model)
 
     return jsonify(presets)
 

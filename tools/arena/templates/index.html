@@ -1751,14 +1751,18 @@ body {
       presets.forEach(p => { state.presets[p.name] = p; });
 
       presets.forEach(p => {
+        const label = p.pricing
+          ? `${p.description || p.name}  (${p.pricing})`
+          : (p.description || p.name);
+
         const optA = document.createElement('option');
         optA.value = p.name;
-        optA.textContent = p.description || p.name;
+        optA.textContent = label;
         selectModelA.appendChild(optA);
 
         const optB = document.createElement('option');
         optB.value = p.name;
-        optB.textContent = p.description || p.name;
+        optB.textContent = label;
         selectModelB.appendChild(optB);
       });
 
