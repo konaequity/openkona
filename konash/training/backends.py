@@ -180,7 +180,7 @@ class VLLMLifecycle:
         model: str,
         port: int = 8000,
         tensor_parallel: int = 1,
-        max_model_len: int = 65536,
+        max_model_len: int | None = None,
         max_lora_rank: int = 16,
         extra_args: list[str] | None = None,
         log_dir: str = ".",
@@ -226,13 +226,15 @@ class VLLMLifecycle:
             "--port", str(self._port),
             "--host", "0.0.0.0",
             "--tensor-parallel-size", str(self._tensor_parallel),
-            "--max-model-len", str(self._max_model_len),
             "--enable-sleep-mode",
             "--enable-lora",
             "--max-lora-rank", str(self._max_lora_rank),
             "--enforce-eager",
-            *self._extra_args,
         ]
+        # Let vLLM auto-detect from model config when not specified
+        if self._max_model_len is not None:
+            cmd.extend(["--max-model-len", str(self._max_model_len)])
+        cmd.extend(self._extra_args)
 
         log_path = os.path.join(self._log_dir, "vllm.log")
         self._log_fh = open(log_path, "w")
