@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 from scripts.train_oapl_unsloth import (
+    _infer_karl_task_name,
+    _load_eval_question_texts,
     _plan_synthesis_call_targets,
+    _resolve_rollouts_per_example,
     _should_sleep_vllm_for_training,
     _target_synthesis_examples,
     _trim_messages_for_context,
@@ -82,6 +85,35 @@ def test_plan_synthesis_call_targets_spreads_work_across_workers():
 
 def test_plan_synthesis_call_targets_without_cap_uses_all_calls():
     assert _plan_synthesis_call_targets(synthesis_calls=3, max_examples=None) == [8, 8, 8]
+
+
+def test_infer_karl_task_name_from_corpus_path():
+    assert _infer_karl_task_name("/tmp/browsecomp-plus/documents") == "BrowseCompPlus"
+    assert _infer_karl_task_name("/tmp/trec-biogen/documents") == "TRECBiogen"
+    assert _infer_karl_task_name("/tmp/financebench/documents") is None
+
+
+def test_load_eval_question_texts_reads_parent_of_documents(tmp_path):
+    corpus_root = tmp_path / "browsecomp-plus"
+    docs_dir = corpus_root / "documents"
+    docs_dir.mkdir(parents=True)
+    (corpus_root / "eval_questions.json").write_text(
+        '[{"question": "Q1"}, {"question": "Q2"}, {"question": "Q1"}]',
+        encoding="utf-8",
+    )
+
+    assert _load_eval_question_texts(str(docs_dir)) == ["Q1", "Q2"]
+
+
+def test_resolve_rollouts_per_example_for_browsecomp():
+    assert _resolve_rollouts_per_example(
+        task_name="BrowseCompPlus",
+        requested_rollouts=3,
+    ) == 8
+    assert _resolve_rollouts_per_example(
+        task_name="TRECBiogen",
+        requested_rollouts=6,
+    ) == 6
 
 
 def test_should_sleep_vllm_for_intermediate_iteration():

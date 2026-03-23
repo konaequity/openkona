@@ -39,6 +39,60 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 os.environ.setdefault("UNSLOTH_VLLM_STANDBY", "1")
 
 
+def _infer_karl_task_name(corpus_path: str | None) -> str | None:
+    """Infer the KARL task name from a local corpus path."""
+    if not corpus_path:
+        return None
+    corpus_lower = os.path.abspath(corpus_path).lower()
+    if "browsecomp" in corpus_lower:
+        return "BrowseCompPlus"
+    if "trec" in corpus_lower or "biogen" in corpus_lower:
+        return "TRECBiogen"
+    return None
+
+
+def _load_eval_question_texts(corpus_path: str | None) -> list[str]:
+    """Load evaluation question texts from a downloaded benchmark corpus."""
+    if not corpus_path:
+        return []
+
+    corpus_root = os.path.abspath(corpus_path)
+    candidates = [corpus_root, os.path.dirname(corpus_root)]
+    if os.path.basename(corpus_root) == "documents":
+        candidates = [os.path.dirname(corpus_root), corpus_root]
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        eval_path = os.path.join(candidate, "eval_questions.json")
+        if not os.path.exists(eval_path):
+            continue
+        try:
+            with open(eval_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        questions: list[str] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            question = item.get("question")
+            if isinstance(question, str) and question.strip():
+                normalized = question.strip()
+                if normalized not in seen:
+                    seen.add(normalized)
+                    questions.append(normalized)
+        if questions:
+            return questions
+    return []
+
+
+def _resolve_rollouts_per_example(*, task_name: str | None, requested_rollouts: int) -> int:
+    """Return the rollout count to use for a corpus-specific training run."""
+    if task_name == "BrowseCompPlus":
+        return 8
+    return requested_rollouts
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="OAPL training with Unsloth")
 
@@ -329,6 +383,45 @@ def _print_stage_two_summary(pipeline) -> None:
         f"heuristic_kept={quality.get('heuristic_kept', 0)}, "
         f"heuristic_dropped={quality.get('heuristic_dropped', 0)})"
     )
+
+
+def _build_training_pipeline(*, corpus, llm_fn, rollout_max_steps: int, corpus_path: str | None):
+    """Build a synthesis pipeline with task-specific KARL wiring when available."""
+    from konash.synthesis.config import SynthesisConfigRegistry
+    from konash.synthesis.dedup import BrowseCompDedupPolicy, TRECBiogenDedupPolicy
+    from konash.synthesis.pipeline import SynthesisPipeline
+    from konash.synthesis.qa import QuestionAnswerSynthesizer
+    from konash.synthesis.rollouts import RolloutGenerator
+
+    task_name = _infer_karl_task_name(corpus_path)
+    config = SynthesisConfigRegistry.configs.get(task_name) if task_name else None
+    evaluation_questions = _load_eval_question_texts(corpus_path)
+
+    synthesizer = QuestionAnswerSynthesizer(
+        vector_search_tool=corpus,
+        llm_fn=llm_fn,
+    )
+    rollout_gen = RolloutGenerator(
+        search_tool=corpus,
+        llm_fn=llm_fn,
+        max_steps=rollout_max_steps,
+    )
+
+    dedup_agent = None
+    if task_name == "BrowseCompPlus":
+        dedup_agent = BrowseCompDedupPolicy().create_agent(llm_fn=llm_fn)
+    elif task_name == "TRECBiogen":
+        dedup_agent = TRECBiogenDedupPolicy().create_agent(llm_fn=llm_fn)
+
+    pipeline = SynthesisPipeline(
+        config=config,
+        synthesizer=synthesizer,
+        rollout_generator=rollout_gen,
+        deduplication_agent=dedup_agent,
+        evaluation_questions=evaluation_questions,
+        judge_fn=llm_fn if task_name in {"BrowseCompPlus", "TRECBiogen"} else None,
+    )
+    return task_name, evaluation_questions, synthesizer, pipeline
 
 
 def export_model(engine, args):
@@ -824,10 +917,6 @@ def train_full_pipeline(args):
     from konash.training.oapl import OAPLTrainer
     from konash.training.dataset import OfflineRolloutDataset
     from konash.corpus import Corpus
-    from konash.synthesis.pipeline import SynthesisPipeline
-    from konash.synthesis.qa import QuestionAnswerSynthesizer
-    from konash.synthesis.rollouts import RolloutGenerator
-
     print("=" * 60)
     print("  KONASH Full Pipeline (Unsloth + OAPL)")
     print("=" * 60)
@@ -880,19 +969,16 @@ def train_full_pipeline(args):
 
         # Stage 1: Synthesis
         print("  Synthesizing QA pairs...")
-        synthesizer = QuestionAnswerSynthesizer(
-            vector_search_tool=corpus,
+        task_name, evaluation_questions, synthesizer, pipeline = _build_training_pipeline(
+            corpus=corpus,
             llm_fn=generate_fn,
+            rollout_max_steps=args.rollout_max_steps,
+            corpus_path=args.corpus,
         )
-        rollout_gen = RolloutGenerator(
-            search_tool=corpus,
-            llm_fn=generate_fn,
-            max_steps=args.rollout_max_steps,
-        )
-        pipeline = SynthesisPipeline(
-            synthesizer=synthesizer,
-            rollout_generator=rollout_gen,
-        )
+        if task_name:
+            print(f"  KARL task wiring: {task_name}")
+            if evaluation_questions:
+                print(f"  Eval-set dedup questions: {len(evaluation_questions)}")
 
         raw_examples = _run_parallel_synthesis_calls(
             synthesizer=synthesizer,
@@ -929,9 +1015,18 @@ def train_full_pipeline(args):
         # Cap workers for local Unsloth model (can't batch like vLLM)
         _rollout_workers = min(args.rollout_workers, 8)
         print(f"  Generating rollouts ({_rollout_workers} workers)...")
+        effective_rollouts = _resolve_rollouts_per_example(
+            task_name=task_name,
+            requested_rollouts=args.rollouts_per_example,
+        )
+        if effective_rollouts != args.rollouts_per_example:
+            print(
+                f"  Overriding rollouts per example to {effective_rollouts} "
+                f"for {task_name}."
+            )
         final_examples = pipeline.run_stage_two(
             examples=examples,
-            num_rollouts=args.rollouts_per_example,
+            num_rollouts=effective_rollouts,
             parallel_workers=_rollout_workers,
             checkpoint_dir=args.output,
             checkpoint_iteration=iteration + 1,
@@ -1062,10 +1157,6 @@ def _train_sleep_wake_pipeline(args):
     from konash.training.oapl import OAPLTrainer
     from konash.training.dataset import OfflineRolloutDataset
     from konash.corpus import Corpus
-    from konash.synthesis.pipeline import SynthesisPipeline
-    from konash.synthesis.qa import QuestionAnswerSynthesizer
-    from konash.synthesis.rollouts import RolloutGenerator
-
     # Disable weight sharing — vLLM and Unsloth alternate, not share
     os.environ.pop("UNSLOTH_VLLM_STANDBY", None)
 
@@ -1138,19 +1229,16 @@ def _train_sleep_wake_pipeline(args):
 
             # ---- Stages 1+2: vLLM ACTIVE (synthesis + rollouts) ----
 
-            synthesizer = QuestionAnswerSynthesizer(
-                vector_search_tool=corpus,
+            task_name, evaluation_questions, synthesizer, pipeline = _build_training_pipeline(
+                corpus=corpus,
                 llm_fn=generate_fn,
+                rollout_max_steps=args.rollout_max_steps,
+                corpus_path=args.corpus,
             )
-            rollout_gen = RolloutGenerator(
-                search_tool=corpus,
-                llm_fn=generate_fn,
-                max_steps=args.rollout_max_steps,
-            )
-            pipeline = SynthesisPipeline(
-                synthesizer=synthesizer,
-                rollout_generator=rollout_gen,
-            )
+            if task_name:
+                print(f"  KARL task wiring: {task_name}")
+                if evaluation_questions:
+                    print(f"  Eval-set dedup questions: {len(evaluation_questions)}")
 
             # Stage 1: Synthesis
             raw_examples = _run_parallel_synthesis_calls(
@@ -1189,9 +1277,18 @@ def _train_sleep_wake_pipeline(args):
             # Stage 2: Rollouts + filtering
             # vLLM backend — use full parallelism, continuous batching handles it
             print(f"  Generating rollouts ({args.rollout_workers} workers)...")
+            effective_rollouts = _resolve_rollouts_per_example(
+                task_name=task_name,
+                requested_rollouts=args.rollouts_per_example,
+            )
+            if effective_rollouts != args.rollouts_per_example:
+                print(
+                    f"  Overriding rollouts per example to {effective_rollouts} "
+                    f"for {task_name}."
+                )
             final_examples = pipeline.run_stage_two(
                 examples=examples,
-                num_rollouts=args.rollouts_per_example,
+                num_rollouts=effective_rollouts,
                 parallel_workers=args.rollout_workers,
                 checkpoint_dir=args.output,
                 checkpoint_iteration=iteration + 1,
