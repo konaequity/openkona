@@ -34,6 +34,7 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any
 
 from konash.training.project_state import configure_training_project
 from konash.training.resume import (
@@ -93,11 +94,98 @@ def _load_eval_question_texts(corpus_path: str | None) -> list[str]:
     return []
 
 
+def _load_eval_seed_examples(corpus_path: str | None, limit: int) -> list[Any]:
+    """Load answered evaluation examples for synthesis few-shot seeding."""
+    if not corpus_path or limit <= 0:
+        return []
+
+    from konash.synthesis.qa import SyntheticExample
+
+    corpus_root = os.path.abspath(corpus_path)
+    candidates = [corpus_root, os.path.dirname(corpus_root)]
+    if os.path.basename(corpus_root) == "documents":
+        candidates = [os.path.dirname(corpus_root), corpus_root]
+
+    for candidate in candidates:
+        eval_path = os.path.join(candidate, "eval_questions.json")
+        if not os.path.exists(eval_path):
+            continue
+        try:
+            with open(eval_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+
+        items = [item for item in data if isinstance(item, dict)]
+        if not items:
+            continue
+
+        indices = _spread_indices(len(items), limit)
+        examples = []
+        for idx in indices:
+            item = items[idx]
+            question = str(item.get("question", "") or "").strip()
+            answer = str(item.get("answer", "") or "").strip()
+            if question and answer:
+                examples.append(SyntheticExample(question=question, answer=answer))
+        if examples:
+            return examples
+    return []
+
+
 def _resolve_rollouts_per_example(*, task_name: str | None, requested_rollouts: int) -> int:
     """Return the rollout count to use for a corpus-specific training run."""
     if task_name == "BrowseCompPlus":
         return 8
     return requested_rollouts
+
+
+def _spread_indices(total: int, count: int) -> list[int]:
+    """Return roughly-even indices across a collection."""
+    if total <= 0 or count <= 0:
+        return []
+    count = min(total, count)
+    if count == total:
+        return list(range(total))
+    if count == 1:
+        return [0]
+    step = (total - 1) / (count - 1)
+    indices: list[int] = []
+    seen: set[int] = set()
+    for i in range(count):
+        idx = int(round(i * step))
+        while idx in seen and idx + 1 < total:
+            idx += 1
+        seen.add(idx)
+        indices.append(idx)
+    return indices
+
+
+def _sample_seed_documents(corpus: Any, limit: int, *, max_chars: int = 2000) -> list[str]:
+    """Sample starting documents from an ingested corpus for Stage 1 seeding."""
+    if limit <= 0:
+        return []
+
+    docs = getattr(corpus, "documents", None) or []
+    if not docs:
+        return []
+
+    seed_docs: list[str] = []
+    for idx in _spread_indices(len(docs), limit):
+        doc = docs[idx]
+        text = str(doc.get("text", "") or "")
+        if not text:
+            source = str(doc.get("source", "") or "")
+            if source and os.path.exists(source):
+                try:
+                    with open(source, "r", encoding="utf-8", errors="replace") as f:
+                        text = f.read()
+                except Exception:
+                    text = ""
+        text = " ".join(text.split())
+        if text:
+            seed_docs.append(text[:max_chars])
+    return seed_docs
 
 
 def _apply_project_identity(args):
@@ -378,6 +466,7 @@ def _run_parallel_synthesis_calls(
     synthesis_workers: int,
     max_examples: int | None,
     iteration: int,
+    documents: list[str] | None = None,
 ) -> list:
     """Run independent synthesis transcripts concurrently and stream results."""
     call_targets = _plan_synthesis_call_targets(
@@ -395,7 +484,7 @@ def _run_parallel_synthesis_calls(
 
     def _run_call(call_idx: int, target_examples: int):
         batch = synthesizer.synthesize(
-            documents=None,
+            documents=documents,
             num_examples=target_examples,
             seed=(iteration + 1) * 10_000 + call_idx,
         )
@@ -464,6 +553,16 @@ def _print_stage_two_summary(pipeline) -> None:
     )
 
 
+class _VectorSearchOnlyTool:
+    """Small adapter that forces Corpus lookups through vector mode."""
+
+    def __init__(self, corpus):
+        self._corpus = corpus
+
+    def search(self, query, top_k=10):
+        return self._corpus.search(query, top_k=top_k, mode="vector")
+
+
 def _build_training_pipeline(*, corpus, llm_fn, rollout_max_steps: int, corpus_path: str | None):
     """Build a synthesis pipeline with task-specific KARL wiring when available."""
     from konash.synthesis.config import SynthesisConfigRegistry
@@ -475,6 +574,18 @@ def _build_training_pipeline(*, corpus, llm_fn, rollout_max_steps: int, corpus_p
     task_name = _infer_karl_task_name(corpus_path)
     config = SynthesisConfigRegistry.configs.get(task_name) if task_name else None
     evaluation_questions = _load_eval_question_texts(corpus_path)
+    seed_examples = _load_eval_seed_examples(
+        corpus_path,
+        config.seed_examples if config is not None and getattr(config, "seed_examples", None) else 0,
+    )
+    seed_documents = _sample_seed_documents(
+        corpus,
+        config.seed_documents if config is not None and getattr(config, "seed_documents", None) else 0,
+    )
+
+    search_tool = corpus
+    if task_name in {"BrowseCompPlus", "TRECBiogen"}:
+        search_tool = _VectorSearchOnlyTool(corpus)
 
     qa_max_steps = (
         config.qa_max_steps
@@ -492,7 +603,9 @@ def _build_training_pipeline(*, corpus, llm_fn, rollout_max_steps: int, corpus_p
         else 8
     )
     synthesizer = QuestionAnswerSynthesizer(
-        vector_search_tool=corpus,
+        few_shot_examples=seed_examples,
+        task_name=task_name,
+        vector_search_tool=search_tool,
         llm_fn=llm_fn,
         generation_count=qa_generation_count,
         max_steps=qa_max_steps,
@@ -514,7 +627,7 @@ def _build_training_pipeline(*, corpus, llm_fn, rollout_max_steps: int, corpus_p
         else None
     )
     rollout_gen = RolloutGenerator(
-        search_tool=corpus,
+        search_tool=search_tool,
         llm_fn=llm_fn,
         max_steps=solver_max_steps,
         top_k=solver_top_k,
@@ -535,7 +648,7 @@ def _build_training_pipeline(*, corpus, llm_fn, rollout_max_steps: int, corpus_p
         evaluation_questions=evaluation_questions,
         judge_fn=llm_fn if task_name in {"BrowseCompPlus", "TRECBiogen"} else None,
     )
-    return task_name, evaluation_questions, synthesizer, pipeline
+    return task_name, evaluation_questions, seed_examples, seed_documents, synthesizer, pipeline
 
 
 def export_model(engine, args):
@@ -1102,7 +1215,7 @@ def train_full_pipeline(args):
 
         # Stage 1: Synthesis
         print("  Synthesizing QA pairs...")
-        task_name, evaluation_questions, synthesizer, pipeline = _build_training_pipeline(
+        task_name, evaluation_questions, seed_examples, seed_documents, synthesizer, pipeline = _build_training_pipeline(
             corpus=corpus,
             llm_fn=generate_fn,
             rollout_max_steps=args.rollout_max_steps,
@@ -1112,6 +1225,11 @@ def train_full_pipeline(args):
             print(f"  KARL task wiring: {task_name}")
             if evaluation_questions:
                 print(f"  Eval-set dedup questions: {len(evaluation_questions)}")
+            if seed_examples or seed_documents:
+                print(
+                    f"  Stage 1 seeds: {len(seed_examples)} examples, "
+                    f"{len(seed_documents)} documents"
+                )
 
         if iteration == 0 and args.resume_stage1_from:
             resumed_path, resumed_phase, resumed_examples = load_stage1_resume_examples(
@@ -1139,6 +1257,7 @@ def train_full_pipeline(args):
                 synthesis_workers=args.synthesis_workers,
                 max_examples=args.max_examples,
                 iteration=iteration,
+                documents=seed_documents,
             )
             print(f"  Stage 1 raw synthesis: {len(raw_examples)} QA pairs")
             examples = pipeline.deduplicate(raw_examples)
@@ -1393,7 +1512,7 @@ def _train_sleep_wake_pipeline(args):
 
             # ---- Stages 1+2: vLLM ACTIVE (synthesis + rollouts) ----
 
-            task_name, evaluation_questions, synthesizer, pipeline = _build_training_pipeline(
+            task_name, evaluation_questions, seed_examples, seed_documents, synthesizer, pipeline = _build_training_pipeline(
                 corpus=corpus,
                 llm_fn=generate_fn,
                 rollout_max_steps=args.rollout_max_steps,
@@ -1403,6 +1522,11 @@ def _train_sleep_wake_pipeline(args):
                 print(f"  KARL task wiring: {task_name}")
                 if evaluation_questions:
                     print(f"  Eval-set dedup questions: {len(evaluation_questions)}")
+                if seed_examples or seed_documents:
+                    print(
+                        f"  Stage 1 seeds: {len(seed_examples)} examples, "
+                        f"{len(seed_documents)} documents"
+                    )
 
             # Stage 1: Synthesis
             if iteration == 0 and args.resume_stage1_from:
@@ -1431,6 +1555,7 @@ def _train_sleep_wake_pipeline(args):
                     synthesis_workers=args.synthesis_workers,
                     max_examples=args.max_examples,
                     iteration=iteration,
+                    documents=seed_documents,
                 )
                 print(f"  Stage 1 raw synthesis: {len(raw_examples)} QA pairs")
                 examples = pipeline.deduplicate(raw_examples)

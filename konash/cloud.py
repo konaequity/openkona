@@ -45,6 +45,21 @@ def _get_shadeform_key() -> Optional[str]:
     return None
 
 
+def _get_config_secret(env_vars: list[str], config_key: str) -> Optional[str]:
+    """Resolve a secret from environment first, then ~/.konash/config.json."""
+    for var in env_vars:
+        value = os.environ.get(var)
+        if value:
+            return value
+    if os.path.exists(_CONFIG_FILE):
+        try:
+            with open(_CONFIG_FILE) as f:
+                return json.load(f).get(config_key)
+        except Exception:
+            return None
+    return None
+
+
 def _shadeform_request(
     method: str, path: str, body: Optional[dict] = None, api_key: Optional[str] = None,
 ) -> dict:
@@ -634,13 +649,30 @@ def _run_remote_training(
     )
 
     # Start training in background
-    result = subprocess.run(
-        _ssh_cmd(ip, remote_cmd, key_path, port, user),
-        capture_output=True, timeout=120,
-    )
-    if result.returncode != 0:
-        details = (result.stderr or result.stdout).decode() if isinstance((result.stderr or result.stdout), bytes) else (result.stderr or result.stdout)
-        raise RuntimeError(f"Remote training launch failed: {(details or '').strip()}")
+    try:
+        result = subprocess.run(
+            _ssh_cmd(ip, remote_cmd, key_path, port, user),
+            capture_output=True, timeout=30,
+        )
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout).decode() if isinstance((result.stderr or result.stdout), bytes) else (result.stderr or result.stdout)
+            raise RuntimeError(f"Remote training launch failed: {(details or '').strip()}")
+    except subprocess.TimeoutExpired:
+        # Some SSH servers keep the launcher shell attached longer than expected
+        # even though the nohup'ed training job has already started. If the log
+        # file exists, continue to the tail/marker parsing phase.
+        verify_cmd = (
+            f"test -f {_REMOTE_LOG} && echo READY || "
+            f"ps -ef | grep -F {shlex.quote(training_cmd)} | grep -v grep >/dev/null && echo READY || "
+            "echo NOT_READY"
+        )
+        verify = subprocess.run(
+            _ssh_cmd(ip, verify_cmd, key_path, port, user),
+            capture_output=True, text=True, timeout=15,
+        )
+        if "READY" not in (verify.stdout or ""):
+            details = (verify.stderr or verify.stdout).strip()
+            raise RuntimeError(f"Remote training launch timed out before startup was confirmed: {details}")
 
     # Wait a moment for the process to start
     time.sleep(2)
@@ -946,6 +978,9 @@ def train_oapl_from_rollouts(
             f"--output {_REMOTE_DIR}/checkpoints"
         )
         env_vars = {}
+        hf_token = _get_config_secret(["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"], "hf_token")
+        if hf_token:
+            env_vars["HF_TOKEN"] = hf_token
         _run_remote_training(ip, training_cmd, env_vars, ssh_key, port, user, verbose)
 
         # Download checkpoints
@@ -1110,6 +1145,9 @@ def train_remote(
             else:
                 training_cmd += " --rollout-workers 32"
         env_vars = {}
+        hf_token = _get_config_secret(["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"], "hf_token")
+        if hf_token:
+            env_vars["HF_TOKEN"] = hf_token
         local_ckpt = os.path.expanduser(checkpoint_dir)
         os.makedirs(local_ckpt, exist_ok=True)
         _run_remote_training(

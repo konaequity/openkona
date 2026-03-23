@@ -116,6 +116,7 @@ class QuestionAnswerSynthesizer:
         self,
         few_shot_examples: Optional[List[SyntheticExample]] = None,
         task_prompt: Optional[str] = None,
+        task_name: Optional[str] = None,
         vector_search_tool: Any = None,
         generation_count: int = 8,
         max_steps: int = 50,
@@ -124,6 +125,7 @@ class QuestionAnswerSynthesizer:
     ):
         self.few_shot_examples = few_shot_examples or []
         self.task_prompt = task_prompt
+        self.task_name = task_name
         self.vector_search_tool = vector_search_tool
         self.generation_count = generation_count
         self.max_steps = max_steps
@@ -290,8 +292,8 @@ class QuestionAnswerSynthesizer:
         - ``SEARCH: <query>`` — search the corpus via vector search
         - ``PROPOSE:`` — propose one or more QA pairs
 
-        The agent searches at least a few times before proposing, building
-        up a rich picture of the corpus before generating questions.
+        The agent can interleave search and proposal steps as needed while
+        exploring the corpus.
         """
         messages = [
             {"role": "system", "content": self._system_prompt()},
@@ -300,8 +302,6 @@ class QuestionAnswerSynthesizer:
 
         proposed: List[SyntheticExample] = []
         search_count = 0
-        # Scale min searches with target count — at least 1 search per question
-        min_searches = max(3, count)
         empty_count = 0
 
         for step_idx in range(self.max_steps):
@@ -353,24 +353,6 @@ class QuestionAnswerSynthesizer:
                 action.get("query"),
                 len(action.get("examples", []) or []),
             )
-
-            # Enforce minimum searches before allowing proposals
-            if (action["type"] == "propose"
-                    and search_count < min_searches
-                    and self.vector_search_tool is not None):
-                _qa_logger.debug(
-                    "synthesis_propose_deferred step=%d search_count=%d min_searches=%d",
-                    step_idx,
-                    search_count,
-                    min_searches,
-                )
-                messages.append({"role": "assistant", "content": content})
-                messages.append({"role": "user", "content": (
-                    f"You have only searched {search_count} time(s). "
-                    f"You MUST search at least {min_searches} times across "
-                    f"different topics before proposing. SEARCH for a new topic:"
-                )})
-                continue
 
             if action["type"] == "search" and self.vector_search_tool is not None:
                 query = action["query"]
@@ -497,6 +479,9 @@ class QuestionAnswerSynthesizer:
     # Prompts
     # ------------------------------------------------------------------
 
+    def _is_browsecomp(self) -> bool:
+        return self.task_name == "BrowseCompPlus"
+
     def _system_prompt(self) -> str:
         """Build the system prompt for the agentic synthesizer."""
         few_shot = ""
@@ -513,6 +498,47 @@ class QuestionAnswerSynthesizer:
         if self.task_prompt:
             custom = f"\n\nAdditional instructions: {self.task_prompt}"
 
+        if self._is_browsecomp():
+            return (
+                "You are a BrowseComp-Plus question-answer synthesis agent. "
+                "Your job is to create retrieval-hard, verification-easy tasks "
+                "whose answers are short entities, titles, places, dates, or "
+                "other exact strings found in the corpus.\n\n"
+                "You have ONE tool: vector search over the corpus.\n\n"
+                "CRITICAL RULES:\n"
+                "- Output exactly ONE action per turn: either SEARCH or PROPOSE\n"
+                "- Every question MUST be answerable from the search results you received\n"
+                "- Do NOT use your own knowledge — ONLY facts from search results\n"
+                "- Do NOT combine SEARCH and PROPOSE in the same response\n"
+                "- Do NOT issue broad topical searches like 'general topics', "
+                "'subjects covered', or 'world history'\n"
+                "- Start from concrete entities, works, organizations, roles, "
+                "locations, dates, and relationships found in the seed documents "
+                "or examples\n\n"
+                "WHAT MAKES A GOOD BROWSECOMP QUESTION:\n"
+                "- The answer is a short exact string, usually an entity or title\n"
+                "- The question contains multiple constraints that narrow down to "
+                "one answer\n"
+                "- The constraints describe the answer indirectly rather than "
+                "naming it\n"
+                "- A solver must search, cross-reference, and verify the answer "
+                "from the corpus\n"
+                "- The answer can be verified from specific passages\n\n"
+                "WHAT TO SEARCH FOR FIRST:\n"
+                "- Named entities or titles that appear in the starting documents\n"
+                "- Attributes of those entities: dates, occupations, awards, "
+                "locations, creators, roles, relationships, or works\n"
+                "- Neighboring entities connected to those starting entities\n\n"
+                "FORMAT — one per turn:\n"
+                "To search:  SEARCH: <specific entity or relationship query>\n"
+                "To propose: PROPOSE:\n"
+                "Q: <constraint-driven question grounded in search results>\n"
+                "A: <short exact answer using only facts from search results>\n"
+                "(repeat Q:/A: for multiple questions)"
+                + custom
+                + few_shot
+            )
+
         return (
             "You are a question-answer synthesis agent. Your job is to explore "
             "a document corpus and create challenging questions whose answers "
@@ -520,18 +546,14 @@ class QuestionAnswerSynthesizer:
             "You have ONE tool: vector search over the corpus.\n\n"
             "CRITICAL RULES:\n"
             "- Output exactly ONE action per turn: either SEARCH or PROPOSE\n"
-            "- You MUST search at least 3 times before proposing\n"
             "- Every question MUST be answerable from the search results you received\n"
             "- Do NOT use your own knowledge — ONLY facts from search results\n"
             "- Do NOT combine SEARCH and PROPOSE in the same response\n\n"
             "WORKFLOW:\n"
-            "Turn 1: SEARCH: <query about a topic>\n"
+            "Turn 1+: SEARCH: <query about a topic>\n"
             "  (you will receive search results)\n"
-            "Turn 2: SEARCH: <different topic>\n"
-            "  (you will receive more results)\n"
-            "Turn 3: SEARCH: <yet another topic>\n"
-            "  (you will receive more results)\n"
-            "Turn 4+: PROPOSE questions that combine facts from your searches\n\n"
+            "Once you have enough evidence, PROPOSE questions that combine facts "
+            "from your searches\n\n"
             "WHAT MAKES A GOOD QUESTION (retrieval-hard, verification-easy):\n"
             "- Answer is a specific fact: a name, date, number, place, or short list of these\n"
             "- Multiple constraints in the question NARROW to a single answer — each constraint\n"
@@ -570,6 +592,9 @@ class QuestionAnswerSynthesizer:
         documents: Optional[List[str]] = None,
     ) -> str:
         """Build the initial user message."""
+        if self._is_browsecomp():
+            return self._browsecomp_task_message(count, documents)
+
         doc_context = ""
         if documents:
             doc_lines = []
@@ -592,7 +617,44 @@ class QuestionAnswerSynthesizer:
             f"Do not generate multiple questions about the same person, event, "
             f"or entity.\n\n"
             f"Start by searching the corpus to discover what topics it covers. "
-            f"Search for at least {count} DIFFERENT topics before proposing."
+            f"Search as needed to gather enough evidence before proposing."
+            + doc_context
+        )
+
+    def _browsecomp_task_message(
+        self,
+        count: int,
+        documents: Optional[List[str]] = None,
+    ) -> str:
+        """Build a BrowseComp-specific initial user message."""
+        doc_context = ""
+        if documents:
+            doc_lines = []
+            for i, doc in enumerate(documents[:10], 1):
+                doc_lines.append(f"[Starting Document {i}] {doc[:500]}")
+            doc_context = (
+                "\n\nHere are starting documents sampled from DIFFERENT parts of the corpus:\n"
+                + "\n\n".join(doc_lines)
+                + "\n\nUse these documents to anchor your first searches. Start from "
+                "specific entities, works, organizations, dates, roles, or "
+                "relationships that appear in them. Do NOT start with broad topical "
+                "queries."
+            )
+
+        return (
+            f"Generate {count} BrowseComp-style synthetic tasks from the corpus. "
+            f"Each task should be a challenging, multi-constraint question whose "
+            f"answer is a short exact entity, title, place, date, or other exact string.\n\n"
+            f"CRITICAL: use the seed examples only as format/style references. "
+            f"Do NOT reuse the same answers, entities, or facts from those examples.\n\n"
+            f"Search for hidden facts tied to concrete entities and relationships. "
+            f"Good first searches mention a named person, organization, work, "
+            f"location, date, award, occupation, or relationship found in the "
+            f"starting documents.\n\n"
+            f"Explore entity threads seeded by the starting documents or examples. "
+            f"Once you have enough grounded evidence for a high-quality task, "
+            f"propose it. Avoid generic queries like 'topics in the corpus' or "
+            f"'subjects covered'."
             + doc_context
         )
 

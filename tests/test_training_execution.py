@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import json
 import pytest
 from argparse import Namespace
+from types import SimpleNamespace
 
 from konash.cli import _should_use_sleep_wake
+from konash.synthesis.qa import QuestionAnswerSynthesizer, SyntheticExample
 from scripts.train_oapl_unsloth import (
+    _VectorSearchOnlyTool,
     _infer_karl_task_name,
+    _load_eval_seed_examples,
     _load_eval_question_texts,
     _plan_synthesis_call_targets,
     _resolve_rollouts_per_example,
+    _sample_seed_documents,
     _should_sleep_vllm_for_training,
+    _spread_indices,
     _target_synthesis_examples,
     _trim_messages_for_context,
 )
@@ -117,6 +124,65 @@ def test_load_eval_question_texts_reads_parent_of_documents(tmp_path):
     )
 
     assert _load_eval_question_texts(str(docs_dir)) == ["Q1", "Q2"]
+
+
+def test_load_eval_seed_examples_reads_answered_examples(tmp_path):
+    corpus_root = tmp_path / "browsecomp-plus"
+    docs_dir = corpus_root / "documents"
+    docs_dir.mkdir(parents=True)
+    (corpus_root / "eval_questions.json").write_text(
+        json.dumps(
+            [
+                {"question": "Q1", "answer": "A1"},
+                {"question": "Q2", "answer": "A2"},
+                {"question": "Q3", "answer": "A3"},
+                {"question": "Q4", "answer": "A4"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    examples = _load_eval_seed_examples(str(docs_dir), 2)
+
+    assert len(examples) == 2
+    assert all(isinstance(ex, SyntheticExample) for ex in examples)
+    assert [(ex.question, ex.answer) for ex in examples] == [("Q1", "A1"), ("Q4", "A4")]
+
+
+def test_spread_indices_evenly_across_collection():
+    assert _spread_indices(10, 4) == [0, 3, 6, 9]
+    assert _spread_indices(3, 5) == [0, 1, 2]
+
+
+def test_sample_seed_documents_reads_spread_sources(tmp_path):
+    files = []
+    documents = []
+    for idx, text in enumerate(["alpha text", "beta text", "gamma text", "delta text"]):
+        path = tmp_path / f"doc{idx}.txt"
+        path.write_text(text, encoding="utf-8")
+        files.append(path)
+        documents.append({"text": "", "source": str(path)})
+
+    corpus = SimpleNamespace(documents=documents)
+
+    sampled = _sample_seed_documents(corpus, 2)
+
+    assert sampled == ["alpha text", "delta text"]
+
+
+def test_vector_search_only_tool_forces_vector_mode():
+    calls = []
+
+    class DummyCorpus:
+        def search(self, query, top_k=10, mode="hybrid"):
+            calls.append((query, top_k, mode))
+            return [{"text": "ok"}]
+
+    tool = _VectorSearchOnlyTool(DummyCorpus())
+    results = tool.search("Percy Jackson", top_k=5)
+
+    assert results == [{"text": "ok"}]
+    assert calls == [("Percy Jackson", 5, "vector")]
 
 
 def test_resolve_rollouts_per_example_for_browsecomp():
@@ -248,3 +314,35 @@ def test_trim_messages_for_context_preserves_recent_history():
     assert trimmed[-1]["content"] == "latest question"
     assert sum(len(m.get("content", "")) for m in trimmed) <= 4096
     assert any("[truncated]" in m.get("content", "") for m in trimmed)
+
+
+def test_browsecomp_prompt_avoids_generic_topic_discovery():
+    synth = QuestionAnswerSynthesizer(
+        few_shot_examples=[SyntheticExample(question="Seed Q", answer="Seed A")],
+        task_name="BrowseCompPlus",
+        task_prompt=None,
+        llm_fn=lambda messages, **kwargs: {"role": "assistant", "content": "SEARCH: x"},
+    )
+
+    system_prompt = synth._system_prompt()
+    task_message = synth._task_message(2, ["Doc about a specific person and award."])
+
+    assert "BrowseComp-Plus question-answer synthesis agent" in system_prompt
+    assert "Do NOT issue broad topical searches" in system_prompt
+    assert "discover what topics it covers" not in task_message
+    assert "Do NOT start with broad topical queries" in task_message
+
+
+def test_synthesis_prompts_do_not_enforce_minimum_search_count():
+    generic = QuestionAnswerSynthesizer(
+        llm_fn=lambda messages, **kwargs: {"role": "assistant", "content": "PROPOSE:\nQ: x\nA: y"},
+    )
+    browsecomp = QuestionAnswerSynthesizer(
+        task_name="BrowseCompPlus",
+        llm_fn=lambda messages, **kwargs: {"role": "assistant", "content": "PROPOSE:\nQ: x\nA: y"},
+    )
+
+    assert "MUST search at least" not in generic._system_prompt()
+    assert "at least 3 times before proposing" not in generic._system_prompt()
+    assert "Search for at least" not in generic._task_message(4, None)
+    assert "at least" not in browsecomp._task_message(4, ["Doc about a named entity."])

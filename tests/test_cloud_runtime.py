@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -156,6 +157,45 @@ def test_run_remote_training_quotes_display_name_and_touches_log():
     assert "nohup bash -lc" in launch_cmd
     assert "'\"'\"'BrowseComp-Plus on GLM-4.5-Air-FP8'\"'\"'" in launch_cmd
     assert tail_cmd == "tail -n +1 -F ~/konash/training.log"
+
+
+def test_run_remote_training_recovers_from_slow_ssh_launcher():
+    recorded_ssh_commands: list[str] = []
+
+    def fake_ssh_cmd(ip, cmd, key_path, port, user):
+        recorded_ssh_commands.append(cmd)
+        return ["ssh", ip, cmd]
+
+    tail_proc = SimpleNamespace(
+        stdout=iter(["##KONASH:complete##\n"]),
+        terminate=MagicMock(),
+        wait=MagicMock(return_value=0),
+    )
+
+    run_results = [
+        subprocess.TimeoutExpired(cmd=["ssh"], timeout=30),
+        SimpleNamespace(returncode=0, stdout="READY\n", stderr=""),
+    ]
+
+    def fake_run(*args, **kwargs):
+        result = run_results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    with patch("konash.cloud._ssh_cmd", side_effect=fake_ssh_cmd), \
+         patch("konash.cloud.subprocess.run", side_effect=fake_run), \
+         patch("konash.cloud.subprocess.Popen", return_value=tail_proc), \
+         patch("konash.cloud.time.sleep", return_value=None):
+        _run_remote_training(
+            "1.2.3.4",
+            "python3 scripts/train_oapl_unsloth.py --project browsecomp",
+            {},
+            verbose=False,
+        )
+
+    assert "test -f ~/konash/training.log && echo READY" in recorded_ssh_commands[1]
+    assert recorded_ssh_commands[2] == "tail -n +1 -F ~/konash/training.log"
 
 
 def test_setup_remote_minimal_only_installs_bootstrap_packages():
