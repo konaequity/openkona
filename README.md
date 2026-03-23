@@ -143,7 +143,8 @@ Results are saved to `eval_results/` and viewable in the eval trace viewer at `h
 
 | Service | Purpose | Cost |
 |---------|---------|------|
-| **Together AI** | LLM inference (synthesis, rollouts, solving) | Pay-as-you-go (~$5 for a quick training run) |
+| **Shadeform** | Required for `konash train` GPU provisioning (synthesis, rollouts, OAPL) | GPU hourly billing |
+| **Together AI** | Optional eval and serving backend | Pay-as-you-go |
 | **HuggingFace** | Pre-built embedding indexes, query embeddings via Inference API | Free |
 | **OpenAI** *(optional)* | Judge model for eval scoring (gpt-4o-mini) | ~$0.01 per eval question |
 
@@ -157,21 +158,31 @@ Results are saved to `eval_results/` and viewable in the eval trace viewer at `h
 
 ## Cloud Training & Eval
 
-KONASH uses cloud GPUs for training and can run evals on remote servers. Synthesis and rollout generation run via API — only the OAPL gradient step needs a GPU.
+KONASH uses cloud GPUs for the full remote training pipeline. In the current `konash train` path, synthesis, rollouts, and OAPL all run on the provisioned box, and the resulting checkpoints are synced back into `~/.konash/projects/...`.
 
-We recommend **[Shadeform](https://shadeform.ai)** for GPU provisioning — it aggregates 20+ cloud providers and finds the cheapest available H100 automatically.
+We recommend **[Shadeform](https://shadeform.ai)** for GPU provisioning — it aggregates 20+ cloud providers and finds the cheapest available GPU automatically.
 
 ```bash
 pip install konash
-konash setup    # Together AI key + Shadeform API key
-konash train    # GPU provisioning is automatic when needed
+konash setup
+konash train browsecomp-plus --model zai-org/GLM-4.5-Air-FP8 --gpu-type H200
 ```
 
-When `konash train` reaches the OAPL gradient step, it provisions the cheapest available H100 via Shadeform, runs training, downloads the trained LoRA adapter, and tears down the GPU.
+For `zai-org/GLM-4.5-Air-FP8`, the cleanest current path is `1x H200`. On non-H200 hardware, GLM may require `2x H100` for the sleep/wake vLLM path.
 
-| GPU | Typical price | OAPL step cost | Full eval (150q) |
-|-----|---------------|----------------|------------------|
-| H100 SXM | $1.90–2.69/hr | ~$0.50 | ~$5 via Together AI |
+What `konash train` does today:
+
+1. Provisions a Shadeform GPU
+2. Uploads the current local checkout
+3. Downloads the selected corpus on the remote box
+4. Runs synthesis, dedup, rollouts, filtering, and OAPL remotely
+5. Streams progress into `http://localhost:5050/training/`
+6. Downloads checkpoints and tears the GPU down unless `--keep-alive` is set
+
+| GPU | Typical use | Notes |
+|-----|-------------|-------|
+| H200 | Recommended for GLM 4.5 Air training | Best current bring-up path |
+| H100 SXM | Works for remote training | GLM sleep/wake requires 2+ GPUs |
 
 For running evals on remote GPUs (e.g., with vLLM), see the [Shadeform eval guide](scripts/shadeform_eval_guide.md).
 
@@ -185,7 +196,7 @@ Datasets download automatically when selected in `konash train` or `konash eval`
 |---------|--------|--------|-----------------|----------------|
 | **FinanceBench** | SEC filings, financial reports | 53,803 | Qwen3-Embedding-0.6B | 150 |
 | **QAMPARI** | Wikipedia entity search | 292,825 | Qwen3-Embedding-0.6B | 1,000 |
-| **BrowseComp-Plus** | Web documents | 67,707 | Qwen3-Embedding-8B (Tevatron) | 289 |
+| **BrowseComp-Plus** | Web documents | 100,195 | Qwen3-Embedding-8B (Tevatron) | 830 |
 | **FreshStack** | Technical docs (LangChain) | 48,068 | Qwen3-Embedding-0.6B | 203 |
 | **Local folder** | Your own documents | Any | Built on first run | — |
 
@@ -197,18 +208,16 @@ Datasets download automatically when selected in `konash train` or `konash eval`
 
 ## Supported Models
 
-Any model available on [Together AI](https://api.together.xyz/models) or [HuggingFace Inference API](https://huggingface.co/inference-api):
+Training and eval are not symmetric. `konash eval` can use a broader set of hosted models, but `konash train` depends on models that work cleanly in the remote Unsloth + vLLM pipeline.
+
+Training-tested / recommended:
 
 | Model | Type | Notes |
 |-------|------|-------|
-| **GLM 5** | Frontier | Latest generation, strongest |
-| **GLM 4.5 Air** | Frontier MoE | Default — best for KARL, fast + cheap |
+| **GLM 4.5 Air** | Frontier MoE | Default training target, best current KARL-style path |
 | **MiniMax M2.5** | MoE | Strong frontier MoE available on Together AI |
-| **Qwen 3.5 397B** | MoE | Largest open MoE |
-| **Qwen3 80B-A3B** | MoE | Good value — $0.0017/run |
-| **DeepSeek R1** | MoE | Reasoning-focused |
-| **Llama 3.3 70B Turbo** | Dense | Strong general-purpose |
-| Custom | Any | Enter any Together AI or HF model ID |
+
+For eval and serving, you can use a broader set of models exposed through Together AI or compatible hosted APIs.
 
 Compare models head-to-head in the [Arena](http://localhost:5050/arena/) (run `python tools/server.py`).
 
