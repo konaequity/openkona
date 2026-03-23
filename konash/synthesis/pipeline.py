@@ -60,6 +60,23 @@ class SynthesisPipeline:
         self.rollout_groups: List[RolloutGroup] = []
         self.filtered_groups: List[RolloutGroup] = []
         self.final_examples: List[SyntheticExample] = []
+        self.last_dedup_summary: Dict[str, int] = {
+            "input": 0,
+            "output": 0,
+            "removed": 0,
+            "removed_exact": 0,
+            "removed_near": 0,
+        }
+        self.last_stage_two_summary: Dict[str, int] = {
+            "rollout_input": 0,
+            "rollout_output": 0,
+            "solved": 0,
+            "partial": 0,
+            "unsolved": 0,
+            "unknown": 0,
+            "quality_input": 0,
+            "quality_output": 0,
+        }
 
     # ------------------------------------------------------------------
     # Public API
@@ -255,10 +272,18 @@ class SynthesisPipeline:
         )
 
         # Phase 2: Pass-rate filtering
+        split_summary = self.pass_rate_filter.summarize(self.rollout_groups)
         self.filtered_groups = self.estimate_pass_rate(self.rollout_groups)
         logger.info(
             "Pass-rate filter: %d -> %d groups",
             len(self.rollout_groups), len(self.filtered_groups),
+        )
+        logger.info(
+            "Rollout split: solved=%d partial=%d unsolved=%d unknown=%d",
+            split_summary["solved"],
+            split_summary["partial"],
+            split_summary["unsolved"],
+            split_summary["unknown"],
         )
 
         # Phase 3: Quality filtering
@@ -297,6 +322,16 @@ class SynthesisPipeline:
             "Quality filter: %d -> %d examples",
             len(surviving_examples), len(self.final_examples),
         )
+        self.last_stage_two_summary = {
+            "rollout_input": len(self.rollout_groups),
+            "rollout_output": len(self.filtered_groups),
+            "solved": split_summary["solved"],
+            "partial": split_summary["partial"],
+            "unsolved": split_summary["unsolved"],
+            "unknown": split_summary["unknown"],
+            "quality_input": len(surviving_examples),
+            "quality_output": len(self.final_examples),
+        }
 
         return self.final_examples
 
@@ -377,6 +412,26 @@ class SynthesisPipeline:
         clean_questions = self.deduplication_agent.run(
             synthetic_questions=questions,
             evaluation_questions=self.evaluation_questions or None,
+        )
+        removed_exact = len(
+            getattr(self.deduplication_agent, "removed_exact_matches", []) or []
+        )
+        removed_near = len(
+            getattr(self.deduplication_agent, "removed_near_duplicates", []) or []
+        )
+        self.last_dedup_summary = {
+            "input": len(examples),
+            "output": len(clean_questions),
+            "removed": len(examples) - len(clean_questions),
+            "removed_exact": removed_exact,
+            "removed_near": removed_near,
+        }
+        logger.info(
+            "Deduplication: %d -> %d examples (exact=%d near=%d)",
+            len(examples),
+            len(clean_questions),
+            removed_exact,
+            removed_near,
         )
 
         # Map back to examples

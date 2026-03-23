@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from scripts.train_oapl_unsloth import (
+    _plan_synthesis_call_targets,
     _should_sleep_vllm_for_training,
     _target_synthesis_examples,
     _trim_messages_for_context,
@@ -67,6 +68,20 @@ def test_target_synthesis_examples_respects_remaining_cap():
 def test_target_synthesis_examples_returns_zero_when_done():
     assert _target_synthesis_examples(current_count=3, max_examples=3) == 0
     assert _target_synthesis_examples(current_count=4, max_examples=3) == 0
+
+
+def test_plan_synthesis_call_targets_respects_cap():
+    assert _plan_synthesis_call_targets(synthesis_calls=2, max_examples=12) == [6, 6]
+    assert _plan_synthesis_call_targets(synthesis_calls=4, max_examples=3) == [1, 1, 1]
+
+
+def test_plan_synthesis_call_targets_spreads_work_across_workers():
+    assert _plan_synthesis_call_targets(synthesis_calls=4, max_examples=12) == [3, 3, 3, 3]
+    assert _plan_synthesis_call_targets(synthesis_calls=4, max_examples=10) == [3, 3, 2, 2]
+
+
+def test_plan_synthesis_call_targets_without_cap_uses_all_calls():
+    assert _plan_synthesis_call_targets(synthesis_calls=3, max_examples=None) == [8, 8, 8]
 
 
 def test_should_sleep_vllm_for_intermediate_iteration():

@@ -33,6 +33,7 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Enable vLLM standby before any imports
 os.environ.setdefault("UNSLOTH_VLLM_STANDBY", "1")
@@ -90,6 +91,9 @@ def parse_args():
                     help="Max sequence length")
 
     # Parallelism
+    p.add_argument("--synthesis-workers", type=int, default=4,
+                    help="Max concurrent synthesis calls (default: 4). "
+                         "Each worker runs an independent synthesis transcript.")
     p.add_argument("--rollout-workers", type=int, default=32,
                     help="Max concurrent QA pairs for rollout generation (default: 32). "
                          "High values work well with vLLM; lower for local models.")
@@ -135,6 +139,33 @@ def _target_synthesis_examples(
     if remaining_examples <= 0:
         return 0
     return min(batch_size, remaining_examples)
+
+
+def _plan_synthesis_call_targets(
+    *,
+    synthesis_calls: int,
+    max_examples: int | None,
+    batch_size: int = 8,
+) -> list[int]:
+    """Plan per-call synthesis targets without exceeding the total cap."""
+    synthesis_calls = max(0, synthesis_calls)
+    if synthesis_calls == 0:
+        return []
+    if max_examples is None:
+        return [batch_size] * synthesis_calls
+
+    total_examples = max(0, max_examples)
+    if total_examples == 0:
+        return []
+
+    active_calls = min(synthesis_calls, total_examples)
+    base = total_examples // active_calls
+    remainder = total_examples % active_calls
+    targets = []
+    for call_idx in range(active_calls):
+        target_examples = base + (1 if call_idx < remainder else 0)
+        targets.append(min(batch_size, target_examples))
+    return [target for target in targets if target > 0]
 
 
 def _should_sleep_vllm_for_training(
@@ -205,6 +236,99 @@ def _trim_messages_for_context(
         trimmed_messages.append(cloned)
 
     return list(reversed(trimmed_messages))
+
+
+def _run_parallel_synthesis_calls(
+    *,
+    synthesizer,
+    synthesis_calls: int,
+    synthesis_workers: int,
+    max_examples: int | None,
+    iteration: int,
+) -> list:
+    """Run independent synthesis transcripts concurrently and stream results."""
+    call_targets = _plan_synthesis_call_targets(
+        synthesis_calls=synthesis_calls,
+        max_examples=max_examples,
+    )
+    if not call_targets:
+        return []
+
+    max_workers = max(1, min(synthesis_workers, len(call_targets)))
+    print(
+        f"  Synthesizing QA pairs across {len(call_targets)} call(s) "
+        f"with {max_workers} worker(s)..."
+    )
+
+    def _run_call(call_idx: int, target_examples: int):
+        batch = synthesizer.synthesize(
+            documents=None,
+            num_examples=target_examples,
+            seed=(iteration + 1) * 10_000 + call_idx,
+        )
+        return call_idx, batch
+
+    raw_examples = []
+    completed_examples = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [
+            pool.submit(_run_call, call_idx, target_examples)
+            for call_idx, target_examples in enumerate(call_targets)
+        ]
+        for future in as_completed(futures):
+            call_idx, batch = future.result()
+            raw_examples.extend(batch)
+            completed_examples += len(batch)
+            for ex in batch:
+                q = ex.question.replace('\n', ' ').replace('#', '')
+                a = ex.answer.replace('\n', ' ').replace('#', '')
+                print(f"##KONASH:qa:{iteration + 1}:{q}\t{a}##", flush=True)
+            print(
+                f"  Call {call_idx + 1}/{len(call_targets)}: "
+                f"+{len(batch)} pairs ({completed_examples} total)"
+            )
+
+    return raw_examples
+
+
+def _print_dedup_stage_summary(raw_examples, pipeline) -> None:
+    """Print a readable Stage 1 deduplication summary."""
+    summary = getattr(pipeline, "last_dedup_summary", {}) or {}
+    print("  Entering deduplication...")
+    print(
+        "  Stage 1 dedup: "
+        f"{summary.get('input', len(raw_examples))} raw -> "
+        f"{summary.get('output', len(raw_examples))} kept "
+        f"(removed={summary.get('removed', 0)}, "
+        f"exact={summary.get('removed_exact', 0)}, "
+        f"near={summary.get('removed_near', 0)})"
+    )
+
+
+def _print_stage_two_summary(pipeline) -> None:
+    """Print solved / partial / unsolved and quality filter summaries."""
+    summary = getattr(pipeline, "last_stage_two_summary", {}) or {}
+    quality = getattr(getattr(pipeline, "quality_filter", None), "last_summary", {}) or {}
+    print("  Entering pass-rate split...")
+    print(
+        "  Stage 2 split: "
+        f"{summary.get('rollout_input', 0)} groups -> "
+        f"solved={summary.get('solved', 0)}, "
+        f"partial={summary.get('partial', 0)}, "
+        f"unsolved={summary.get('unsolved', 0)}"
+    )
+    if summary.get("unknown", 0):
+        print(f"  Stage 2 split: unknown={summary.get('unknown', 0)}")
+    print("  Entering quality filter...")
+    print(
+        "  Quality filter: "
+        f"{summary.get('quality_input', 0)} partial -> "
+        f"{summary.get('quality_output', 0)} kept "
+        f"(dropped={quality.get('dropped', 0)}, "
+        f"llm_judged={quality.get('llm_judged', 0)}, "
+        f"heuristic_kept={quality.get('heuristic_kept', 0)}, "
+        f"heuristic_dropped={quality.get('heuristic_dropped', 0)})"
+    )
 
 
 def export_model(engine, args):
@@ -770,26 +894,16 @@ def train_full_pipeline(args):
             rollout_generator=rollout_gen,
         )
 
-        raw_examples = []
-        for call_idx in range(args.synthesis_calls):
-            target_examples = _target_synthesis_examples(
-                current_count=len(raw_examples),
-                max_examples=args.max_examples,
-            )
-            if target_examples <= 0:
-                break
-            batch = synthesizer.synthesize(
-                documents=None,
-                num_examples=target_examples,
-            )
-            raw_examples.extend(batch)
-            # Stream each QA pair to local monitor via ##KONASH## markers
-            for ex in batch:
-                q = ex.question.replace('\n', ' ').replace('#', '')
-                a = ex.answer.replace('\n', ' ').replace('#', '')
-                print(f"##KONASH:qa:{iteration + 1}:{q}\t{a}##", flush=True)
-            print(f"  Call {call_idx + 1}/{args.synthesis_calls}: +{len(batch)} pairs ({len(raw_examples)} total)")
+        raw_examples = _run_parallel_synthesis_calls(
+            synthesizer=synthesizer,
+            synthesis_calls=args.synthesis_calls,
+            synthesis_workers=args.synthesis_workers,
+            max_examples=args.max_examples,
+            iteration=iteration,
+        )
+        print(f"  Stage 1 raw synthesis: {len(raw_examples)} QA pairs")
         examples = pipeline.deduplicate(raw_examples)
+        _print_dedup_stage_summary(raw_examples, pipeline)
         if args.max_examples is not None:
             examples = examples[:args.max_examples]
         pipeline.synthetic_examples = examples
@@ -819,7 +933,11 @@ def train_full_pipeline(args):
             examples=examples,
             num_rollouts=args.rollouts_per_example,
             parallel_workers=_rollout_workers,
+            checkpoint_dir=args.output,
+            checkpoint_iteration=iteration + 1,
+            checkpoint_interval=5,
         )
+        _print_stage_two_summary(pipeline)
         print(f"  {len(final_examples)} examples after filtering")
 
         if not final_examples or not pipeline.filtered_groups:
@@ -1035,27 +1153,16 @@ def _train_sleep_wake_pipeline(args):
             )
 
             # Stage 1: Synthesis
-            print("  Synthesizing QA pairs...")
-            raw_examples = []
-            for call_idx in range(args.synthesis_calls):
-                target_examples = _target_synthesis_examples(
-                    current_count=len(raw_examples),
-                    max_examples=args.max_examples,
-                )
-                if target_examples <= 0:
-                    break
-                batch = synthesizer.synthesize(
-                    documents=None,
-                    num_examples=target_examples,
-                )
-                raw_examples.extend(batch)
-                for ex in batch:
-                    q = ex.question.replace('\n', ' ').replace('#', '')
-                    a = ex.answer.replace('\n', ' ').replace('#', '')
-                    print(f"##KONASH:qa:{iteration + 1}:{q}\t{a}##", flush=True)
-                print(f"  Call {call_idx + 1}/{args.synthesis_calls}: "
-                      f"+{len(batch)} pairs ({len(raw_examples)} total)")
+            raw_examples = _run_parallel_synthesis_calls(
+                synthesizer=synthesizer,
+                synthesis_calls=args.synthesis_calls,
+                synthesis_workers=args.synthesis_workers,
+                max_examples=args.max_examples,
+                iteration=iteration,
+            )
+            print(f"  Stage 1 raw synthesis: {len(raw_examples)} QA pairs")
             examples = pipeline.deduplicate(raw_examples)
+            _print_dedup_stage_summary(raw_examples, pipeline)
             if args.max_examples is not None:
                 examples = examples[:args.max_examples]
             pipeline.synthetic_examples = examples
@@ -1086,7 +1193,11 @@ def _train_sleep_wake_pipeline(args):
                 examples=examples,
                 num_rollouts=args.rollouts_per_example,
                 parallel_workers=args.rollout_workers,
+                checkpoint_dir=args.output,
+                checkpoint_iteration=iteration + 1,
+                checkpoint_interval=5,
             )
+            _print_stage_two_summary(pipeline)
             print(f"  {len(final_examples)} examples after filtering")
 
             if not final_examples or not pipeline.filtered_groups:

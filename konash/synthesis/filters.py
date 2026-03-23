@@ -162,6 +162,23 @@ class PassRateFilter:
         )
         return result
 
+    def summarize(self, groups: List[Any]) -> Dict[str, int]:
+        """Summarize groups by outcome bucket for stage logging."""
+        summary = {"solved": 0, "partial": 0, "unsolved": 0, "unknown": 0}
+        for group in groups:
+            rate = self._get_pass_rate(group)
+            if rate is None:
+                summary["unknown"] += 1
+                continue
+            if self.min_pass_rate is not None and rate < self.min_pass_rate:
+                summary["unsolved"] += 1
+                continue
+            if self.max_pass_rate is not None and rate > self.max_pass_rate:
+                summary["solved"] += 1
+                continue
+            summary["partial"] += 1
+        return summary
+
     @staticmethod
     def _get_pass_rate(group: Any) -> Optional[float]:
         """Extract the pass rate from a group object or dict."""
@@ -213,6 +230,14 @@ class QualityFilter:
         self.task_name = task_name
         self.checks_ambiguity = checks_ambiguity
         self.checks_reference_accuracy = checks_reference_accuracy
+        self.last_summary: Dict[str, int] = {
+            "input": 0,
+            "kept": 0,
+            "dropped": 0,
+            "llm_judged": 0,
+            "heuristic_kept": 0,
+            "heuristic_dropped": 0,
+        }
 
     def apply(
         self,
@@ -241,6 +266,9 @@ class QualityFilter:
             Examples that pass all enabled quality checks.
         """
         passed: List[Any] = []
+        llm_judged = 0
+        heuristic_kept = 0
+        heuristic_dropped = 0
         for idx, example in enumerate(examples):
             question = getattr(example, "question", None) or (
                 example.get("question") if isinstance(example, dict) else None
@@ -261,6 +289,7 @@ class QualityFilter:
             if self.judge_fn is not None and attempts:
                 result = self._llm_judge_quality(question, answer, example, attempts)
                 if result is not None:
+                    llm_judged += 1
                     verdict = "valid" if result.get("is_valid", True) else "invalid"
                     reason = result.get("reason", "")[:80]
                     logger.debug(
@@ -279,6 +308,7 @@ class QualityFilter:
                         "quality_filter idx=%d verdict=ambiguous question=%.60s",
                         idx, question,
                     )
+                    heuristic_dropped += 1
                     continue
 
             if self.checks_reference_accuracy and reference_documents:
@@ -290,10 +320,20 @@ class QualityFilter:
                         "quality_filter idx=%d verdict=inaccurate question=%.60s",
                         idx, question,
                     )
+                    heuristic_dropped += 1
                     continue
 
             passed.append(example)
+            heuristic_kept += 1
 
+        self.last_summary = {
+            "input": len(examples),
+            "kept": len(passed),
+            "dropped": len(examples) - len(passed),
+            "llm_judged": llm_judged,
+            "heuristic_kept": heuristic_kept,
+            "heuristic_dropped": heuristic_dropped,
+        }
         logger.info(
             "quality_filter input=%d output=%d rejected=%d",
             len(examples), len(passed), len(examples) - len(passed),

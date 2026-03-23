@@ -467,3 +467,73 @@ def test_quality_filter_receives_rollout_attempts():
         assert "answer" in attempt
         assert "score" in attempt
         assert "passed" in attempt
+
+
+def test_stage_two_records_split_and_quality_summaries():
+    from konash.synthesis.pipeline import SynthesisPipeline
+    from konash.synthesis.qa import SyntheticExample
+    from konash.synthesis.rollouts import Rollout, RolloutGroup
+    from konash.synthesis.filters import QualityFilter, PassRateFilter
+
+    class StubRolloutGenerator:
+        def generate_group(self, prompt, reference_answer=None, num_rollouts=2, qa_idx=0):
+            patterns = {
+                "q-unsolved": [False, False],
+                "q-partial": [True, False],
+                "q-solved": [True, True],
+            }
+            rollouts = [
+                Rollout(
+                    steps=[{"step": 0, "type": "answer"}],
+                    final_answer=f"answer_{i}",
+                    passed=passed,
+                )
+                for i, passed in enumerate(patterns[prompt])
+            ]
+            return RolloutGroup(
+                prompt=prompt,
+                reference_answer=reference_answer,
+                rollouts=rollouts,
+            )
+
+    class KeepAllQualityFilter(QualityFilter):
+        def apply(self, examples, reference_documents=None, rollout_attempts=None):
+            kept = super().apply(
+                examples,
+                reference_documents=reference_documents,
+                rollout_attempts=rollout_attempts,
+            )
+            return kept
+
+    pipeline = SynthesisPipeline(
+        rollout_generator=StubRolloutGenerator(),
+        pass_rate_filter=PassRateFilter(min_pass_rate=0.1, max_pass_rate=0.9),
+        quality_filter=KeepAllQualityFilter(checks_ambiguity=False, checks_reference_accuracy=False),
+    )
+    pipeline.synthetic_examples = [
+        SyntheticExample(question="q-unsolved", answer="a"),
+        SyntheticExample(question="q-partial", answer="a"),
+        SyntheticExample(question="q-solved", answer="a"),
+    ]
+
+    final_examples = pipeline.run_stage_two(num_rollouts=2)
+
+    assert [ex.question for ex in final_examples] == ["q-partial"]
+    assert pipeline.last_stage_two_summary == {
+        "rollout_input": 3,
+        "rollout_output": 1,
+        "solved": 1,
+        "partial": 1,
+        "unsolved": 1,
+        "unknown": 0,
+        "quality_input": 1,
+        "quality_output": 1,
+    }
+    assert pipeline.quality_filter.last_summary == {
+        "input": 1,
+        "kept": 1,
+        "dropped": 0,
+        "llm_judged": 0,
+        "heuristic_kept": 1,
+        "heuristic_dropped": 0,
+    }

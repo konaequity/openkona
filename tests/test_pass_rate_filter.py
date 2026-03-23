@@ -67,6 +67,11 @@ class TestPassRateFilterApply:
         kept = f.apply([object(), FakeGroup(0.5)])
         assert len(kept) == 1
 
+    def test_summarize_reports_solved_partial_unsolved(self):
+        f = PassRateFilter(min_pass_rate=0.1, max_pass_rate=0.9)
+        summary = f.summarize([FakeGroup(0.0), FakeGroup(0.5), FakeGroup(1.0), object()])
+        assert summary == {"solved": 1, "partial": 1, "unsolved": 1, "unknown": 1}
+
 
 class TestBinarization:
 
