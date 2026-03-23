@@ -556,15 +556,19 @@ async function loadProjects() {
   const select = document.getElementById('project-select');
 
   data.projects.forEach(p => {
+    const project = typeof p === 'string' ? { project: p, display_name: p } : p;
     const opt = document.createElement('option');
-    opt.value = p;
-    opt.textContent = p;
+    opt.value = project.project;
+    opt.textContent = project.display_name || project.project;
     select.appendChild(opt);
   });
 
   if (data.projects.length > 0) {
-    select.value = data.projects[0];
-    loadProject(data.projects[0]);
+    const first = typeof data.projects[0] === 'string'
+      ? { project: data.projects[0], display_name: data.projects[0] }
+      : data.projects[0];
+    select.value = first.project;
+    loadProject(first.project);
   }
 }
 
@@ -577,11 +581,12 @@ async function loadProject(project) {
   ]);
   const logsData = await logsResp.json();
   const rolloutsData = await rolloutsResp.json();
-  renderAll(logsData.events, rolloutsData, project, logsData.active_run);
+  renderAll(logsData.events, rolloutsData, project, logsData.active_run, logsData.display_name);
 }
 
-function renderAll(events, rolloutsData, project, activeRun) {
+function renderAll(events, rolloutsData, project, activeRun, displayNameOverride) {
   const content = document.getElementById('content');
+  const displayName = displayNameOverride || project;
 
   // Extract summary stats
   const synthesis = events.filter(e => e.event === 'synthesis');
@@ -597,6 +602,8 @@ function renderAll(events, rolloutsData, project, activeRun) {
   const totalTime = complete ? complete.total_seconds : null;
 
   let html = '';
+
+  html += `<div class="section-title"><h2 style="margin-bottom:6px">${escapeHtml(displayName)}</h2><div style="font-size:11px;color:var(--text-3);font-family:var(--mono)">${escapeHtml(project)}</div></div>`;
 
   // Summary cards
   html += '<div class="summary-grid">';

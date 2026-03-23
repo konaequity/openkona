@@ -168,6 +168,8 @@ def test_train_runs_remote_full_pipeline(tmp_path, monkeypatch):
         rollout_max_steps=3,
         max_examples=4,
         learning_rate=5e-6,
+        gpu_type="H200",
+        sleep_wake=True,
         keep_alive=True,
         verbose=False,
     )
@@ -177,6 +179,8 @@ def test_train_runs_remote_full_pipeline(tmp_path, monkeypatch):
     assert calls == {
         "corpus": str(corpus.path),
         "base_model": "stub",
+        "project": "api-train-test",
+        "display_name": "api-train-test",
         "checkpoint_dir": str(tmp_path / "checkpoints"),
         "iterations": 1,
         "synthesis_calls": 1,
@@ -184,6 +188,10 @@ def test_train_runs_remote_full_pipeline(tmp_path, monkeypatch):
         "rollout_max_steps": 3,
         "max_examples": 4,
         "learning_rate": 5e-6,
+        "gpu": "H200",
+        "num_gpus": 1,
+        "sleep_wake": True,
+        "gpu_label": "H200",
         "keep_alive": True,
         "verbose": False,
     }

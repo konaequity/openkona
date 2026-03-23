@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import posixpath
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -883,6 +884,8 @@ def train_remote(
     *,
     corpus: str = "financebench",
     base_model: str = "zai-org/GLM-4.5-Air-FP8",
+    project: Optional[str] = None,
+    display_name: Optional[str] = None,
     checkpoint_dir: str = "~/.konash/projects/konash-run/checkpoints",
     iterations: int = 1,
     synthesis_calls: int = 1500,
@@ -893,6 +896,7 @@ def train_remote(
     cloud: Optional[str] = None,
     gpu: str = "H100",
     num_gpus: int = 1,
+    gpu_label: Optional[str] = None,
     use_spot: bool = False,
     push_to_hub: Optional[str] = None,
     keep_alive: bool = False,
@@ -921,7 +925,9 @@ def train_remote(
         from konash.training.logger import TrainingLogger
         # Derive project name from checkpoint_dir (e.g. ~/.konash/projects/<name>/checkpoints)
         _ckpt = os.path.expanduser(checkpoint_dir).rstrip("/")
-        _project_name = os.path.basename(os.path.dirname(_ckpt)) if _ckpt.endswith("checkpoints") else "default"
+        _project_name = project or (
+            os.path.basename(os.path.dirname(_ckpt)) if _ckpt.endswith("checkpoints") else "default"
+        )
         _tlog = TrainingLogger(_project_name)
         _tlog.start(
             iterations=iterations,
@@ -972,6 +978,12 @@ def train_remote(
             f"--lr {learning_rate} "
             f"--output {_REMOTE_DIR}/checkpoints"
         )
+        if project:
+            training_cmd += f" --project {shlex.quote(project)}"
+        if display_name:
+            training_cmd += f" --display-name {shlex.quote(display_name)}"
+        if gpu_label:
+            training_cmd += f" --gpu-label {shlex.quote(gpu_label)}"
         if max_examples is not None:
             training_cmd += f" --max-examples {max_examples}"
         if sleep_wake:

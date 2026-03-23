@@ -8,6 +8,8 @@ from konash.training.project_state import (
     assess_project_reuse,
     begin_training_run,
     build_dataset_spec,
+    configure_training_project,
+    load_project_display_name,
     save_project_manifest,
     suggest_project_name,
     TrainingProjectManifest,
@@ -107,3 +109,42 @@ def test_assess_project_reuse_offers_resume_for_compatible_unfinished_run(tmp_pa
 
     assert assessment.resume_available is True
     assert assessment.checkpoint.latest_phase == "synthesis"
+
+
+def test_configure_training_project_uses_manifest_friendly_name(tmp_path: Path):
+    configured = configure_training_project(
+        base_model="zai-org/GLM-4.5-Air-FP8",
+        corpora=[tmp_path / "browsecomp-plus" / "documents"],
+        requested_output="./checkpoints",
+        gpu_label="H200",
+        rollouts_per_example=8,
+        max_examples=12,
+        projects_dir=str(tmp_path / "projects"),
+    )
+
+    assert configured.project.startswith("browsecomp-glm45-h200-")
+    assert configured.display_name.startswith("BrowseComp-Plus")
+    assert configured.output_dir.endswith(f"/projects/{configured.project}/checkpoints")
+
+
+def test_load_project_display_name_prefers_manifest(tmp_path: Path):
+    projects_dir = tmp_path / "projects"
+    corpus_dir = tmp_path / "financebench"
+    corpus_dir.mkdir()
+    dataset_spec = build_dataset_spec([corpus_dir])
+    save_project_manifest(
+        TrainingProjectManifest(
+            project="financebench-glm45",
+            display_name="FinanceBench • GLM 4.5 Air",
+            created_at="2026-03-22T00:00:00Z",
+            base_model="zai-org/GLM-4.5-Air-FP8",
+            dataset_spec=dataset_spec,
+        ),
+        projects_dir=str(projects_dir),
+    )
+
+    assert (
+        load_project_display_name("financebench-glm45", projects_dir=str(projects_dir))
+        == "FinanceBench • GLM 4.5 Air"
+    )
+    assert load_project_display_name("missing-project", projects_dir=str(projects_dir)) == "missing-project"

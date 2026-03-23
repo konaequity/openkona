@@ -15,6 +15,7 @@ from konash.training.events import (
     ValueModelCompleted,
 )
 from konash.training.logger import TrainingLogger
+from konash.training.project_state import load_project_display_name
 
 
 def load_training_events_for_latest_run(project: str) -> list[TrainingEvent]:
@@ -89,6 +90,7 @@ class LiveTrainingCharts:
 @dataclass(frozen=True, slots=True)
 class LiveTrainingSummary:
     project: str
+    display_name: str
     status: str
     stage: str
     start: TrainingStarted | None
@@ -102,6 +104,7 @@ class LiveTrainingSummary:
     def to_dict(self) -> dict[str, Any]:
         return {
             "project": self.project,
+            "display_name": self.display_name,
             "status": self.status,
             "stage": self.stage,
             "start": self.start.to_record() if self.start else {},
@@ -117,6 +120,7 @@ class LiveTrainingSummary:
 @dataclass(frozen=True, slots=True)
 class LiveTrainingProjectOption:
     project: str
+    display_name: str
     status: str
     stage: str
     model: str
@@ -125,6 +129,7 @@ class LiveTrainingProjectOption:
     def to_dict(self) -> dict[str, Any]:
         return {
             "project": self.project,
+            "display_name": self.display_name,
             "status": self.status,
             "stage": self.stage,
             "model": self.model,
@@ -226,6 +231,7 @@ def build_live_training_summary(project: str) -> LiveTrainingSummary:
 
     return LiveTrainingSummary(
         project=project,
+        display_name=load_project_display_name(project),
         status=status,
         stage=stage,
         start=start,
@@ -261,6 +267,7 @@ def list_live_training_projects(demo_project: str) -> list[LiveTrainingProjectOp
         if project == demo_project or summary.has_trainer_events or summary.status != "idle":
             projects.append(LiveTrainingProjectOption(
                 project=project,
+                display_name=summary.display_name,
                 status=summary.status,
                 stage="Interactive demo" if project == demo_project and summary.status == "idle" else summary.stage,
                 model=summary.summary.model if summary.summary.model != "—" else "Demo trainer feed",

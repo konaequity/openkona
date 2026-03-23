@@ -35,6 +35,13 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from konash.training.project_state import configure_training_project
+from konash.training.resume import (
+    load_stage1_resume_examples,
+    normalize_stage_resume_args,
+    save_stage2_artifacts,
+)
+
 # Enable vLLM standby before any imports
 os.environ.setdefault("UNSLOTH_VLLM_STANDBY", "1")
 
@@ -93,12 +100,68 @@ def _resolve_rollouts_per_example(*, task_name: str | None, requested_rollouts: 
     return requested_rollouts
 
 
+def _apply_project_identity(args):
+    """Populate project/display/output defaults via shared project_state helpers."""
+    task_name = _infer_karl_task_name(args.corpus)
+    effective_rollouts = _resolve_rollouts_per_example(
+        task_name=task_name,
+        requested_rollouts=args.rollouts_per_example,
+    )
+    configured = configure_training_project(
+        base_model=args.model,
+        corpora=[args.corpus] if args.corpus else (),
+        rollouts_path=args.rollouts,
+        requested_project=args.project,
+        requested_display_name=args.display_name,
+        requested_output=args.output,
+        gpu_label=args.gpu_label,
+        run_tag=args.run_tag,
+        rollouts_per_example=effective_rollouts,
+        max_examples=args.max_examples,
+    )
+    args.project = configured.project
+    args.display_name = configured.display_name
+    args.output = configured.output_dir
+    args._dataset_spec = configured.dataset_spec
+    return args
+
+
+def _begin_managed_project_run(args, *, synthesis_backend: str) -> None:
+    """Create/update project manifest and active run state for the monitor."""
+    from konash.training.logger import configure_file_logging
+    from konash.training.project_state import (
+        TrainingRunConfig,
+        begin_training_run,
+    )
+
+    run_config = TrainingRunConfig(
+        synthesis_backend=synthesis_backend,
+        iterations=args.iterations,
+        synthesis_calls=args.synthesis_calls,
+        rollouts_per_example=_resolve_rollouts_per_example(
+            task_name=_infer_karl_task_name(args.corpus),
+            requested_rollouts=args.rollouts_per_example,
+        ),
+        rollout_max_steps=args.rollout_max_steps,
+    )
+    begin_training_run(
+        project=args.project,
+        display_name=args.display_name,
+        base_model=args.model,
+        dataset_spec=args._dataset_spec,
+        config=run_config,
+    )
+    configure_file_logging(args.project)
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="OAPL training with Unsloth")
 
     # Data source (pick one)
     p.add_argument("--rollouts", type=str, default=None,
                     help="Path to stage3_results.json (pre-generated rollouts)")
+    p.add_argument("--train-from-rollouts", type=str, default=None,
+                    help="Alias for --rollouts; trains OAPL directly from saved rollout artifacts")
     p.add_argument("--corpus", type=str, default=None,
                     help="Path to corpus directory (for full pipeline)")
 
@@ -143,6 +206,14 @@ def parse_args():
                     help="Cap on training examples per iteration")
     p.add_argument("--max-seq-length", type=int, default=2048,
                     help="Max sequence length")
+    p.add_argument("--resume-stage1-from", type=str, default=None,
+                    help="Resume iteration 1 from a saved stage1_synthesis.json or stage1_deduped.json")
+    p.add_argument("--resume-stage2-from", type=str, default=None,
+                    help="Train directly from saved stage2/rollout artifacts (iter dir, output dir, rollouts.json, or stage2_rollouts.json)")
+    p.add_argument("--skip-synthesis", action="store_true",
+                    help="Skip Stage 1 synthesis and load examples from --resume-stage1-from")
+    p.add_argument("--skip-rollouts", action="store_true",
+                    help="Skip Stage 2 rollout generation and train from --resume-stage2-from")
 
     # Parallelism
     p.add_argument("--synthesis-workers", type=int, default=4,
@@ -166,6 +237,14 @@ def parse_args():
     # Output
     p.add_argument("--output", type=str, default="./checkpoints",
                     help="Output directory for checkpoints")
+    p.add_argument("--project", type=str, default=None,
+                    help="Project slug for localhost/training monitor naming")
+    p.add_argument("--display-name", type=str, default=None,
+                    help="Optional human-readable display name for the run")
+    p.add_argument("--gpu-label", type=str, default=None,
+                    help="Optional GPU label to include in generated project names (e.g. H200)")
+    p.add_argument("--run-tag", type=str, default=None,
+                    help="Optional short tag like smoke, medium, or full")
 
     # Export
     p.add_argument("--push-to-hub", type=str, default=None,
@@ -397,14 +476,49 @@ def _build_training_pipeline(*, corpus, llm_fn, rollout_max_steps: int, corpus_p
     config = SynthesisConfigRegistry.configs.get(task_name) if task_name else None
     evaluation_questions = _load_eval_question_texts(corpus_path)
 
+    qa_max_steps = (
+        config.qa_max_steps
+        if config is not None and getattr(config, "qa_max_steps", None) is not None
+        else 50
+    )
+    qa_top_k = (
+        config.qa_top_k
+        if config is not None and getattr(config, "qa_top_k", None) is not None
+        else 20
+    )
+    qa_generation_count = (
+        config.qa_generation_count
+        if config is not None and getattr(config, "qa_generation_count", None) is not None
+        else 8
+    )
     synthesizer = QuestionAnswerSynthesizer(
         vector_search_tool=corpus,
         llm_fn=llm_fn,
+        generation_count=qa_generation_count,
+        max_steps=qa_max_steps,
+        top_k=qa_top_k,
+    )
+    solver_max_steps = (
+        config.solver_max_steps
+        if config is not None and getattr(config, "solver_max_steps", None) is not None
+        else rollout_max_steps
+    )
+    solver_top_k = (
+        config.solver_top_k
+        if config is not None and getattr(config, "solver_top_k", None) is not None
+        else 20
+    )
+    compression_trigger_chars = (
+        config.compression_trigger_chars
+        if config is not None and getattr(config, "compression_trigger_chars", None) is not None
+        else None
     )
     rollout_gen = RolloutGenerator(
         search_tool=corpus,
         llm_fn=llm_fn,
-        max_steps=rollout_max_steps,
+        max_steps=solver_max_steps,
+        top_k=solver_top_k,
+        compression_trigger_chars=compression_trigger_chars,
     )
 
     dedup_agent = None
@@ -619,15 +733,22 @@ def _train_value_model(output_dir: str, num_iterations: int) -> dict | None:
 
 
 def load_rollouts_from_stage3(path: str):
-    """Load pre-generated rollouts from stage3_results.json."""
+    """Load saved rollout artifacts into an OfflineRolloutDataset."""
     from konash.training.dataset import OfflineRolloutDataset
 
     with open(path) as f:
         data = json.load(f)
 
-    # Stage 3 results: groups can be at data["rollouts"]["groups"],
-    # data["groups"], or data["rollout_groups"]
+    if isinstance(data, list):
+        dataset = OfflineRolloutDataset.from_rollouts(data)
+        print(f"  Loaded rollout dicts directly: {len(dataset.prompts)} groups, {len(dataset)} rollouts")
+        return dataset, data
+
+    # Stage 2/3 groups can be at data["groups"], data["rollout_groups"],
+    # data["data"]["groups"], or data["rollouts"]["groups"].
     groups = data.get("groups", data.get("rollout_groups", []))
+    if not groups and isinstance(data.get("data"), dict):
+        groups = data["data"].get("groups", [])
     if not groups and isinstance(data.get("rollouts"), dict):
         groups = data["rollouts"].get("groups", [])
     if not groups:
@@ -684,6 +805,8 @@ def train_from_rollouts(args):
     print("=" * 60)
     print("  KONASH OAPL Training (Unsloth)")
     print("=" * 60)
+    print(f"  Project:   {args.project}")
+    print(f"  Display:   {args.display_name}")
     print(f"  Model:     {args.model}")
     print(f"  FP8:       {args.fp8 and not args.no_fp8}")
     print(f"  LoRA r:    {args.lora_r}")
@@ -694,7 +817,7 @@ def train_from_rollouts(args):
     print(f"  Output:    {args.output}")
     print()
 
-    project_name = os.path.basename(os.path.abspath(args.output)) or "default"
+    project_name = args.project or os.path.basename(os.path.abspath(args.output)) or "default"
     log = TrainingLogger(project_name)
     log.start(
         iterations=args.epochs,
@@ -916,16 +1039,26 @@ def train_full_pipeline(args):
     from konash.training.unsloth_engine import UnslothEngine
     from konash.training.oapl import OAPLTrainer
     from konash.training.dataset import OfflineRolloutDataset
+    from konash.training.logger import TrainingLogger
     from konash.corpus import Corpus
     print("=" * 60)
     print("  KONASH Full Pipeline (Unsloth + OAPL)")
     print("=" * 60)
+    print(f"  Project:    {args.project}")
+    print(f"  Display:    {args.display_name}")
     print(f"  Model:      {args.model}")
     print(f"  Corpus:     {args.corpus}")
     print(f"  Iterations: {args.iterations}")
     print(f"  Synthesis:  {args.synthesis_calls} calls/iter")
     print(f"  Output:     {args.output}")
     print()
+
+    log = TrainingLogger(args.project)
+    log.start(
+        iterations=args.iterations,
+        corpus=args.corpus,
+        model=args.model,
+    )
 
     print("##KONASH:loading_data##", flush=True)
 
@@ -980,16 +1113,36 @@ def train_full_pipeline(args):
             if evaluation_questions:
                 print(f"  Eval-set dedup questions: {len(evaluation_questions)}")
 
-        raw_examples = _run_parallel_synthesis_calls(
-            synthesizer=synthesizer,
-            synthesis_calls=args.synthesis_calls,
-            synthesis_workers=args.synthesis_workers,
-            max_examples=args.max_examples,
-            iteration=iteration,
-        )
-        print(f"  Stage 1 raw synthesis: {len(raw_examples)} QA pairs")
-        examples = pipeline.deduplicate(raw_examples)
-        _print_dedup_stage_summary(raw_examples, pipeline)
+        if iteration == 0 and args.resume_stage1_from:
+            resumed_path, resumed_phase, resumed_examples = load_stage1_resume_examples(
+                args.resume_stage1_from,
+            )
+            print(f"  Resuming Stage 1 from {resumed_path} ({resumed_phase})")
+            raw_examples = resumed_examples
+            print(f"  Stage 1 raw synthesis: {len(raw_examples)} QA pairs (loaded)")
+            if resumed_phase == "dedup" or args.skip_synthesis:
+                examples = list(resumed_examples)
+                pipeline.last_dedup_summary = {
+                    "input": len(examples),
+                    "output": len(examples),
+                    "removed": 0,
+                    "removed_exact": 0,
+                    "removed_near": 0,
+                }
+            else:
+                examples = pipeline.deduplicate(raw_examples)
+            _print_dedup_stage_summary(raw_examples, pipeline)
+        else:
+            raw_examples = _run_parallel_synthesis_calls(
+                synthesizer=synthesizer,
+                synthesis_calls=args.synthesis_calls,
+                synthesis_workers=args.synthesis_workers,
+                max_examples=args.max_examples,
+                iteration=iteration,
+            )
+            print(f"  Stage 1 raw synthesis: {len(raw_examples)} QA pairs")
+            examples = pipeline.deduplicate(raw_examples)
+            _print_dedup_stage_summary(raw_examples, pipeline)
         if args.max_examples is not None:
             examples = examples[:args.max_examples]
         pipeline.synthetic_examples = examples
@@ -1052,6 +1205,12 @@ def train_full_pipeline(args):
         dataset = OfflineRolloutDataset.from_rollouts(rollout_dicts)
         print(f"  Training on {len(dataset.prompts)} groups, "
               f"{len(dataset)} rollouts")
+        save_stage2_artifacts(
+            args.output,
+            iteration + 1,
+            pipeline.filtered_groups,
+            rollout_dicts,
+        )
 
         # Stage 3: OAPL training
         print("  Training with OAPL...")
@@ -1073,7 +1232,7 @@ def train_full_pipeline(args):
         # Log OAPL stats
         try:
             from konash.training.logger import TrainingLogger
-            _log = TrainingLogger(os.path.basename(args.output) or "default")
+            _log = TrainingLogger(args.project or os.path.basename(args.output) or "default")
             _log.oapl(
                 iteration=iteration + 1,
                 loss=stats["mean_loss"],
@@ -1097,11 +1256,6 @@ def train_full_pipeline(args):
         os.makedirs(iter_dir, exist_ok=True)
         engine.save_adapter(os.path.join(iter_dir, "adapter"))
 
-        # Save rollouts for reproducibility
-        rollouts_path = os.path.join(iter_dir, "rollouts.json")
-        with open(rollouts_path, "w") as f:
-            json.dump(rollout_dicts, f, indent=2, default=str)
-
         # Rollouts in this mode are generated by the local on-cluster model,
         # so the next iteration naturally bootstraps from the trained policy.
 
@@ -1111,7 +1265,7 @@ def train_full_pipeline(args):
         print("##KONASH:value_model_start##", flush=True)
         try:
             from konash.training.logger import TrainingLogger
-            _log = TrainingLogger(os.path.basename(args.output) or "default")
+            _log = TrainingLogger(args.project or os.path.basename(args.output) or "default")
             _log.value_model(
                 loss=vm_stats.get("final_loss", 0),
                 epochs=vm_stats.get("epochs", 0),
@@ -1156,6 +1310,7 @@ def _train_sleep_wake_pipeline(args):
     from konash.training.unsloth_engine import UnslothEngine
     from konash.training.oapl import OAPLTrainer
     from konash.training.dataset import OfflineRolloutDataset
+    from konash.training.logger import TrainingLogger
     from konash.corpus import Corpus
     # Disable weight sharing — vLLM and Unsloth alternate, not share
     os.environ.pop("UNSLOTH_VLLM_STANDBY", None)
@@ -1164,6 +1319,8 @@ def _train_sleep_wake_pipeline(args):
     print("  KONASH Sleep/Wake Pipeline (vLLM + Unsloth OAPL)")
     print("=" * 60)
     vllm_model = args.vllm_model or args.model
+    print(f"  Project:    {args.project}")
+    print(f"  Display:    {args.display_name}")
     print(f"  Train:      {args.model}")
     print(f"  vLLM:       {vllm_model}")
     print(f"  Corpus:     {args.corpus}")
@@ -1176,6 +1333,13 @@ def _train_sleep_wake_pipeline(args):
         print(f"  vLLM mem:   {args.vllm_gpu_memory_utilization}")
     print(f"  Output:     {args.output}")
     print()
+
+    log = TrainingLogger(args.project)
+    log.start(
+        iterations=args.iterations,
+        corpus=args.corpus,
+        model=args.model,
+    )
 
     vllm_extra_args: list[str] = []
     if args.vllm_gpu_memory_utilization is not None:
@@ -1241,16 +1405,36 @@ def _train_sleep_wake_pipeline(args):
                     print(f"  Eval-set dedup questions: {len(evaluation_questions)}")
 
             # Stage 1: Synthesis
-            raw_examples = _run_parallel_synthesis_calls(
-                synthesizer=synthesizer,
-                synthesis_calls=args.synthesis_calls,
-                synthesis_workers=args.synthesis_workers,
-                max_examples=args.max_examples,
-                iteration=iteration,
-            )
-            print(f"  Stage 1 raw synthesis: {len(raw_examples)} QA pairs")
-            examples = pipeline.deduplicate(raw_examples)
-            _print_dedup_stage_summary(raw_examples, pipeline)
+            if iteration == 0 and args.resume_stage1_from:
+                resumed_path, resumed_phase, resumed_examples = load_stage1_resume_examples(
+                    args.resume_stage1_from,
+                )
+                print(f"  Resuming Stage 1 from {resumed_path} ({resumed_phase})")
+                raw_examples = resumed_examples
+                print(f"  Stage 1 raw synthesis: {len(raw_examples)} QA pairs (loaded)")
+                if resumed_phase == "dedup" or args.skip_synthesis:
+                    examples = list(resumed_examples)
+                    pipeline.last_dedup_summary = {
+                        "input": len(examples),
+                        "output": len(examples),
+                        "removed": 0,
+                        "removed_exact": 0,
+                        "removed_near": 0,
+                    }
+                else:
+                    examples = pipeline.deduplicate(raw_examples)
+                _print_dedup_stage_summary(raw_examples, pipeline)
+            else:
+                raw_examples = _run_parallel_synthesis_calls(
+                    synthesizer=synthesizer,
+                    synthesis_calls=args.synthesis_calls,
+                    synthesis_workers=args.synthesis_workers,
+                    max_examples=args.max_examples,
+                    iteration=iteration,
+                )
+                print(f"  Stage 1 raw synthesis: {len(raw_examples)} QA pairs")
+                examples = pipeline.deduplicate(raw_examples)
+                _print_dedup_stage_summary(raw_examples, pipeline)
             if args.max_examples is not None:
                 examples = examples[:args.max_examples]
             pipeline.synthetic_examples = examples
@@ -1314,6 +1498,12 @@ def _train_sleep_wake_pipeline(args):
             dataset = OfflineRolloutDataset.from_rollouts(rollout_dicts)
             print(f"  Training on {len(dataset.prompts)} groups, "
                   f"{len(dataset)} rollouts")
+            save_stage2_artifacts(
+                args.output,
+                iteration + 1,
+                pipeline.filtered_groups,
+                rollout_dicts,
+            )
 
             # ---- Stage 3: OAPL Training (vLLM sleeps) ----
             should_sleep_vllm = _should_sleep_vllm_for_training(
@@ -1368,7 +1558,7 @@ def _train_sleep_wake_pipeline(args):
             # Log OAPL stats
             try:
                 from konash.training.logger import TrainingLogger
-                _log = TrainingLogger(os.path.basename(args.output) or "default")
+                _log = TrainingLogger(args.project or os.path.basename(args.output) or "default")
                 _log.oapl(
                     iteration=iteration + 1,
                     loss=stats["mean_loss"],
@@ -1391,10 +1581,6 @@ def _train_sleep_wake_pipeline(args):
             adapter_path = os.path.join(iter_dir, "adapter")
             engine.save_adapter(adapter_path)
             prev_adapter_path = adapter_path
-
-            # Save rollouts
-            with open(os.path.join(iter_dir, "rollouts.json"), "w") as f:
-                json.dump(rollout_dicts, f, indent=2, default=str)
 
             # Free GPU VRAM before waking vLLM
             print("  Releasing Unsloth model...")
@@ -1427,7 +1613,7 @@ def _train_sleep_wake_pipeline(args):
         print("##KONASH:value_model_start##", flush=True)
         try:
             from konash.training.logger import TrainingLogger
-            _log = TrainingLogger(os.path.basename(args.output) or "default")
+            _log = TrainingLogger(args.project or os.path.basename(args.output) or "default")
             _log.value_model(
                 loss=vm_stats.get("final_loss", 0),
                 epochs=vm_stats.get("epochs", 0),
@@ -1459,15 +1645,31 @@ def _train_sleep_wake_pipeline(args):
 
 
 def main():
-    args = parse_args()
+    from konash.training.project_state import mark_training_run_status
 
-    if args.rollouts:
-        train_from_rollouts(args)
-    elif args.corpus:
-        train_full_pipeline(args)
-    else:
-        print("ERROR: Provide either --rollouts (pre-generated) or --corpus (full pipeline)")
+    args = _apply_project_identity(normalize_stage_resume_args(parse_args()))
+
+    if not (args.rollouts or args.corpus):
+        print(
+            "ERROR: Provide either --rollouts/--train-from-rollouts "
+            "(pre-generated) or --corpus (full pipeline)"
+        )
         sys.exit(1)
+
+    synthesis_backend = "rollouts_only" if args.rollouts else "remote_full"
+    _begin_managed_project_run(args, synthesis_backend=synthesis_backend)
+
+    status = "completed"
+    try:
+        if args.rollouts:
+            train_from_rollouts(args)
+        else:
+            train_full_pipeline(args)
+    except Exception:
+        status = "failed"
+        raise
+    finally:
+        mark_training_run_status(args.project, status=status)
 
 
 if __name__ == "__main__":

@@ -169,6 +169,11 @@ def _short_model_name(model: str) -> str:
     return model.split("/", 1)[-1]
 
 
+def _should_use_sleep_wake(model: str, gpu_type: str) -> bool:
+    """Prefer the proven Shadeform GLM path on single H200 bring-up."""
+    return gpu_type.upper() == "H200" and "GLM-4.5" in model.upper()
+
+
 def _estimate_training(qa_pairs, rollouts, rollout_steps, iterations):
     """Compute dynamic cost and time estimates."""
     synthesis_calls = max(1, qa_pairs // 8)
@@ -1420,6 +1425,7 @@ def cmd_train(args: argparse.Namespace) -> None:
         base_model=model,
         corpus=corpus,
         project=project_name,
+        display_name=display_name,
         hf_token=_get_hf_token(),
         remote_corpus_name=remote_corpus_name,
         chunk_size=chunk_size,
@@ -1434,6 +1440,8 @@ def cmd_train(args: argparse.Namespace) -> None:
             max_examples=args.max_examples,
             learning_rate=lr,
             synthesis_rollout_backend=plan.synthesis_rollout_backend,
+            gpu_type=args.gpu_type,
+            sleep_wake=_should_use_sleep_wake(model, args.gpu_type),
             keep_alive=args.keep_alive,
             verbose=True,
         )

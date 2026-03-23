@@ -32,6 +32,7 @@ from tools.trace_viewer.training_live_service import (
     build_live_training_summary,
     list_live_training_projects,
 )
+from konash.training.project_state import load_project_display_name
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -575,7 +576,14 @@ def training_live_index():
 def training_projects():
     """List all projects with training logs."""
     from konash.training.logger import TrainingLogger
-    return jsonify({"projects": TrainingLogger.list_projects()})
+    projects = [
+        {
+            "project": project,
+            "display_name": load_project_display_name(project),
+        }
+        for project in TrainingLogger.list_projects()
+    ]
+    return jsonify({"projects": projects})
 
 
 @app.route("/training/api/live/projects")
@@ -610,7 +618,12 @@ def training_logs(project: str):
         except (json.JSONDecodeError, OSError):
             pass
 
-    return jsonify({"project": project, "events": events, "active_run": active_run})
+    return jsonify({
+        "project": project,
+        "display_name": load_project_display_name(project),
+        "events": events,
+        "active_run": active_run,
+    })
 
 
 @app.route("/training/api/rollouts/<project>")

@@ -230,6 +230,7 @@ class Agent:
         corpus: str | Path | Corpus,
         *,
         project: str | None = None,
+        display_name: str | None = None,
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
         inference_api_base: Optional[str] = None,
@@ -256,6 +257,7 @@ class Agent:
         corpus_path = corpus.path if isinstance(corpus, Corpus) else Path(corpus)
         auto_project = suggest_project_name(base_model, build_dataset_spec([str(corpus_path)]))
         self.project = project or auto_project
+        self.display_name = display_name or self.project
         self.temperature = temperature
         self._use_unsloth = use_unsloth
         self._load_in_fp8 = load_in_fp8
@@ -415,6 +417,9 @@ class Agent:
         beta_kl: float = 0.001,
         beta_value: float = 1.0,
         synthesis_rollout_backend: str = "remote_full",
+        gpu_type: str = "H100",
+        num_gpus: int = 1,
+        sleep_wake: bool = False,
         keep_alive: bool = False,
         verbose: bool = True,
     ) -> Dict[str, Any]:
@@ -449,6 +454,12 @@ class Agent:
             Temperature for soft value estimation.
         synthesis_rollout_backend : str
             Training execution mode. Only ``"remote_full"`` is supported.
+        gpu_type : str
+            Shadeform GPU type to provision for remote training.
+        num_gpus : int
+            Number of GPUs to request from Shadeform.
+        sleep_wake : bool
+            Use the vLLM sleep/wake remote training path.
         keep_alive : bool
             Keep the remote Shadeform instance alive after training or failure.
         verbose : bool
@@ -476,6 +487,9 @@ class Agent:
             rollout_max_steps=rollout_max_steps,
             max_examples=max_examples,
             learning_rate=learning_rate,
+            gpu_type=gpu_type,
+            num_gpus=num_gpus,
+            sleep_wake=sleep_wake,
             keep_alive=keep_alive,
             verbose=verbose,
             console=console,
@@ -562,6 +576,9 @@ class Agent:
         rollout_max_steps: int,
         max_examples: Optional[int],
         learning_rate: float,
+        gpu_type: str,
+        num_gpus: int,
+        sleep_wake: bool,
         keep_alive: bool,
         verbose: bool,
         console: Any,
@@ -579,6 +596,8 @@ class Agent:
         cloud_result = train_remote(
             corpus=self.remote_corpus_name or str(self.corpus.path),
             base_model=self.base_model,
+            project=self.project,
+            display_name=self.display_name,
             checkpoint_dir=self.checkpoint_dir,
             iterations=iterations,
             synthesis_calls=synthesis_calls,
@@ -586,6 +605,10 @@ class Agent:
             rollout_max_steps=rollout_max_steps,
             max_examples=max_examples,
             learning_rate=learning_rate,
+            gpu=gpu_type,
+            num_gpus=num_gpus,
+            sleep_wake=sleep_wake,
+            gpu_label=gpu_type,
             keep_alive=keep_alive,
             verbose=verbose,
         )

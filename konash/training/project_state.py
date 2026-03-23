@@ -179,6 +179,14 @@ class TrainingProjectManifest:
 
 
 @dataclass(frozen=True, slots=True)
+class ConfiguredTrainingProject:
+    project: str
+    display_name: str
+    output_dir: str
+    dataset_spec: TrainingDatasetSpec
+
+
+@dataclass(frozen=True, slots=True)
 class ActiveTrainingRun:
     run_id: str
     status: str
@@ -313,6 +321,126 @@ def suggest_project_name(
         candidate = f"{base}-{suffix}"
         suffix += 1
     return candidate
+
+
+def infer_known_dataset_label(path: str | os.PathLike[str]) -> tuple[str, str] | None:
+    """Infer a canonical dataset slug/display pair from a path."""
+    text = str(Path(path).expanduser().resolve()).lower()
+    if "browsecomp" in text:
+        return ("browsecomp", "BrowseComp-Plus")
+    if "financebench" in text:
+        return ("financebench", "FinanceBench")
+    if "qampari" in text:
+        return ("qampari", "QAMPARI")
+    if "freshstack" in text:
+        return ("freshstack", "FreshStack")
+    if "trec" in text or "biogen" in text:
+        return ("trec-biogen", "TREC-Biogen")
+    return None
+
+
+def _dataset_aliases_for_paths(
+    paths: Sequence[str | os.PathLike[str]],
+) -> dict[str, tuple[str, str]]:
+    aliases: dict[str, tuple[str, str]] = {}
+    for path in paths:
+        resolved = str(Path(path).expanduser().resolve())
+        known = infer_known_dataset_label(resolved)
+        if known is not None:
+            aliases[resolved] = known
+    return aliases
+
+
+def _short_model_name_parts(base_model: str) -> tuple[str, str]:
+    model_tail = base_model.split("/", 1)[-1]
+    lowered = model_tail.lower()
+    if "glm-4.5-air" in lowered:
+        return ("glm45", "GLM 4.5 Air")
+    if "glm-5" in lowered:
+        return ("glm5", "GLM 5")
+    return (_slugify(model_tail), model_tail)
+
+
+def _default_run_tag(max_examples: int | None) -> str | None:
+    if max_examples is None:
+        return None
+    if max_examples <= 12:
+        return "smoke"
+    if max_examples <= 128:
+        return "medium"
+    return "full"
+
+
+def configure_training_project(
+    *,
+    base_model: str,
+    corpora: Sequence[str | os.PathLike[str]] = (),
+    rollouts_path: str | os.PathLike[str] | None = None,
+    requested_project: str | None = None,
+    requested_display_name: str | None = None,
+    requested_output: str = "./checkpoints",
+    gpu_label: str | None = None,
+    run_tag: str | None = None,
+    rollouts_per_example: int = 1,
+    max_examples: int | None = None,
+    projects_dir: str | None = None,
+) -> ConfiguredTrainingProject:
+    """Resolve project slug, display name, output dir, and dataset spec."""
+    source_paths: list[str | os.PathLike[str]] = list(corpora)
+    if not source_paths and rollouts_path is not None:
+        source_paths = [rollouts_path]
+    dataset_spec = build_dataset_spec(
+        source_paths or ["run"],
+        aliases=_dataset_aliases_for_paths(source_paths),
+    )
+
+    model_slug, model_display = _short_model_name_parts(base_model)
+    date_slug = time.strftime("%Y-%m-%d")
+    date_display = time.strftime("%b %d").replace(" 0", " ")
+    effective_run_tag = run_tag or _default_run_tag(max_examples)
+
+    project = requested_project
+    if not project:
+        parts = [dataset_spec.slug_label(), model_slug]
+        if gpu_label:
+            parts.append(_slugify(gpu_label))
+        parts.extend([date_slug, f"r{rollouts_per_example}"])
+        if effective_run_tag:
+            parts.append(_slugify(effective_run_tag))
+        project = "-".join(parts)
+
+    display_name = requested_display_name
+    if not display_name:
+        parts = [dataset_spec.display_label(), model_display]
+        if gpu_label:
+            parts.append(gpu_label)
+        parts.extend([date_display, f"R{rollouts_per_example}"])
+        if effective_run_tag:
+            parts.append(effective_run_tag.title())
+        display_name = " • ".join(parts)
+
+    output_dir = (
+        str(project_dir(project, projects_dir) / "checkpoints")
+        if requested_output == "./checkpoints"
+        else requested_output
+    )
+    return ConfiguredTrainingProject(
+        project=project,
+        display_name=display_name,
+        output_dir=output_dir,
+        dataset_spec=dataset_spec,
+    )
+
+
+def load_project_display_name(
+    project: str,
+    *,
+    projects_dir: str | None = None,
+) -> str:
+    manifest = load_project_manifest(project, projects_dir=projects_dir)
+    if manifest is not None and manifest.display_name:
+        return manifest.display_name
+    return project
 
 
 def archive_legacy_default_project(projects_dir: str | None = None) -> Path | None:

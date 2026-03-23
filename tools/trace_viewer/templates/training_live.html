@@ -881,7 +881,8 @@ body {
     liveProjects.forEach(project => {
       const opt = document.createElement('option');
       opt.value = project.project;
-      opt.textContent = `${project.project} · ${project.stage}`;
+      const label = project.display_name || project.project;
+      opt.textContent = `${label} · ${project.stage}`;
       projectSelect.appendChild(opt);
     });
     lastProjectsSignature = signature;
