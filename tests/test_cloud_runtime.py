@@ -8,7 +8,12 @@ import urllib.error
 
 import pytest
 
-from konash.cloud import _provision_gpu
+from konash.cloud import (
+    _provision_gpu,
+    _run_remote_training,
+    _setup_remote_minimal,
+    _start_remote_runtime_install,
+)
 from konash.training.backends import ShadeformSynthesisBackend
 
 
@@ -118,3 +123,67 @@ def test_vllm_generate_fn_retries_on_context_length():
     assert result["content"] == "SEARCH: retry works"
     assert captured_bodies[0]["max_tokens"] == 1024
     assert captured_bodies[1]["max_tokens"] == 512
+
+
+def test_run_remote_training_quotes_display_name_and_touches_log():
+    recorded_ssh_commands: list[str] = []
+
+    def fake_ssh_cmd(ip, cmd, key_path, port, user):
+        recorded_ssh_commands.append(cmd)
+        return ["ssh", ip, cmd]
+
+    tail_proc = SimpleNamespace(
+        stdout=iter(["##KONASH:complete##\n"]),
+        terminate=MagicMock(),
+        wait=MagicMock(return_value=0),
+    )
+
+    with patch("konash.cloud._ssh_cmd", side_effect=fake_ssh_cmd), \
+         patch("konash.cloud.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=b"", stderr=b"")), \
+         patch("konash.cloud.subprocess.Popen", return_value=tail_proc), \
+         patch("konash.cloud.time.sleep", return_value=None):
+        _run_remote_training(
+            "1.2.3.4",
+            "python3 scripts/train_oapl_unsloth.py --project browsecomp --display-name 'BrowseComp-Plus on GLM-4.5-Air-FP8'",
+            {},
+            verbose=False,
+        )
+
+    launch_cmd = recorded_ssh_commands[0]
+    tail_cmd = recorded_ssh_commands[1]
+
+    assert "touch ~/konash/training.log" in launch_cmd
+    assert "nohup bash -lc" in launch_cmd
+    assert "'\"'\"'BrowseComp-Plus on GLM-4.5-Air-FP8'\"'\"'" in launch_cmd
+    assert tail_cmd == "tail -n +1 -F ~/konash/training.log"
+
+
+def test_setup_remote_minimal_only_installs_bootstrap_packages():
+    captured = {}
+
+    def fake_run(ip, remote_cmd, **kwargs):
+        captured["cmd"] = remote_cmd
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with patch("konash.cloud._run_remote_blocking", side_effect=fake_run):
+        _setup_remote_minimal("1.2.3.4")
+
+    assert "uv pip install --system --link-mode=copy --upgrade numpy datasets huggingface_hub 'tqdm<4.67'" in captured["cmd"]
+    assert "sentence-transformers" not in captured["cmd"]
+    assert captured["kwargs"]["timeout"] == 600
+
+
+def test_start_remote_runtime_install_installs_heavy_training_stack():
+    captured = {}
+
+    def fake_start(ip, **kwargs):
+        captured["cmd"] = kwargs["remote_cmd"]
+        return SimpleNamespace()
+
+    with patch("konash.cloud._start_remote_async", side_effect=fake_start):
+        _start_remote_runtime_install("1.2.3.4")
+
+    assert "sentence-transformers torch unsloth peft accelerate" in captured["cmd"]
+    assert "'vllm>=0.8' 'transformers>=5.2.0'" in captured["cmd"]
+    assert "numpy datasets huggingface_hub" not in captured["cmd"]

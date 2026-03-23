@@ -69,7 +69,7 @@ def test_sleep_wake_defaults_to_false():
 
 def test_cli_prefers_sleep_wake_for_glm_on_h200():
     assert _should_use_sleep_wake("zai-org/GLM-4.5-Air-FP8", "H200") is True
-    assert _should_use_sleep_wake("zai-org/GLM-4.5-Air-FP8", "H100") is False
+    assert _should_use_sleep_wake("zai-org/GLM-4.5-Air-FP8", "H100") is True
     assert _should_use_sleep_wake("zai-org/GLM-5", "H200") is False
 
 

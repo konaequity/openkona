@@ -466,12 +466,9 @@ def _upload_codebase(
         raise RuntimeError("Failed to upload codebase")
 
 
-def _setup_remote(
-    ip: str, key_path: str = _SSH_KEY_PATH,
-    port: int = 22, user: str = "shadeform",
-) -> None:
-    """Install KONASH dependencies on the remote machine."""
-    hf_cache_setup = (
+def _hf_cache_setup_cmd() -> str:
+    """Return the shell snippet that configures the remote HF cache."""
+    return (
         "if [ -d /ephemeral ]; then "
         "  KONASH_HF_CACHE_ROOT=/ephemeral/hf_cache; "
         "else "
@@ -481,19 +478,109 @@ def _setup_remote(
         "rm -rf ~/.cache/huggingface 2>/dev/null && "
         "ln -sfn \"$KONASH_HF_CACHE_ROOT\" ~/.cache/huggingface"
     )
-    setup_cmd = (
-        f"cd {_REMOTE_DIR} && "
-        # Use /ephemeral when present, otherwise fall back to root-disk cache.
-        + hf_cache_setup + " && "
-        # Install uv if not present (10-50x faster than pip)
+
+
+def _remote_uv_bootstrap_cmd() -> str:
+    """Return the shell snippet that ensures uv is installed and on PATH."""
+    return (
+        _hf_cache_setup_cmd() + " && "
         "command -v uv >/dev/null 2>&1 || "
         "(curl -LsSf https://astral.sh/uv/install.sh | sh && "
         "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH) && "
-        "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH && "
+        "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+    )
+
+
+def _run_remote_blocking(
+    ip: str,
+    remote_cmd: str,
+    *,
+    key_path: str = _SSH_KEY_PATH,
+    port: int = 22,
+    user: str = "shadeform",
+    timeout: int = 600,
+    error_prefix: str,
+) -> subprocess.CompletedProcess:
+    """Run a remote SSH command and raise a helpful error on failure."""
+    result = subprocess.run(
+        _ssh_cmd(ip, remote_cmd, key_path, port, user),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"{error_prefix}: {details}")
+    return result
+
+
+def _start_remote_async(
+    ip: str, key_path: str = _SSH_KEY_PATH,
+    port: int = 22, user: str = "shadeform",
+    remote_cmd: str = "",
+) -> subprocess.Popen:
+    """Start a remote SSH command asynchronously."""
+    return subprocess.Popen(
+        _ssh_cmd(ip, remote_cmd, key_path, port, user),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _wait_remote_async(
+    proc: subprocess.Popen,
+    *,
+    timeout: int,
+    error_prefix: str,
+) -> tuple[str, str]:
+    """Wait for a started SSH command and raise on failure."""
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        details = (stderr or stdout or "").strip()
+        raise RuntimeError(f"{error_prefix} timed out after {timeout}s: {details}") from exc
+    if proc.returncode != 0:
+        details = (stderr or stdout or "").strip()
+        raise RuntimeError(f"{error_prefix}: {details}")
+    return stdout, stderr
+
+
+def _setup_remote_minimal(
+    ip: str, key_path: str = _SSH_KEY_PATH,
+    port: int = 22, user: str = "shadeform",
+) -> None:
+    """Install only the dependencies needed to fetch benchmark corpora quickly."""
+    setup_cmd = (
+        f"cd {_REMOTE_DIR} && "
+        + _remote_uv_bootstrap_cmd() + " && "
         "sudo -E env PATH=$PATH uv pip install --system --link-mode=copy --upgrade "
-        "numpy sentence-transformers datasets huggingface_hub torch "
-        "'tqdm<4.67' "
-        "unsloth peft accelerate 'vllm>=0.8' 'transformers>=5.2.0' && "
+        "numpy datasets huggingface_hub 'tqdm<4.67'"
+    )
+    _run_remote_blocking(
+        ip,
+        setup_cmd,
+        key_path=key_path,
+        port=port,
+        user=user,
+        timeout=600,
+        error_prefix="Remote bootstrap failed",
+    )
+
+
+def _start_remote_runtime_install(
+    ip: str, key_path: str = _SSH_KEY_PATH,
+    port: int = 22, user: str = "shadeform",
+) -> subprocess.Popen:
+    """Install the heavier training/runtime stack on the remote machine."""
+    setup_cmd = (
+        f"cd {_REMOTE_DIR} && "
+        + _remote_uv_bootstrap_cmd() + " && "
+        "sudo -E env PATH=$PATH uv pip install --system --link-mode=copy --upgrade "
+        "sentence-transformers torch unsloth peft accelerate "
+        "'vllm>=0.8' 'transformers>=5.2.0' && "
         "python3 - <<'PY'\n"
         "from importlib.metadata import version\n"
         "from packaging.version import Version\n"
@@ -503,13 +590,13 @@ def _setup_remote(
         "print(f'transformers={tfm}')\n"
         "PY"
     )
-    result = subprocess.run(
-        _ssh_cmd(ip, setup_cmd, key_path, port, user),
-        capture_output=True, text=True, timeout=600,
+    return _start_remote_async(
+        ip,
+        key_path=key_path,
+        port=port,
+        user=user,
+        remote_cmd=setup_cmd,
     )
-    if result.returncode != 0:
-        details = (result.stderr or result.stdout).strip()
-        raise RuntimeError(f"Remote setup failed: {details}")
 
 
 # ---------------------------------------------------------------------------
@@ -535,26 +622,31 @@ def _run_remote_training(
     env_str = " ".join(f'{k}="{v}"' for k, v in env_vars.items())
     # In sleep/wake mode, vLLM and Unsloth alternate — no weight sharing
     standby_export = "" if sleep_wake else "UNSLOTH_VLLM_STANDBY=1 "
+    remote_training_shell = f"{training_cmd} > {_REMOTE_LOG} 2>&1"
 
     # Run under nohup so SSH disconnection doesn't kill training
     remote_cmd = (
         f"cd {_REMOTE_DIR} && "
         f"export PYTHONPATH=. {standby_export}{env_str} && "
-        f"nohup bash -lc '{training_cmd} > {_REMOTE_LOG} 2>&1' "
+        f"touch {_REMOTE_LOG} && "
+        f"nohup bash -lc {shlex.quote(remote_training_shell)} "
         "</dev/null >/dev/null 2>&1 &"
     )
 
     # Start training in background
-    subprocess.run(
+    result = subprocess.run(
         _ssh_cmd(ip, remote_cmd, key_path, port, user),
         capture_output=True, timeout=120,
     )
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout).decode() if isinstance((result.stderr or result.stdout), bytes) else (result.stderr or result.stdout)
+        raise RuntimeError(f"Remote training launch failed: {(details or '').strip()}")
 
     # Wait a moment for the process to start
     time.sleep(2)
 
     # Tail the log file and parse progress markers
-    tail_cmd = f"tail -f {_REMOTE_LOG}"
+    tail_cmd = f"tail -n +1 -F {_REMOTE_LOG}"
     proc = subprocess.Popen(
         _ssh_cmd(ip, tail_cmd, key_path, port, user),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -784,7 +876,7 @@ def _provision_gpu(
 
     _save_instance_state(instance_id, "", hourly_price=price)
 
-    _print(f"  Waiting for instance to boot...")
+    _print(f"  Waiting for instance to boot...  [dim]can take up to ~5 minutes[/]")
     try:
         info = _poll_until_active(instance_id, api_key=api_key)
     except RuntimeError as e:
@@ -800,7 +892,7 @@ def _provision_gpu(
             api_key,
         )
         _save_instance_state(instance_id, "", hourly_price=price)
-        _print(f"  Waiting for instance to boot...")
+        _print(f"  Waiting for instance to boot...  [dim]can take up to ~5 minutes[/]")
         info = _poll_until_active(instance_id, api_key=api_key)
 
     ip = info["ip"]
@@ -943,9 +1035,12 @@ def train_remote(
         _upload_codebase(ip, ssh_key, port, user)
         _print(f"  [green]✓[/]  Code uploaded")
 
-        _print(f"  Installing dependencies...")
-        _setup_remote(ip, ssh_key, port, user)
-        _print(f"  [green]✓[/]  Dependencies installed")
+        _print(f"  Installing bootstrap dependencies...")
+        _setup_remote_minimal(ip, ssh_key, port, user)
+        _print(f"  [green]✓[/]  Bootstrap ready")
+
+        _print(f"  Preparing runtime + corpus...")
+        runtime_proc = _start_remote_runtime_install(ip, ssh_key, port, user)
 
         # For named corpora, download on remote. For local paths, upload.
         named_corpora = {"financebench", "browsecomp-plus", "qampari", "freshstack"}
@@ -953,9 +1048,17 @@ def train_remote(
             from konash.benchmarks import get_dataset
 
             dl_cmd = f"cd {_REMOTE_DIR} && PYTHONPATH=. python3 -c \"from konash.download import download_{corpus.replace('-', '_')}; download_{corpus.replace('-', '_')}()\""
-            subprocess.run(
-                _ssh_cmd(ip, dl_cmd, ssh_key, port, user),
-                capture_output=True, timeout=600,
+            corpus_proc = _start_remote_async(
+                ip,
+                key_path=ssh_key,
+                port=port,
+                user=user,
+                remote_cmd=dl_cmd,
+            )
+            _wait_remote_async(
+                corpus_proc,
+                timeout=3600,
+                error_prefix="Remote corpus download failed",
             )
             dataset = get_dataset(corpus)
             corpus_path = (
@@ -967,6 +1070,13 @@ def train_remote(
             _scp_upload(ip, corpus, f"{_REMOTE_DIR}/corpus/", ssh_key, port, user)
             corpus_name = os.path.basename(os.path.normpath(corpus))
             corpus_path = f"{_REMOTE_DIR}/corpus/{corpus_name}"
+
+        _wait_remote_async(
+            runtime_proc,
+            timeout=1800,
+            error_prefix="Remote runtime install failed",
+        )
+        _print(f"  [green]✓[/]  Runtime + corpus ready")
 
         training_cmd = (
             f"python3 scripts/train_oapl_unsloth.py "

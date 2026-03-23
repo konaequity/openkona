@@ -170,8 +170,9 @@ def _short_model_name(model: str) -> str:
 
 
 def _should_use_sleep_wake(model: str, gpu_type: str) -> bool:
-    """Prefer the proven Shadeform GLM path on single H200 bring-up."""
-    return gpu_type.upper() == "H200" and "GLM-4.5" in model.upper()
+    """Use the sleep/wake training path for GLM 4.5 Air on Shadeform GPUs."""
+    _ = gpu_type  # kept for signature stability and future GPU-specific tuning
+    return "GLM-4.5" in model.upper()
 
 
 def _estimate_training(qa_pairs, rollouts, rollout_steps, iterations):
